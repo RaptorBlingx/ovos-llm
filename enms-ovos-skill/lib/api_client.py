@@ -226,17 +226,39 @@ class ENMSClient:
         """Get factory-wide energy summary"""
         return await self._request("GET", "/factory/summary")
     
-    async def get_top_consumers(self, limit: int = 10) -> Dict[str, Any]:
+    async def get_top_consumers(
+        self,
+        metric: str = "energy",
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: int = 5
+    ) -> Dict[str, Any]:
         """
         Get top energy consumers
         
         Args:
-            limit: Number of machines to return (default 10)
+            metric: Ranking metric (energy, cost, power, anomalies)
+            start_time: Start time (ISO format), defaults to today 00:00
+            end_time: End time (ISO format), defaults to now
+            limit: Number of machines to return (1-20, default 5)
             
         Returns:
-            Ranked list of machines by energy consumption
+            Ranked list of machines by specified metric
         """
-        params = {"limit": limit}
+        from datetime import datetime, timezone
+        
+        # Default to today if not specified
+        if not start_time:
+            start_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        if not end_time:
+            end_time = datetime.now(timezone.utc).isoformat()
+            
+        params = {
+            "metric": metric,
+            "start_time": start_time,
+            "end_time": end_time,
+            "limit": limit
+        }
         return await self._request("GET", "/analytics/top-consumers", params=params)
     
     # Anomaly Detection Endpoints
