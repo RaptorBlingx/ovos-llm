@@ -200,7 +200,7 @@ class Qwen3Parser:
         return f"""Extract intent from query. Output ONLY valid JSON.
 
 Schema:
-{{"intent": "intent_name", "confidence": 0.0-1.0, "entities": {{"machine": "name or null", "metric": "energy|power|status or null"}}}}
+{{"intent": "intent_name", "confidence": 0.0-1.0, "entities": {{"machine": "name or comma-separated names", "metric": "energy|power|status or null"}}}}
 
 Intents: energy_query, power_query, machine_status, factory_overview, ranking, comparison, anomaly_detection
 
@@ -213,6 +213,9 @@ User: "How much energy did Boiler-1 use yesterday?"
 
 User: "Is HVAC-Main running?"
 {{"intent": "machine_status", "confidence": 0.97, "entities": {{"machine": "HVAC-Main"}}}}
+
+User: "Compare Compressor-1 and Boiler-1"
+{{"intent": "comparison", "confidence": 0.92, "entities": {{"machine": "Compressor-1,Boiler-1"}}}}
 
 User: "Factory overview"
 {{"intent": "factory_overview", "confidence": 0.90, "entities": {{}}}}

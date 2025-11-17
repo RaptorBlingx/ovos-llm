@@ -165,6 +165,37 @@ class EnMSChatbot:
                 
                 debug_info['api_data'] = api_data
             
+            elif intent.intent == IntentType.COMPARISON:
+                # Compare two machines - extract machine names from LLM output
+                # LLM should return entities like {'machine': 'Compressor-1,Boiler-1'}
+                machines_str = llm_output.get('entities', {}).get('machine', '')
+                machine_list = [m.strip() for m in machines_str.split(',') if m.strip()]
+                
+                if len(machine_list) < 2:
+                    return "⚠️ Please specify at least two machines to compare.", debug_info
+                
+                # Get status for each machine
+                comparison_data = []
+                for machine_name in machine_list[:5]:  # Limit to 5 machines
+                    try:
+                        result = self.loop.run_until_complete(
+                            self.api_client.get_machine_status(machine_name)
+                        )
+                        comparison_data.append({
+                            'machine': result['machine_name'],
+                            'power_kw': result['current_status']['power_kw'],
+                            'energy_kwh': result['today_stats']['energy_kwh'],
+                            'cost_usd': result['today_stats']['cost_usd']
+                        })
+                    except Exception as e:
+                        logger.warning("comparison_machine_error", machine=machine_name, error=str(e))
+                
+                api_data = {
+                    'machines': comparison_data
+                }
+                
+                debug_info['api_data'] = api_data
+            
             # Tier 4: Format Response
             debug_info['stage'] = 'Response Formatting'
             
@@ -175,7 +206,8 @@ class EnMSChatbot:
                     IntentType.ENERGY_QUERY: 'energy_query',
                     IntentType.MACHINE_STATUS: 'machine_status',
                     IntentType.FACTORY_OVERVIEW: 'factory_overview',
-                    IntentType.RANKING: 'ranking'
+                    IntentType.RANKING: 'ranking',
+                    IntentType.COMPARISON: 'comparison'
                 }
                 
                 template_name = intent_map.get(intent.intent, 'energy_query')
