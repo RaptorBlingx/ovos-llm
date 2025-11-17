@@ -19,6 +19,7 @@ import structlog
 
 from lib.models import Intent, IntentType
 from lib.qwen3_parser import Qwen3Parser
+from lib.adapt_parser import AdaptParser
 from lib.observability import (
     tier_routing,
     query_latency,
@@ -267,6 +268,7 @@ class HybridParser:
         
         # Initialize parsers
         self.heuristic = HeuristicRouter()
+        self.adapt = AdaptParser()
         self.llm = Qwen3Parser()
         
         # Routing stats
@@ -277,7 +279,7 @@ class HybridParser:
             'total': 0
         }
         
-        self.logger.info("hybrid_parser_initialized", tiers=["heuristic", "llm"])
+        self.logger.info("hybrid_parser_initialized", tiers=["heuristic", "adapt", "llm"])
     
     def parse(self, utterance: str) -> Dict:
         """
@@ -300,12 +302,19 @@ class HybridParser:
                 tier_used = RoutingTier.HEURISTIC
                 self.stats['heuristic'] += 1
             
-            # Tier 2: Adapt (FUTURE)
-            # if not result:
-            #     result = self.adapt.parse(utterance)
-            #     if result:
-            #         tier_used = RoutingTier.ADAPT
-            #         self.stats['adapt'] += 1
+            # Tier 2: Adapt (Fast pattern matching)
+            if not result:
+                result = self.adapt.parse(utterance)
+                # Only use Adapt result if confidence is reasonable
+                if result and result.get('confidence', 0) < 0.6:
+                    self.logger.debug("adapt_low_confidence",
+                                     confidence=result['confidence'],
+                                     utterance=utterance)
+                    result = None  # Fallback to LLM for low-confidence matches
+                
+                if result:
+                    tier_used = RoutingTier.ADAPT
+                    self.stats['adapt'] += 1
             
             # Tier 3: LLM (Fallback for complex queries)
             if not result:

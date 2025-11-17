@@ -326,9 +326,9 @@ Testing: pytest v8.0.0+ with pytest-asyncio
 - [x] Decide routing policy (fast path vs LLM) and confidence thresholds
 
 #### Days 17-18: Adapt / Padatious (Optional but Recommended)
-- [ ] Add Adapt and/or Padatious intent definitions for most frequent patterns
-- [ ] Implement handlers that build the same Intent model as LLM parser
-- [ ] Ensure behavior parity between Adapt/Padatious and LLM for overlapping cases
+- [x] Add Adapt and/or Padatious intent definitions for most frequent patterns
+- [x] Implement handlers that build the same Intent model as LLM parser
+- [x] Ensure behavior parity between Adapt/Padatious and LLM for overlapping cases
 
 #### Days 19-21: Optimization & Tests
 - [ ] Benchmark latency with router enabled
