@@ -40,6 +40,10 @@ class EnMSChatbot:
         """Initialize all components"""
         print("🔧 Initializing EnMS Chatbot...")
         
+        # Create persistent event loop for async operations
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        
         # Tier 1: LLM Parser
         print("  [1/4] Loading Qwen3 LLM (this may take a moment)...")
         self.parser = Qwen3Parser()
@@ -58,15 +62,10 @@ class EnMSChatbot:
         
         # Load machine whitelist
         print("  📋 Loading machine whitelist from API...")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            machines = loop.run_until_complete(self.api_client.list_machines(is_active=True))
-            machine_names = [m["name"] for m in machines]
-            self.validator.update_machine_whitelist(machine_names)
-            print(f"  ✅ Loaded {len(machine_names)} machines: {', '.join(machine_names[:3])}...")
-        finally:
-            loop.close()
+        machines = self.loop.run_until_complete(self.api_client.list_machines(is_active=True))
+        machine_names = [m["name"] for m in machines]
+        self.validator.update_machine_whitelist(machine_names)
+        print(f"  ✅ Loaded {len(machine_names)} machines: {', '.join(machine_names[:3])}...")
         
         print("✅ EnMS Chatbot ready!\n")
     
@@ -111,82 +110,74 @@ class EnMSChatbot:
             
             # Tier 3: Call EnMS API
             debug_info['stage'] = 'API Call'
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            api_data = None
             
-            try:
-                api_data = None
-                
-                if intent.intent in [IntentType.ENERGY_QUERY, IntentType.POWER_QUERY, IntentType.MACHINE_STATUS]:
-                    if intent.machine:
-                        # Get machine status
-                        result = loop.run_until_complete(
-                            self.api_client.get_machine_status(intent.machine)
-                        )
-                        
-                        api_data = {
-                            'machine': intent.machine,
-                            'is_running': result['current_status']['is_running'],
-                            'status': result['current_status']['status'],
-                            'power_kw': result['current_status']['power_kw'],
-                            'energy_kwh': result['today_stats']['energy_kwh'],
-                            'cost_eur': result['today_stats']['cost_usd'],
-                            'time_range': 'today'
-                        }
-                        
-                        debug_info['api_data'] = api_data
-                
-                elif intent.intent == IntentType.FACTORY_OVERVIEW:
-                    # Get factory summary
-                    result = loop.run_until_complete(
-                        self.api_client.get_factory_summary()
+            if intent.intent in [IntentType.ENERGY_QUERY, IntentType.POWER_QUERY, IntentType.MACHINE_STATUS]:
+                if intent.machine:
+                    # Get machine status
+                    result = self.loop.run_until_complete(
+                        self.api_client.get_machine_status(intent.machine)
                     )
                     
                     api_data = {
-                        'total_machines': result['total_machines'],
-                        'active_machines': result['active_machines'],
-                        'total_power_kw': result['current_power_kw'],
-                        'total_energy_kwh': result['today_energy_kwh']
+                        'machine': intent.machine,
+                        'status': result['current_status']['status'],
+                        'power_kw': result['current_status']['power_kw'],
+                        'energy_kwh': result['today_stats']['energy_kwh'],
+                        'cost_usd': result['today_stats']['cost_usd'],
+                        'time_range': 'today'
                     }
                     
                     debug_info['api_data'] = api_data
+            
+            elif intent.intent == IntentType.FACTORY_OVERVIEW:
+                # Get factory summary
+                result = self.loop.run_until_complete(
+                    self.api_client.get_factory_summary()
+                )
                 
-                elif intent.intent == IntentType.RANKING:
-                    # Get top consumers
-                    limit = intent.entities.get('limit', 5)
-                    result = loop.run_until_complete(
-                        self.api_client.get_top_consumers(limit=limit, metric='energy')
-                    )
-                    
-                    api_data = {
-                        'limit': limit,
-                        'top_consumers': result
-                    }
-                    
-                    debug_info['api_data'] = api_data
+                api_data = {
+                    'total_machines': result['total_machines'],
+                    'active_machines': result['active_machines'],
+                    'total_power_kw': result['current_power_kw'],
+                    'total_energy_kwh': result['today_energy_kwh']
+                }
                 
-                # Tier 4: Format Response
-                debug_info['stage'] = 'Response Formatting'
+                debug_info['api_data'] = api_data
+            
+            elif intent.intent == IntentType.RANKING:
+                # Get top consumers
+                limit = intent.entities.get('limit', 5)
+                result = self.loop.run_until_complete(
+                    self.api_client.get_top_consumers(limit=limit, metric='energy')
+                )
                 
-                if api_data:
-                    # Use templates
-                    intent_map = {
-                        IntentType.POWER_QUERY: 'power_query',
-                        IntentType.ENERGY_QUERY: 'energy_query',
-                        IntentType.MACHINE_STATUS: 'machine_status',
-                        IntentType.FACTORY_OVERVIEW: 'factory_overview',
-                        IntentType.RANKING: 'ranking'
-                    }
-                    
-                    template_name = intent_map.get(intent.intent, 'energy_query')
-                    response = self.formatter.format_response(template_name, api_data)
-                    
-                    return f"✅ {response}", debug_info
-                else:
-                    return f"⚠️ Intent '{intent.intent}' recognized but not yet implemented in API caller", debug_info
+                api_data = {
+                    'limit': limit,
+                    'top_consumers': result
+                }
                 
-            finally:
-                loop.close()
+                debug_info['api_data'] = api_data
+            
+            # Tier 4: Format Response
+            debug_info['stage'] = 'Response Formatting'
+            
+            if api_data:
+                # Use templates
+                intent_map = {
+                    IntentType.POWER_QUERY: 'power_query',
+                    IntentType.ENERGY_QUERY: 'energy_query',
+                    IntentType.MACHINE_STATUS: 'machine_status',
+                    IntentType.FACTORY_OVERVIEW: 'factory_overview',
+                    IntentType.RANKING: 'ranking'
+                }
+                
+                template_name = intent_map.get(intent.intent, 'energy_query')
+                response = self.formatter.format_response(template_name, api_data)
+                
+                return f"✅ {response}", debug_info
+            else:
+                return f"⚠️ Intent '{intent.intent}' recognized but not yet implemented in API caller", debug_info
             
         except Exception as e:
             logger.error("query_processing_error", error=str(e))
