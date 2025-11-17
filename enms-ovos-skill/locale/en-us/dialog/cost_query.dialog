@@ -1,0 +1,1 @@
+{{ machine }} cost: {{ cost_eur | voice_unit('EUR') }}{% if time_range %} {{ time_range | voice_time }}{% endif %}.

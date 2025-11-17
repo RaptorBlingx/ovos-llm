@@ -1,0 +1,4 @@
+is {machine} {status}
+what is the {status} of {machine}
+check {machine}
+{machine} {status}

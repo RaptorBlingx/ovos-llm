@@ -1,0 +1,1 @@
+{{ machine }} is currently using {{ power_kw | voice_unit('kW') }}{% if time_range %} {{ time_range | voice_time }}{% endif %}.

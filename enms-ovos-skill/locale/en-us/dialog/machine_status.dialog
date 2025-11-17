@@ -1,0 +1,1 @@
+{% if is_running %}{{ machine }} is running. Current status: {{ status }}.{% if power_kw %} Power usage: {{ power_kw | voice_unit('kW') }}.{% endif %}{% else %}{{ machine }} is offline.{% endif %}

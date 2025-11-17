@@ -1,0 +1,1 @@
+Factory overview: {{ total_machines }} machines, {{ active_machines }} active. Total power: {{ total_power_kw | voice_unit('kW') }}. Today's energy: {{ total_energy_kwh | voice_unit('kWh') }}.
