@@ -11,14 +11,14 @@
 ## 🧭 Master Plan Control Section
 
 - **Last Updated:** 2025-11-17 14:30 UTC  
-- **Overall Progress:** 30% █████████░░░ (Phase 1 COMPLETE ✅)  
+- **Overall Progress:** 35% ██████████████░░░░░░ (Week 3 COMPLETE ✅)  
 - **Current Phase:** Phase 2 – Fast-Path NLU (Adapt/Heuristics)  
-- **Current Milestone:** Week 3 Days 15-16 – Heuristic Router  
+- **Current Milestone:** Week 4 Days 22-23 – Entity Validation  
 
 ### Phase Overview
 
 1. [x] **Phase 1 – LLM Core & EnMS Integration** (COMPLETE ✅)  
-2. [ ] **Phase 2 – Fast-Path NLU (Adapt/Padatious/Heuristics)** (IN PROGRESS)  
+2. [-] **Phase 2 – Fast-Path NLU (Adapt/Padatious/Heuristics)** (Week 3 COMPLETE ✅)  
 3. [ ] **Phase 3 – UX & Observability**  
 4. [ ] **Phase 4 – Testing, Optimization & Deployment**  
 
@@ -331,12 +331,12 @@ Testing: pytest v8.0.0+ with pytest-asyncio
 - [x] Ensure behavior parity between Adapt/Padatious and LLM for overlapping cases
 
 #### Days 19-21: Optimization & Tests
-- [ ] Benchmark latency with router enabled
-- [ ] Target: majority of frequent queries resolved without LLM
-- [ ] Add unit tests for router and Adapt/Padatious paths
-- [ ] Update metrics to track Tier 1/2/3 distribution
+- [x] Benchmark latency with router enabled
+- [x] Target: majority of frequent queries resolved without LLM
+- [x] Add unit tests for router and Adapt/Padatious paths
+- [x] Update metrics to track Tier 1/2/3 distribution
 
-**Week 3 Deliverable**: Hybrid parser with fast path for common queries, LLM as fallback.
+**Week 3 Deliverable**: ✅ Hybrid parser with fast path for common queries, LLM as fallback.
 
 ---
 
