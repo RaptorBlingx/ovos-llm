@@ -1,4 +1,4 @@
-Top {{ limit }} energy consumers:
-{% for machine in top_consumers %}
-{{ loop.index }}. {{ machine.name }}: {{ machine.energy_kwh | voice_unit('kWh') }}
+Top {{ limit }} {{ metric | lower }} consumers:
+{% for machine in ranking %}
+{{ machine.rank }}. {{ machine.machine_name }}: {{ machine.value | voice_unit(unit) }} ({{ machine.percentage | voice_number }}% of total)
 {% endfor %}

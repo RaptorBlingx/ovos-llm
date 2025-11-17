@@ -137,24 +137,30 @@ class EnMSChatbot:
                 )
                 
                 api_data = {
-                    'total_machines': result['total_machines'],
-                    'active_machines': result['active_machines'],
-                    'total_power_kw': result['current_power_kw'],
-                    'total_energy_kwh': result['today_energy_kwh']
+                    'total_machines': result['machines']['total'],
+                    'active_machines': result['machines']['active'],
+                    'total_power_kw': result['energy']['current_power_kw'],
+                    'total_energy_kwh': result['energy']['total_kwh_today']
                 }
                 
                 debug_info['api_data'] = api_data
             
             elif intent.intent == IntentType.RANKING:
-                # Get top consumers
-                limit = intent.entities.get('limit', 5)
+                # Get top consumers - defaults to today's energy consumption
+                limit = 5  # TODO: extract from LLM entities when available
                 result = self.loop.run_until_complete(
-                    self.api_client.get_top_consumers(limit=limit, metric='energy')
+                    self.api_client.get_top_consumers(
+                        metric="energy",
+                        limit=limit
+                    )
                 )
                 
                 api_data = {
                     'limit': limit,
-                    'top_consumers': result
+                    'ranking': result.get('ranking', []),
+                    'metric': result.get('metric_label', 'Energy Consumption'),
+                    'total': result.get('total_value', 0),
+                    'unit': result.get('unit', 'kWh')
                 }
                 
                 debug_info['api_data'] = api_data
