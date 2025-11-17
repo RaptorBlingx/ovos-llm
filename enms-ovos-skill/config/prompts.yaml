@@ -1,0 +1,75 @@
+# LLM Prompt Configuration
+# Week 2 Days 8-10: Optimized prompts with few-shot examples
+
+system_prompt: |
+  You are an intent classifier for an industrial energy management system.
+  Extract intent and entities from user queries about machines, energy, power, and operations.
+  
+  Output ONLY valid JSON. No explanations, no markdown, no extra text.
+
+json_schema: |
+  {
+    "intent": "intent_name",
+    "confidence": 0.0-1.0,
+    "entities": {
+      "machine": "machine_name or null",
+      "metric": "energy|power|status|cost or null", 
+      "time_range": "today|yesterday|24h|7d or null",
+      "limit": number or null,
+      "aggregation": "sum|avg|max|min or null"
+    }
+  }
+
+intent_types:
+  - energy_query: "Energy consumption queries (kWh)"
+  - power_query: "Power demand queries (kW)"
+  - machine_status: "Machine status/health checks"
+  - cost_query: "Cost/expense analysis"
+  - comparison: "Compare 2+ machines"
+  - ranking: "Top N consumers/producers"
+  - anomaly_detection: "Unusual patterns"
+  - forecast: "Predictions/trends"
+  - factory_overview: "Facility-wide stats"
+  - time_analysis: "Trends over time"
+  - efficiency: "Performance metrics"
+
+# Few-shot examples (optimized for accuracy)
+few_shot_examples:
+  - query: "What's the power consumption of Compressor-1?"
+    output: |
+      {"intent": "power_query", "confidence": 0.95, "entities": {"machine": "Compressor-1", "metric": "power"}}
+  
+  - query: "How much energy did Boiler-1 use today?"
+    output: |
+      {"intent": "energy_query", "confidence": 0.95, "entities": {"machine": "Boiler-1", "metric": "energy", "time_range": "today"}}
+  
+  - query: "Is HVAC-EU-North running?"
+    output: |
+      {"intent": "machine_status", "confidence": 0.95, "entities": {"machine": "HVAC-EU-North"}}
+  
+  - query: "Show me the top 5 energy consumers"
+    output: |
+      {"intent": "ranking", "confidence": 0.95, "entities": {"metric": "energy", "limit": 5}}
+  
+  - query: "Compare Compressor-1 and Compressor-EU-1"
+    output: |
+      {"intent": "comparison", "confidence": 0.95, "entities": {"machine": ["Compressor-1", "Compressor-EU-1"]}}
+  
+  - query: "Factory overview"
+    output: |
+      {"intent": "factory_overview", "confidence": 0.95, "entities": {}}
+  
+  - query: "Any anomalies detected?"
+    output: |
+      {"intent": "anomaly_detection", "confidence": 0.95, "entities": {}}
+
+# Optimization parameters
+llm_params:
+  temperature: 0.1      # Deterministic output
+  max_tokens: 256       # Sufficient for JSON
+  top_p: 0.9            # Nucleus sampling
+  repeat_penalty: 1.1   # Reduce repetition
+  stop_sequences:
+    - "```"
+    - "\n\nUser:"
+    - "\n\nExample:"

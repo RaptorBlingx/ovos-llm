@@ -1,0 +1,44 @@
+{
+  "name": "EnMS Energy Management Skill",
+  "skill_id": "enms-ovos-skill",
+  "version": "0.1.0",
+  "author": "OVOS EnMS Team",
+  "description": "Industrial voice assistant for Energy Management System (EnMS) integration. Provides real-time energy monitoring, machine status, anomaly detection, and forecasting through natural language queries.",
+  "license": "Apache-2.0",
+  "url": "https://github.com/wasabi-eu/enms-ovos-skill",
+  "category": "Productivity",
+  "tags": [
+    "energy",
+    "industrial",
+    "monitoring",
+    "enms",
+    "iso50001",
+    "manufacturing",
+    "iot"
+  ],
+  "platforms": [
+    "linux",
+    "arm"
+  ],
+  "requirements": {
+    "python": ">=3.11",
+    "skill": [
+      "ovos-workshop>=0.0.15"
+    ]
+  },
+  "incompatible_skills": [],
+  "credits": [
+    "EnMS API Team",
+    "OVOS Community"
+  ],
+  "examples": [
+    "What's the power consumption of Compressor-1?",
+    "How much energy did Boiler-1 use yesterday?",
+    "Is HVAC-Main running?",
+    "Show me factory overview",
+    "Top 3 energy consumers",
+    "Compare Compressor-1 and Boiler-1",
+    "Detect anomalies for Compressor-1 today",
+    "Forecast energy for tomorrow"
+  ]
+}

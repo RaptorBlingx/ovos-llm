@@ -1,0 +1,8 @@
+{% if anomalies %}
+Detected {{ anomalies | length }} anomalies:
+{% for anomaly in anomalies[:3] %}
+{{ anomaly.machine }}: {{ anomaly.severity }} severity at {{ anomaly.timestamp | voice_time }}
+{% endfor %}
+{% else %}
+No anomalies detected.
+{% endif %}

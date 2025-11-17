@@ -1,0 +1,1 @@
+{{ machine }} consumed {{ energy_kwh | voice_unit('kWh') }}{% if time_range %} {{ time_range | voice_time }}{% endif %}.

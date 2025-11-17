@@ -1,0 +1,8 @@
+Comparing {{ machines[0] }} and {{ machines[1] }}:
+{{ machines[0] }}: {{ comparison[0].energy_kwh | voice_unit('kWh') }}
+{{ machines[1] }}: {{ comparison[1].energy_kwh | voice_unit('kWh') }}
+{% if comparison[0].energy_kwh > comparison[1].energy_kwh %}
+{{ machines[0] }} used {{ diff_kwh | voice_unit('kWh') }} more.
+{% else %}
+{{ machines[1] }} used {{ diff_kwh | voice_unit('kWh') }} more.
+{% endif %}

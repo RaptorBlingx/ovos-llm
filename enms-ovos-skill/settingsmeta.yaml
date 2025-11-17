@@ -1,0 +1,74 @@
+---
+skillMetadata:
+  sections:
+    - name: EnMS API Configuration
+      fields:
+        - name: enms_api_base_url
+          type: text
+          label: EnMS API Base URL
+          value: http://10.33.10.109:8001/api/v1
+          placeholder: http://your-server/api/analytics/api/v1
+          
+    - name: LLM Configuration
+      fields:
+        - name: llm_model_path
+          type: text
+          label: Qwen3 Model Path
+          value: ./models/qwen3-1.7b-instruct-q4_k_m.gguf
+          placeholder: /path/to/qwen3-1.7b-instruct-q4_k_m.gguf
+          
+        - name: llm_temperature
+          type: number
+          label: LLM Temperature
+          value: 0.1
+          placeholder: 0.1
+          
+        - name: llm_max_tokens
+          type: number
+          label: LLM Max Tokens
+          value: 256
+          placeholder: 256
+          
+    - name: Validation Settings
+      fields:
+        - name: confidence_threshold
+          type: number
+          label: Confidence Threshold
+          value: 0.85
+          placeholder: 0.85
+          
+        - name: enable_fuzzy_matching
+          type: checkbox
+          label: Enable Fuzzy Machine Name Matching
+          value: true
+          
+    - name: Response Settings
+      fields:
+        - name: voice_optimized
+          type: checkbox
+          label: Voice-Optimized Responses
+          value: true
+          
+        - name: include_units
+          type: checkbox
+          label: Include Units in Responses
+          value: true
+          
+    - name: Performance Settings
+      fields:
+        - name: api_timeout_seconds
+          type: number
+          label: API Timeout (seconds)
+          value: 30
+          placeholder: 30
+          
+        - name: enable_caching
+          type: checkbox
+          label: Enable Response Caching
+          value: true
+          
+        - name: cache_ttl_seconds
+          type: number
+          label: Cache TTL (seconds)
+          value: 300
+          placeholder: 300
