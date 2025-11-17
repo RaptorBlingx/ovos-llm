@@ -132,13 +132,16 @@ class Qwen3Parser:
         logger.info("llm_inference_start", utterance=utterance)
         
         try:
-            # Call LLM with JSON mode forcing structured output
+            # Call LLM with stricter parameters to force JSON output
             response = self.llm(
                 prompt,
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
-                stop=["```", "\n\nUser:", "\n\nExample:"],
-                echo=False
+                stop=["```", "\n\nUser:", "\n\nExample:", "User:"],  # Stop before repeating
+                echo=False,
+                repeat_penalty=1.2,  # Penalize repetition
+                top_p=0.95,
+                top_k=40
             )
             
             # Extract generated text
@@ -192,42 +195,16 @@ class Qwen3Parser:
     
     def _build_prompt(self, utterance: str) -> str:
         """
-        Build prompt with system instructions and few-shot examples
-        
-        Following SOTA LLM prompting best practices:
-        - Clear task definition
-        - JSON schema specification
-        - Few-shot examples (5-7 examples)
-        - Explicit output format
+        Build prompt - simplified for Qwen3 reliability
         """
-        return f"""You are an intent classifier for an industrial energy management system.
+        return f"""Extract intent from query. Output ONLY valid JSON.
 
-Extract intent and entities from user queries about machines, energy, power, status, and factory operations.
+Schema:
+{{"intent": "intent_name", "confidence": 0.0-1.0, "entities": {{"machine": "name or null", "metric": "energy|power|status or null"}}}}
 
-Output valid JSON with this structure:
-{{
-  "intent": "intent_name",
-  "confidence": 0.0-1.0,
-  "entities": {{
-    "machine": "machine_name or null",
-    "metric": "energy|power|status|cost or null",
-    "time_range": "today|yesterday|last_week|24h or null",
-    "limit": number or null
-  }}
-}}
-
-Intent types:
-- energy_query: Energy consumption queries
-- power_query: Power demand queries
-- machine_status: Machine status/health checks
-- factory_overview: Factory-wide summaries
-- ranking: Top N consumers
-- comparison: Compare machines
-- anomaly_detection: Detect anomalies
-- forecast: Predict future usage
+Intents: energy_query, power_query, machine_status, factory_overview, ranking, comparison, anomaly_detection
 
 Examples:
-
 User: "What's the power consumption of Compressor-1?"
 {{"intent": "power_query", "confidence": 0.95, "entities": {{"machine": "Compressor-1", "metric": "power"}}}}
 
@@ -235,21 +212,10 @@ User: "How much energy did Boiler-1 use yesterday?"
 {{"intent": "energy_query", "confidence": 0.93, "entities": {{"machine": "Boiler-1", "metric": "energy", "time_range": "yesterday"}}}}
 
 User: "Is HVAC-Main running?"
-{{"intent": "machine_status", "confidence": 0.97, "entities": {{"machine": "HVAC-Main", "metric": "status"}}}}
+{{"intent": "machine_status", "confidence": 0.97, "entities": {{"machine": "HVAC-Main"}}}}
 
-User: "Show me factory overview"
+User: "Factory overview"
 {{"intent": "factory_overview", "confidence": 0.90, "entities": {{}}}}
-
-User: "Top 3 energy consumers"
-{{"intent": "ranking", "confidence": 0.92, "entities": {{"metric": "energy", "limit": 3}}}}
-
-User: "Compare Compressor-1 and Boiler-1"
-{{"intent": "comparison", "confidence": 0.94, "entities": {{"machine": "Compressor-1,Boiler-1"}}}}
-
-User: "Detect anomalies for Compressor-1 today"
-{{"intent": "anomaly_detection", "confidence": 0.91, "entities": {{"machine": "Compressor-1", "time_range": "today"}}}}
-
-Now extract intent from this query:
 
 User: "{utterance}"
 """
