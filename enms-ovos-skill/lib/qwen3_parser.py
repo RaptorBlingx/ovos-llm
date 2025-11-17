@@ -5,12 +5,15 @@ Grammar-constrained JSON output for zero hallucination risk
 from typing import Dict, Any, Optional
 from pathlib import Path
 import json
+import time
 import structlog
 
 try:
     from llama_cpp import Llama
 except ImportError:
     Llama = None
+
+from .observability import record_llm_latency, record_error, set_model_status
 
 logger = structlog.get_logger(__name__)
 

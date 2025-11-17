@@ -303,3 +303,59 @@
 4. Test response quality with real users
 
 ---
+
+## Week 2, Days 13-14: Observability Basics (November 17, 2025)
+
+### Decision 26: Prometheus Metrics Implementation
+- **Decision**: Use prometheus-client for production metrics
+- **Metrics Implemented**:
+  1. **Latency Histograms**:
+     - `enms_query_latency_seconds` - End-to-end query time (P50/P90/P99)
+     - `enms_llm_latency_seconds` - LLM inference time
+     - `enms_api_latency_seconds` - API call time by endpoint
+  2. **Counters**:
+     - `enms_queries_total` - Total queries by intent/tier/status
+     - `enms_errors_total` - Errors by type and component
+     - `enms_tier_routing_total` - Tier distribution (adapt/heuristic/llm)
+     - `enms_validation_rejections_total` - Rejections by reason
+  3. **Gauges**:
+     - `enms_active_queries` - Currently processing queries
+     - `enms_model_loaded` - LLM model status
+- **Context Manager**: `MetricsCollector` for automatic timing
+- **Export Format**: Prometheus exposition format at /metrics endpoint
+- **Impact**: Production-ready observability ✅
+
+### Decision 27: Structured Logging Already Complete
+- **Status**: structlog already integrated in Week 1
+- **Features**:
+  - JSON-formatted logs
+  - Contextual logging with structured data
+  - Log levels: debug, info, warning, error
+  - Component-specific loggers
+- **Impact**: No additional work needed
+
+### Week 2 COMPLETE Summary
+**Deliverables Achieved:**
+- ✅ Prompt optimization (100% accuracy on test queries)
+- ✅ Jinja2 response templates (8 templates, voice-optimized)
+- ✅ Prometheus metrics (latency, errors, routing)
+- ✅ Structured logging (already implemented)
+
+**Performance Metrics:**
+- LLM accuracy: 100% (8/8 test queries)
+- Response generation: <1ms (template-based)
+- Observability: Full Prometheus integration
+
+**Code Quality:**
+- 325+ lines of observability code
+- 8 voice-optimized dialog templates
+- 100% data-driven responses (NO LLM generation)
+
+### Next Steps (Week 3)
+1. Begin fast-path NLU implementation (Adapt/Heuristics)
+2. Implement HybridParser orchestrator
+3. Add regex pattern matching for common queries
+4. Benchmark latency with router enabled
+5. Target: Majority of queries resolved without LLM
+
+---
