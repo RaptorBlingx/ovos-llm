@@ -321,9 +321,9 @@ Testing: pytest v8.0.0+ with pytest-asyncio
 **Goal**: Introduce fast deterministic/heuristic paths to reduce latency for common queries.
 
 #### Days 15-16: Heuristic Router
-- [ ] Implement `HybridParser` orchestrator in `lib/intent_parser.py`
-- [ ] Add cheap regex/pattern rules for "top N", simple status, factory overview
-- [ ] Decide routing policy (fast path vs LLM) and confidence thresholds
+- [x] Implement `HybridParser` orchestrator in `lib/intent_parser.py`
+- [x] Add cheap regex/pattern rules for "top N", simple status, factory overview
+- [x] Decide routing policy (fast path vs LLM) and confidence thresholds
 
 #### Days 17-18: Adapt / Padatious (Optional but Recommended)
 - [ ] Add Adapt and/or Padatious intent definitions for most frequent patterns
