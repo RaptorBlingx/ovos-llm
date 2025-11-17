@@ -88,6 +88,11 @@ export GRADIO_SERVER_PORT=7863
 python scripts/chat_gui.py
 ```
 
+**"Event loop is closed" error:**
+- Fixed in latest version
+- GUI now uses persistent event loop (self.loop)
+- Restart GUI if you see this error
+
 **LLM slow on first run:**
 - Model loading takes ~2s (1.2GB GGUF)
 - First inference ~15-25s (compiling)
