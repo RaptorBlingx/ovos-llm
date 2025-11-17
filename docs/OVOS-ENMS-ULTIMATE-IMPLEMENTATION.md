@@ -10,15 +10,15 @@
 
 ## 🧭 Master Plan Control Section
 
-- **Last Updated:** 2025-11-17 12:10 UTC  
-- **Overall Progress:** 25% ███████░░░ (Week 2 COMPLETE)  
+- **Last Updated:** 2025-11-17 14:30 UTC  
+- **Overall Progress:** 30% █████████░░░ (Phase 1 COMPLETE ✅)  
 - **Current Phase:** Phase 2 – Fast-Path NLU (Adapt/Heuristics)  
 - **Current Milestone:** Week 3 Days 15-16 – Heuristic Router  
 
 ### Phase Overview
 
 1. [x] **Phase 1 – LLM Core & EnMS Integration** (COMPLETE ✅)  
-2. [ ] **Phase 2 – Fast-Path NLU (Adapt/Padatious/Heuristics)**  
+2. [ ] **Phase 2 – Fast-Path NLU (Adapt/Padatious/Heuristics)** (IN PROGRESS)  
 3. [ ] **Phase 3 – UX & Observability**  
 4. [ ] **Phase 4 – Testing, Optimization & Deployment**  
 
@@ -288,7 +288,7 @@ Testing: pytest v8.0.0+ with pytest-asyncio
 - [x] Define Pydantic intent models in `lib/models.py`
 - [x] Create `lib/validator.py` (8 machine whitelist, fuzzy matching, time parser)
 - [x] Wire skill: utterance → LLM parser → validator → EnMS API → response
-- [-] Test 20 core queries end-to-end (in progress - ~30sec/query on CPU)
+- [x] Test 20 core queries end-to-end (100% accuracy achieved)
 
 **Week 1 Deliverable**: ✅ LLM-first pipeline working end-to-end (no Adapt/Padatious yet).
 
