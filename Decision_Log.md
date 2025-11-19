@@ -928,6 +928,65 @@ Note: Validator already implemented in Week 1 (lib/validator.py, 280 lines). Wee
 - **Performance Achieved**:
   - P50: 0.18ms (target <200ms) - **1,111x better ⚡**
   - 81% heuristic coverage (target 70-80%) ✅
+
+---
+
+## Week 5, Days 31-35: Conversation Context & UX Polish (November 19, 2025 10:30 UTC)
+
+### Decision 45: Conversation Context Architecture
+- **Implementation**: Session-based conversation manager (330 lines)
+- **Design Choices**:
+  - **Session Timeout**: 30 minutes (configurable)
+  - **History Limit**: 10 turns max (prevents unbounded growth)
+  - **Context Tracking**: last_machine, last_intent, last_metric, last_time_range
+  - **Follow-up Patterns**: "What about X?", "How about Y?", "And the..."
+- **Rationale**: Enables natural multi-turn conversations without state explosion
+- **Impact**: Users can ask "What about Boiler-1?" after "Compressor-1 power"
+
+### Decision 46: Clarification System
+- **Implementation**: Automatic detection of incomplete queries
+- **Clarifications**:
+  - Unknown intent → "Could you rephrase that?"
+  - Missing machine → "Which machine would you like to know about?"
+  - Missing comparison → "Which machines would you like to compare?"
+- **Rationale**: Better UX than errors or guessing
+- **Impact**: Guides users to successful queries
+
+### Decision 47: Voice Feedback System
+- **Implementation**: VoiceFeedbackManager (400 lines)
+- **Features**:
+  - **Acknowledgments**: "Let me check..." (varies by intent)
+  - **Progress Indicators**: "Still working..." for >500ms queries
+  - **Error Messages**: Friendly explanations with suggestions
+  - **Help System**: General help + 8 example queries
+  - **Speech Formatting**: "kWh" → "kilowatt hours"
+- **Rationale**: Natural voice interactions require verbal feedback
+- **Impact**: Professional UX comparable to commercial assistants
+
+### Decision 48: Confirmation Flows
+- **Implementation**: Confirmation requests for critical actions
+- **Actions**: shutdown, restart, reset, delete
+- **Example**: "Are you sure you want to shut down Boiler-1?"
+- **Rationale**: Safety for destructive operations
+- **Impact**: Prevents accidental machine control
+
+### Decision 49: Week 5 Deliverables Complete
+- **Status**: ✅ ALL WEEK 5 OBJECTIVES ACHIEVED (Days 29-35)
+- **Deliverables**:
+  1. ✅ Template system (Week 2) - 9 Jinja2 templates
+  2. ✅ ConversationContextManager (330 lines) - Multi-turn support
+  3. ✅ VoiceFeedbackManager (400 lines) - Natural voice feedback
+  4. ✅ Help system with 8 example queries
+  5. ✅ Confirmation flows for critical actions
+  6. ✅ Speech formatting (technical term → voice-friendly)
+  7. ✅ Test suites (400 lines conversation, 250 lines voice)
+- **Test Results**:
+  - Conversation context: 8/8 tests passed ✅
+  - Voice feedback: 9/9 tests passed ✅
+  - Session management working (creation, expiration, cleanup)
+  - Follow-up patterns validated ("What about X?")
+  - Clarification system validated
+- **Progress**: Week 5 COMPLETE - 65% overall
   - 100% test pass rate ✅
 
 ### WEEK 3 COMPLETE SUMMARY
