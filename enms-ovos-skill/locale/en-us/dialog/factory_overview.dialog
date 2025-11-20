@@ -1,1 +1,5 @@
-Factory overview: {{ total_machines }} machines, {{ active_machines }} active. Total power: {{ total_power_kw | voice_unit('kW') }}. Today's energy: {{ total_energy_kwh | voice_unit('kWh') }}.
+{% if total_machines is defined %}
+Factory overview: {{ total_machines }} machines, {{ active_machines }} active. Total power: {{ total_power_kw|round(2) }} kW. Today's energy: {{ total_energy_kwh|round(2) }} kWh.
+{% elif total_energy is defined %}
+The factory has consumed {{ total_energy|round(0) }} kilowatt hours total. Current energy rate is {{ energy_per_hour|round(0) }} kilowatt hours per hour. Estimated cost is ${{ estimated_cost|round(2) }}. Carbon footprint is {{ carbon_footprint|round(0) }} kilograms.
+{% endif %}

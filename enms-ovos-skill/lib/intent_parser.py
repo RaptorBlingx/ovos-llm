@@ -20,6 +20,7 @@ import structlog
 from lib.models import Intent, IntentType
 from lib.qwen3_parser import Qwen3Parser
 from lib.adapt_parser import AdaptParser
+from lib.time_parser import TimeRangeParser
 from lib.observability import (
     tier_routing,
     query_latency,
@@ -61,12 +62,35 @@ class HeuristicRouter:
     ]
     
     # Regex patterns (compiled for speed)
+    # CRITICAL: Order matters! More specific patterns first
     PATTERNS = {
+        # NEW: Forecast (check before power_query to catch "predict power")
+        'forecast': [
+            re.compile(r'\bforecast', re.IGNORECASE),
+            re.compile(r'\bpredict.*?(?:energy|power|consumption)', re.IGNORECASE),
+            re.compile(r'\bwhen.*?peak\s+demand', re.IGNORECASE),
+        ],
+        
+        # NEW: Baseline queries (check before ranking to avoid "how accurate" → ranking)
+        'baseline': [
+            re.compile(r'\bbaseline\s+(?:model|prediction)', re.IGNORECASE),
+            re.compile(r'\bexplain.*?baseline', re.IGNORECASE),
+            re.compile(r'\bwhen.*?baseline.*?trained', re.IGNORECASE),
+            re.compile(r'\bhow\s+accurate.*?(?:model|baseline)', re.IGNORECASE),
+            re.compile(r'\bkey\s+energy\s+drivers', re.IGNORECASE),
+            re.compile(r'\bdoes.*?have.*?baseline', re.IGNORECASE),
+        ],
+        
         # Top N ranking queries (CRITICAL: handle "top 3", "top 5 machines", etc.)
         'ranking': [
             re.compile(r'\btop\s+(\d+)\s*(?:machines?|consumers?)?\b', re.IGNORECASE),
             re.compile(r'\bshow\s+(?:me\s+)?(?:the\s+)?top\s+(\d+)', re.IGNORECASE),
             re.compile(r'\b(\d+)\s+top\s+(?:machines?|consumers?)', re.IGNORECASE),
+            # NEW: Efficiency/cost ranking (which machine = ranking, not machine extraction)
+            re.compile(r'\brank.*?by\s+(?:efficiency|cost)', re.IGNORECASE),
+            re.compile(r'\bwhich\s+machine.*?most\s+(?:efficient|cost-effective)', re.IGNORECASE),
+            re.compile(r'\bwhich\s+machine.*?(?:uses?|consumes?)\s+(?:the\s+)?most', re.IGNORECASE),
+            re.compile(r'\bwhich\s+machine.*?(?:has|have)\s+(?:the\s+)?most\s+alerts', re.IGNORECASE),
         ],
         
         # Factory-wide queries
@@ -75,6 +99,11 @@ class HeuristicRouter:
             re.compile(r'\btotal\s+(?:factory\s+)?(?:kwh|consumption|energy|power)\b', re.IGNORECASE),
             re.compile(r'\b(?:complete|full)\s+factory\b', re.IGNORECASE),
             re.compile(r'\bfacility\s+(?:overview|status)\b', re.IGNORECASE),
+            # NEW: Multi-factory comparison
+            re.compile(r'\bcompare.*?(?:across|all)\s+factories', re.IGNORECASE),
+            re.compile(r'\bwhich\s+factory', re.IGNORECASE),
+            # NEW: List machines
+            re.compile(r'\blist\s+(?:all\s+)?machines', re.IGNORECASE),
         ],
         
         # Machine status queries
@@ -82,6 +111,10 @@ class HeuristicRouter:
             re.compile(r'\b({})\s+(?:status|online|offline|running|availability)\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\b(?:is|check)\s+({})\s*(?:running|online|offline)?\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\b({})\s+availability\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            # NEW: Energy source queries
+            re.compile(r'\benergy\s+(?:types?|sources?)\s+(?:does|for)\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            re.compile(r'\blist.*?energy\s+sources?\s+for\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            re.compile(r'\bwhat\s+energy.*?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
         ],
         
         # Power queries
@@ -90,6 +123,8 @@ class HeuristicRouter:
             re.compile(r'\bpower\s+(?:of\s+)?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             # Handle short forms like "HVAC watts" (extract HVAC from HVAC-EU-North)
             re.compile(r'\b(HVAC|Boiler|Compressor|Conveyor|Turbine|Injection)[^\s]*\s+(?:power|watts?|kw)\b', re.IGNORECASE),
+            # NEW: Steam flow rate (technically power query for steam)
+            re.compile(r'\bsteam\s+flow\s+rate', re.IGNORECASE),
         ],
         
         # Energy queries
@@ -97,6 +132,13 @@ class HeuristicRouter:
             re.compile(r'\b({})\s+(?:energy|kwh|consumption)\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\benergy\s+(?:of\s+)?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\b({})\s+(?:used|consumed)'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            # NEW: Multi-energy support
+            re.compile(r'\b(?:natural\s+gas|electricity|steam|compressed\s+air)\s+(?:consumption|usage|readings?)', re.IGNORECASE),
+            re.compile(r'\bshow.*?(?:natural\s+gas|steam|electricity|compressed\s+air)', re.IGNORECASE),
+            # NEW: Energy breakdown
+            re.compile(r'\benergy\s+breakdown', re.IGNORECASE),
+            re.compile(r'\bsummarize.*?energy.*?consumption', re.IGNORECASE),
+            re.compile(r'\btotal\s+energy\s+usage', re.IGNORECASE),
         ],
         
         # Comparison queries
@@ -109,6 +151,8 @@ class HeuristicRouter:
                 '|'.join(re.escape(m) for m in MACHINES),
                 '|'.join(re.escape(m) for m in MACHINES)
             ), re.IGNORECASE),
+            # NEW: Performance comparison
+            re.compile(r'\bcompare.*?performance', re.IGNORECASE),
         ],
     }
     
@@ -154,36 +198,80 @@ class HeuristicRouter:
         return None
     
     def _build_intent(self, intent_type: str, match: re.Match, utterance: str) -> Optional[Dict]:
-        """Build intent dictionary from regex match"""
+        """
+        Build intent dictionary from regex match
+        
+        CRITICAL: Returns LLM-compatible format (string intent, flat structure)
+        This ensures validator compatibility across all tiers
+        """
         try:
             if intent_type == 'ranking':
-                # Extract N from "top N"
-                limit = int(match.group(1))
+                # Extract N from "top N" if present
+                limit = None
+                try:
+                    limit = int(match.group(1))
+                except (IndexError, ValueError):
+                    limit = 5  # Default for "which machine uses most"
+                
+                # Determine ranking metric from query
+                metric = 'energy'  # default
+                utterance_lower = utterance.lower()
+                if 'efficiency' in utterance_lower or 'efficient' in utterance_lower:
+                    metric = 'efficiency'
+                elif 'cost' in utterance_lower:
+                    metric = 'cost'
+                elif 'alert' in utterance_lower:
+                    metric = 'alerts'
+                
                 return {
-                    'intent': IntentType.RANKING,
-                    'confidence': 0.95,  # High confidence for exact pattern match
-                    'entities': {
-                        'limit': limit,
-                        'metric': 'energy'  # Default to energy ranking
-                    }
+                    'intent': 'ranking',
+                    'confidence': 0.95,
+                    'limit': limit,
+                    'metric': metric,
+                    'ranking_metric': metric  # NEW: explicit ranking metric
+                }
+            
+            elif intent_type == 'baseline':
+                # Baseline queries - may or may not have machine name
+                machine = None
+                for m in self.MACHINES:
+                    if m in utterance:
+                        machine = m
+                        break
+                
+                return {
+                    'intent': 'baseline',
+                    'confidence': 0.95,
+                    'machine': machine
+                }
+            
+            elif intent_type == 'forecast':
+                # Forecast queries - may or may not have machine name
+                machine = None
+                for m in self.MACHINES:
+                    if m in utterance:
+                        machine = m
+                        break
+                
+                return {
+                    'intent': 'forecast',
+                    'confidence': 0.95,
+                    'machine': machine
                 }
             
             elif intent_type == 'factory_overview':
                 return {
-                    'intent': IntentType.FACTORY_OVERVIEW,
-                    'confidence': 0.95,
-                    'entities': {}
+                    'intent': 'factory_overview',
+                    'confidence': 0.95
                 }
             
             elif intent_type == 'machine_status':
                 # Extract machine name from match
                 machine = match.group(1)
                 return {
-                    'intent': IntentType.MACHINE_STATUS,
+                    'intent': 'machine_status',
                     'confidence': 0.95,
-                    'entities': {
-                        'machine': self._normalize_machine_name(machine)
-                    }
+                    'machine': self._normalize_machine_name(machine)
                 }
             
             elif intent_type == 'power_query':
@@ -201,34 +289,29 @@ class HeuristicRouter:
                         normalized_machine = machine
                 
                 return {
-                    'intent': IntentType.POWER_QUERY,
+                    'intent': 'power_query',
                     'confidence': 0.95,
-                    'entities': {
-                        'machine': normalized_machine,
-                        'metric': 'power'
-                    }
+                    'machine': normalized_machine,
+                    'metric': 'power'
                 }
             
             elif intent_type == 'energy_query':
                 machine = match.group(1)
                 return {
-                    'intent': IntentType.ENERGY_QUERY,
+                    'intent': 'energy_query',
                     'confidence': 0.95,
-                    'entities': {
-                        'machine': self._normalize_machine_name(machine),
-                        'metric': 'energy'
-                    }
+                    'machine': self._normalize_machine_name(machine),
+                    'metric': 'energy'
                 }
             
             elif intent_type == 'comparison':
                 machine1 = match.group(1)
                 machine2 = match.group(2)
+                # Return comma-separated machines (will be split by validator)
                 return {
-                    'intent': IntentType.COMPARISON,
+                    'intent': 'comparison',
                     'confidence': 0.95,
-                    'entities': {
-                        'machine': f"{self._normalize_machine_name(machine1)},{self._normalize_machine_name(machine2)}"
-                    }
+                    'machines': f"{self._normalize_machine_name(machine1)},{self._normalize_machine_name(machine2)}"
                 }
             
             return None
@@ -321,6 +404,59 @@ class HybridParser:
                 result = self.llm.parse(utterance)
                 tier_used = RoutingTier.LLM
                 self.stats['llm'] += 1
+            
+            # Parse time_range if present (from ANY tier, especially LLM)
+            # Check both result['entities'] dict and result['time_range'] string
+            time_range_str = None
+            
+            if result and 'entities' in result:
+                entities = result.get('entities', {})
+                if isinstance(entities, dict):
+                    time_range_str = entities.get('time_range')
+            
+            # Try to extract time range from utterance if not in entities
+            if not time_range_str:
+                # Look for common time patterns in utterance
+                import re
+                
+                # "from X to Y" - greedy match
+                match = re.search(r'from\s+(.+?)\s+to\s+(.+?)(?:\s+(?:am|pm|for|in|at|$))', utterance.lower())
+                if match:
+                    # Reconstruct full range
+                    time_range_str = f"{match.group(1)} to {match.group(2)}"
+                else:
+                    # Try other patterns
+                    for pattern in [
+                        r'between\s+(.+?)\s+and\s+(.+?)(?:\s|$)',
+                        r'(yesterday|today|last\s+\d+\s+(?:hour|day|week)s?)',
+                    ]:
+                        match = re.search(pattern, utterance.lower())
+                        if match:
+                            time_range_str = match.group(0)
+                            break
+            
+            # Parse the time range if found
+            if time_range_str:
+                start_dt, end_dt = TimeRangeParser.parse(time_range_str)
+                
+                if start_dt and end_dt:
+                    # Ensure entities dict exists
+                    if 'entities' not in result:
+                        result['entities'] = {}
+                    
+                    result['entities']['time_range'] = time_range_str
+                    result['entities']['start_time'] = start_dt
+                    result['entities']['end_time'] = end_dt
+                    
+                    self.logger.info("time_range_parsed",
+                                   raw=time_range_str,
+                                   start=start_dt.isoformat(),
+                                   end=end_dt.isoformat(),
+                                   tier=tier_used)
+                else:
+                    self.logger.warning("time_range_parse_failed", 
+                                      raw=time_range_str,
+                                      tier=tier_used)
             
             # Add routing metadata
             result['tier'] = tier_used

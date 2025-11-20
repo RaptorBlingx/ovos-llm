@@ -43,10 +43,25 @@ class Intent(BaseModel):
     # Entities
     machine: Optional[str] = None
     machines: Optional[List[str]] = None
-    metric: Optional[str] = None  # energy, power, cost, etc.
+    metric: Optional[str] = None  # energy, power, cost, efficiency, etc.
     time_range: Optional[TimeRange] = None
     aggregation: Optional[str] = None  # sum, avg, max, min
     limit: Optional[int] = None  # for top N queries
+    
+    # NEW: Multi-energy support
+    energy_source: Optional[str] = None  # electricity, natural_gas, steam, compressed_air
+    energy_sources: Optional[List[str]] = None  # for multi-source queries
+    
+    # NEW: Multi-factory support
+    factory: Optional[str] = None
+    factories: Optional[List[str]] = None
+    
+    # NEW: Ranking criteria
+    ranking_metric: Optional[str] = None  # efficiency, cost, energy, alerts
+    
+    # NEW: Metadata requests
+    include_metadata: bool = False
+    include_breakdown: bool = False
     
     # Raw utterance
     utterance: str

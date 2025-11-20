@@ -1,0 +1,5 @@
+{% if status == "healthy" %}
+Yes, the energy management system is online and healthy. {{ active_machines }} machines are currently active with {{ baseline_models }} trained baseline models.
+{% else %}
+The system status is {{ status }}. Database: {{ database.status }}.
+{% endif %}

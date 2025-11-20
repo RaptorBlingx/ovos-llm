@@ -1,1 +1,8 @@
-{{ machine }} is currently using {{ power_kw | voice_unit('kW') }}{% if time_range %} {{ time_range | voice_time }}{% endif %}.
+{% if current_status is defined and current_status.power_kw is defined %}
+{# Machine-specific power from current_status #}
+{{ machine_name }} is currently using {{ current_status.power_kw|round(2) }} kilowatts.
+{% elif machine %}
+{{ machine }} is currently using {{ power_kw|round(2) }} kW{% if time_range %} {{ time_range | voice_time }}{% endif %}.
+{% elif peak_power is defined %}
+Current power consumption is {{ avg_power|round(0) }} kilowatts average, with a peak of {{ peak_power|round(0) }} kilowatts.
+{% endif %}

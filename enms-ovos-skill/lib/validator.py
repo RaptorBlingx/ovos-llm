@@ -34,6 +34,25 @@ VALID_METRICS = [
     "efficiency", "performance"
 ]
 
+# NEW: Energy source validation
+VALID_ENERGY_SOURCES = [
+    "electricity", "electric", "electrical",
+    "natural_gas", "natural gas", "gas",
+    "steam",
+    "compressed_air", "compressed air", "air"
+]
+
+# NEW: Factory validation (will be loaded from API)
+VALID_FACTORIES = [
+    "Demo Manufacturing Plant",
+    "European Facility"
+]
+
+# NEW: Ranking metrics
+VALID_RANKING_METRICS = [
+    "energy", "power", "cost", "efficiency", "alerts", "consumption"
+]
+
 VALID_INTENTS = [intent.value for intent in IntentType]
 
 
@@ -90,16 +109,31 @@ class ENMSValidator:
         
         # Layer 1: Pydantic schema validation
         try:
+            # Handle both flat and nested entity structures
+            entities = llm_output.get("entities", {})
+            
+            # Get machine(s) - check both flat and nested locations
+            machine = llm_output.get("machine") or entities.get("machine")
+            machines_str = llm_output.get("machines") or entities.get("machines")
+            
+            # Parse machines list (comma-separated or array)
+            machines_list = None
+            if machines_str:
+                if isinstance(machines_str, str):
+                    machines_list = [m.strip() for m in machines_str.split(',') if m.strip()]
+                elif isinstance(machines_str, list):
+                    machines_list = machines_str
+            
             intent = Intent(
                 intent=IntentType(llm_output.get("intent", "unknown")),
                 confidence=float(llm_output.get("confidence", 0.0)),
                 utterance=llm_output.get("utterance", ""),
-                machine=llm_output.get("entities", {}).get("machine"),
-                machines=self._parse_machine_list(llm_output.get("entities", {}).get("machine")),
-                metric=llm_output.get("entities", {}).get("metric"),
-                time_range=self._parse_time_range(llm_output.get("entities", {}).get("time_range")),
-                aggregation=llm_output.get("entities", {}).get("aggregation"),
-                limit=llm_output.get("entities", {}).get("limit")
+                machine=machine,
+                machines=machines_list,
+                metric=llm_output.get("metric") or entities.get("metric"),
+                time_range=self._parse_time_range(llm_output.get("time_range") or entities.get("time_range")),
+                aggregation=llm_output.get("aggregation") or entities.get("aggregation"),
+                limit=llm_output.get("limit") or entities.get("limit")
             )
         except (ValidationError, ValueError) as e:
             errors.append(f"Schema validation failed: {str(e)}")
@@ -118,7 +152,10 @@ class ENMSValidator:
             return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
         
         # Layer 4: Machine name validation
-        if intent.machine:
+        # Skip machine validation for factory-wide intents
+        factory_wide_intents = [IntentType.FACTORY_OVERVIEW, IntentType.RANKING, IntentType.COST_ANALYSIS]
+        
+        if intent.machine and intent.intent not in factory_wide_intents:
             machine_valid, matched_machine, suggestion = self._validate_machine(intent.machine)
             if not machine_valid:
                 errors.append(f"Invalid machine name: '{intent.machine}'")
@@ -126,10 +163,15 @@ class ENMSValidator:
                     suggestions.append(f"Did you mean '{suggestion}'?")
                 return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
             
-            # Update intent with normalized machine name
+            # Update intent with normalized machine name (Pydantic v2 immutability)
             if matched_machine and matched_machine != intent.machine:
                 warnings.append(f"Normalized '{intent.machine}' to '{matched_machine}'")
-                intent.machine = matched_machine
+                intent = intent.model_copy(update={'machine': matched_machine})
+        
+        # For factory-wide intents, clear the machine field if it was incorrectly extracted
+        if intent.intent in factory_wide_intents and intent.machine:
+            warnings.append(f"Ignoring machine '{intent.machine}' for factory-wide query")
+            intent = intent.model_copy(update={'machine': None})
         
         # Layer 5: Multi-machine validation (for comparisons)
         if intent.machines:
@@ -146,7 +188,7 @@ class ENMSValidator:
             if errors:
                 return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
             
-            intent.machines = validated_machines
+            intent = intent.model_copy(update={'machines': validated_machines})
         
         # Layer 6: Metric validation (optional - soft validation)
         if intent.metric:
