@@ -1,4 +1,4 @@
 Machine comparison:
 {% for m in machines %}
-{{ loop.index }}. {{ m.machine }}: {{ m.energy_kwh | voice_unit('kWh') }} today ({{ m.power_kw | voice_unit('kW') }} current power)
+{{ loop.index }}. {{ m.machine }}: {{ m.energy_kwh|round(2) }} kWh today ({{ m.power_kw|round(2) }} kW current power)
 {% endfor %}

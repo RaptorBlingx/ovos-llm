@@ -208,21 +208,39 @@ class ResponseFormatter:
         
         return f"{number_word} {unit_word}"
     
-    def _voice_time(self, time_str: str) -> str:
+    def _voice_time(self, time_value) -> str:
         """
         Convert time to voice-friendly format
         
         Args:
-            time_str: ISO 8601 timestamp or relative time
+            time_value: datetime object, ISO 8601 string, or relative time string
             
         Returns:
             Voice-optimized time string
             
         Examples:
-            "2025-11-17T10:30:00Z" → "today at ten thirty AM"
+            datetime(2025, 10, 27, 15, 0) → "October 27 at 3 PM"
+            "today" → "today"
             "24h" → "in the last twenty-four hours"
-            "yesterday" → "yesterday"
         """
+        from datetime import datetime
+        
+        # Handle datetime objects
+        if isinstance(time_value, datetime):
+            # Format as "Month Day at Hour AM/PM"
+            hour = time_value.hour
+            ampm = "AM" if hour < 12 else "PM"
+            display_hour = hour if hour <= 12 else hour - 12
+            if display_hour == 0:
+                display_hour = 12
+            
+            month_names = ["", "January", "February", "March", "April", "May", "June",
+                          "July", "August", "September", "October", "November", "December"]
+            return f"{month_names[time_value.month]} {time_value.day} at {display_hour} {ampm}"
+        
+        # Handle string values
+        time_str = str(time_value)
+        
         # Simplified - full implementation would parse ISO 8601
         if time_str in ["today", "yesterday", "last_week"]:
             return time_str.replace("_", " ")

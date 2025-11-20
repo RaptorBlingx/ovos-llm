@@ -215,7 +215,7 @@ class ConversationContextManager:
                 logger.info("resolving_machine_context",
                            query=query,
                            resolved_machine=session.last_machine)
-                intent.machine = session.last_machine
+                intent = intent.model_copy(update={'machine': session.last_machine})
         
         # If no intent type but query looks like follow-up
         if intent.intent == IntentType.UNKNOWN and is_followup:
@@ -223,7 +223,7 @@ class ConversationContextManager:
                 logger.info("resolving_intent_context",
                            query=query,
                            resolved_intent=session.last_intent.value)
-                intent.intent = session.last_intent
+                intent = intent.model_copy(update={'intent': session.last_intent})
         
         # If no metric but we have context
         if not intent.metric and session.last_metric:
@@ -232,7 +232,7 @@ class ConversationContextManager:
                 logger.info("resolving_metric_context",
                            query=query,
                            resolved_metric=session.last_metric)
-                intent.metric = session.last_metric
+                intent = intent.model_copy(update={'metric': session.last_metric})
         
         return intent
     

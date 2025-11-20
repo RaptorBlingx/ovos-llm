@@ -1,4 +1,4 @@
 Top {{ limit }} {{ metric | lower }} consumers:
 {% for machine in ranking %}
-{{ machine.rank }}. {{ machine.machine_name }}: {{ machine.value | voice_unit(unit) }} ({{ machine.percentage | voice_number }}% of total)
+{{ machine.rank }}. {{ machine.machine_name }}: {{ machine.value|round(2) }} {{ unit }} ({{ machine.percentage|round(1) }}% of total)
 {% endfor %}

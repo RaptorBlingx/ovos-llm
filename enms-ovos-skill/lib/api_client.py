@@ -222,6 +222,10 @@ class ENMSClient:
     
     # Factory-Wide Endpoints (NEW - from OVOS endpoints)
     
+    async def get_health(self) -> Dict[str, Any]:
+        """Check EnMS service health status"""
+        return await self._request("GET", "/health")
+    
     async def get_factory_summary(self) -> Dict[str, Any]:
         """Get factory-wide energy summary"""
         return await self._request("GET", "/factory/summary")

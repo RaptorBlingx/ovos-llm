@@ -1,0 +1,5 @@
+{% if machine %}
+{{ machine }} cost: €{{ cost_eur|round(2) }}{% if time_range %} {{ time_range | voice_time }}{% endif %}.
+{% elif estimated_cost is defined %}
+Total energy cost is ${{ estimated_cost|round(2) }}. Daily cost rate is ${{ cost_per_day|round(2) }}.
+{% endif %}
