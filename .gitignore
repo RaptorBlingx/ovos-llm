@@ -49,9 +49,16 @@ logs/
 htmlcov/
 .tox/
 
+# OVOS/Mycroft config (user-specific)
+mycroft.conf
+
 # Environment variables
 .env
 .env.local
+
+# Voice models (large files - download separately)
+*.onnx
+vosk-model-*/
 
 # Temporary files
 tmp/
