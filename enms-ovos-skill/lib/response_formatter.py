@@ -49,8 +49,38 @@ class ResponseFormatter:
         self.env.filters['voice_number'] = self._voice_number
         self.env.filters['voice_unit'] = self._voice_unit
         self.env.filters['voice_time'] = self._voice_time
+        self.env.filters['num'] = self._format_number  # Numeric format (better UX)
         
         logger.info("response_formatter_initialized", template_dir=str(template_dir))
+    
+    def _format_number(self, value: float, precision: int = 1) -> str:
+        """
+        Format number as digits with proper formatting (better UX than words)
+        
+        Args:
+            value: Numeric value
+            precision: Decimal places (default 1)
+            
+        Returns:
+            Formatted number string with thousands separators
+            
+        Examples:
+            47.984 → "48.0"
+            1234.5 → "1,234.5"
+            0.5 → "0.5"
+            1000000 → "1,000,000"
+        """
+        if value is None:
+            return "0"
+        
+        rounded = round(float(value), precision)
+        
+        # For integers or .0, show without decimals
+        if rounded == int(rounded):
+            return f"{int(rounded):,}"
+        
+        # Format with precision and thousands separator
+        return f"{rounded:,.{precision}f}"
     
     def format_response(self, intent_type: str, api_data: Dict[str, Any], 
                        context: Optional[Dict[str, Any]] = None) -> str:

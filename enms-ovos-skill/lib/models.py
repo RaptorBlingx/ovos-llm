@@ -22,6 +22,7 @@ class IntentType(str, Enum):
     BASELINE = "baseline"
     BASELINE_MODELS = "baseline_models"
     BASELINE_EXPLANATION = "baseline_explanation"
+    SEUS = "seus"  # Significant Energy Uses
     KPI = "kpi"
     PERFORMANCE = "performance"
     PRODUCTION = "production"

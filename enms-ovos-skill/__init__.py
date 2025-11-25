@@ -174,6 +174,89 @@ class EnmsSkill(OVOSSkill):
         finally:
             loop.close()
     
+    def _get_factory_wide_drivers(self) -> Dict[str, Any]:
+        """Get aggregated key energy drivers across ALL machines with baseline models.
+        
+        ISO 50001 context: Shows the most impactful energy drivers factory-wide.
+        """
+        all_drivers = []
+        machines_analyzed = []
+        
+        # Get all machines with baseline models
+        machines = self.validator.machine_whitelist
+        
+        for machine_name in machines:
+            try:
+                # Get baseline models for this machine
+                models_response = self._run_async(
+                    self.api_client.list_baseline_models(
+                        seu_name=machine_name,
+                        energy_source="electricity"
+                    )
+                )
+                
+                models = models_response.get('models', [])
+                active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+                
+                if not active_model:
+                    continue
+                
+                # Get explanation with key drivers
+                explanation_response = self._run_async(
+                    self.api_client.get_baseline_model_explanation(
+                        model_id=active_model.get('id'),
+                        include_explanation=True
+                    )
+                )
+                
+                explanation = explanation_response.get('explanation', {})
+                key_drivers = explanation.get('key_drivers', [])
+                
+                # Add machine context to each driver
+                for driver in key_drivers:
+                    driver['machine'] = machine_name
+                    all_drivers.append(driver)
+                
+                machines_analyzed.append(machine_name)
+                
+            except Exception as e:
+                self.logger.warning("factory_driver_fetch_failed", machine=machine_name, error=str(e))
+                continue
+        
+        if not all_drivers:
+            return {'success': False, 'error': 'No baseline models found across factory'}
+        
+        # Aggregate drivers by feature (combine same features across machines)
+        driver_summary = {}
+        for driver in all_drivers:
+            feature = driver.get('human_name', driver.get('feature'))
+            if feature not in driver_summary:
+                driver_summary[feature] = {
+                    'human_name': feature,
+                    'total_impact': 0,
+                    'machines': [],
+                    'direction': driver.get('direction', 'affects')
+                }
+            driver_summary[feature]['total_impact'] += abs(driver.get('absolute_impact', 0))
+            driver_summary[feature]['machines'].append(driver['machine'])
+        
+        # Sort by total impact and get top 5
+        sorted_drivers = sorted(
+            driver_summary.values(),
+            key=lambda x: x['total_impact'],
+            reverse=True
+        )[:5]
+        
+        return {
+            'success': True,
+            'data': {
+                'factory_wide': True,
+                'machines_analyzed': len(machines_analyzed),
+                'top_drivers': sorted_drivers,
+                'machines_list': machines_analyzed
+            }
+        }
+    
     def _get_session_id(self, message: Message) -> str:
         """Extract session ID from message (for conversation context)"""
         # In production, use message.context.get("session_id")
@@ -746,6 +829,50 @@ class EnmsSkill(OVOSSkill):
                     data = self._run_async(self.api_client.system_stats())
                     return {'success': True, 'data': data}
             
+            elif intent.intent == IntentType.SEUS:
+                # Significant Energy Uses (SEUs) queries
+                utterance = message.data.get('utterance', '').lower()
+                
+                # Extract energy source from intent or utterance
+                energy_source = intent.energy_source
+                if not energy_source:
+                    if 'electricity' in utterance or 'electric' in utterance:
+                        energy_source = 'electricity'
+                    elif 'gas' in utterance or 'natural gas' in utterance:
+                        energy_source = 'natural_gas'
+                    elif 'steam' in utterance:
+                        energy_source = 'steam'
+                    elif 'compressed air' in utterance:
+                        energy_source = 'compressed_air'
+                
+                # Check for baseline filtering
+                asking_without_baseline = any(phrase in utterance for phrase in [
+                    "don't have", "doesn't have", "do not have", "does not have",
+                    "without baseline", "without basline",
+                    "no baseline", "no basline",
+                    "need baseline", "need basline",
+                    "missing baseline", "missing basline"
+                ])
+                asking_with_baseline = any(phrase in utterance for phrase in [
+                    "have baseline", "have basline",
+                    "has baseline", "has basline",
+                    "with baseline", "with basline"
+                ])
+                
+                data = self._run_async(self.api_client.list_seus(energy_source=energy_source))
+                
+                # Filter by baseline status if requested
+                if asking_without_baseline:
+                    data['seus'] = [seu for seu in data.get('seus', []) if not seu.get('has_baseline')]
+                    data['total_count'] = len(data['seus'])
+                    data['filter_type'] = 'without_baseline'
+                elif asking_with_baseline:
+                    data['seus'] = [seu for seu in data.get('seus', []) if seu.get('has_baseline')]
+                    data['total_count'] = len(data['seus'])
+                    data['filter_type'] = 'with_baseline'
+                
+                return {'success': True, 'data': data, 'template': 'seus'}
+            
             elif intent.intent == IntentType.FACTORY_OVERVIEW:
                 # Check if this is a health/status check vs stats query
                 utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
@@ -1209,8 +1336,10 @@ class EnmsSkill(OVOSSkill):
             
             elif intent.intent == IntentType.BASELINE_EXPLANATION:
                 # Explain baseline model (key drivers, accuracy)
+                # If no machine specified, show factory-wide key drivers
                 if not intent.machine:
-                    return {'success': False, 'error': 'Machine name required for baseline explanation'}
+                    self.logger.info("baseline_explanation_factory_wide")
+                    return self._get_factory_wide_drivers()
                 
                 self.logger.info("baseline_explanation_query", machine=intent.machine)
                 

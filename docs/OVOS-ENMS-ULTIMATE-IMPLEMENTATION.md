@@ -10,10 +10,10 @@
 
 ## 🧭 Master Plan Control Section
 
-- **Last Updated:** 2025-11-19 10:30 UTC  
-- **Overall Progress:** 65% ████████████████████████████████░░ (Week 5 COMPLETE ✅)  
+- **Last Updated:** 2025-11-25 07:45 UTC  
+- **Overall Progress:** 75% ██████████████████████████████████████░░░░░░ (Voice Setup COMPLETE ✅)  
 - **Current Phase:** Phase 4 – Testing & Deployment  
-- **Current Milestone:** Week 6 Days 36-37 – Integration Testing  
+- **Current Milestone:** Week 6 Days 38-39 – Integration Testing  
 
 ### Phase Overview
 
@@ -267,13 +267,13 @@ Testing: pytest v8.0.0+ with pytest-asyncio
 **Goal**: External OVOS skill with LLM-based intent parsing and validation, end-to-end EnMS calls.
 
 #### Days 1-2: Environment & Skill Scaffold
-- [ ] Install OVOS Core v2.1.1 on development system (deferred to integration phase)
-- [ ] Configure faster-whisper v1.2.1 for STT (deferred to integration phase)
-- [ ] Configure ovos-tts-plugin-piper for TTS (deferred to integration phase)
-- [ ] Test wake word detection (deferred to integration phase)
-- [ ] Verify ENMS API access and authentication (deferred to Days 3-4)
+- [x] Install OVOS Core v2.1.1 on development system (✅ 2025-11-25)
+- [x] Configure ovos-stt-plugin-vosk for STT (✅ Vosk model downloaded)
+- [x] Configure phoonnx for TTS (✅ Piper voice model ready)
+- [x] Configure ovos-ww-plugin-vosk for wake word (✅ installed)
+- [x] Verify ENMS API access and authentication (✅ API healthy)
 - [x] Setup Python 3.12 virtual environment (Python 3.12.3 confirmed)
-- [ ] Install core dependencies (deferred to Days 3-4 when needed)
+- [x] Install core dependencies (✅ all voice packages installed)
 - [x] Create `enms-ovos-skill/` skeleton (`__init__.py`, `skill.json`, `settingsmeta.yaml`)
 - [x] Setup structured logging with structlog
 

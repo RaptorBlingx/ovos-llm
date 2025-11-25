@@ -9,11 +9,22 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type
+    retry_if_exception_type,
+    retry_if_exception
 )
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+
+def _should_retry_exception(exception: BaseException) -> bool:
+    """Only retry on transient errors, not on 4xx client errors."""
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Don't retry on client errors (4xx) - they won't change
+        # Only retry on server errors (5xx) which may be transient
+        return exception.response.status_code >= 500
+    # Retry on connection/timeout errors
+    return isinstance(exception, (httpx.ConnectError, httpx.TimeoutException))
 
 
 class ENMSClient:
@@ -63,7 +74,7 @@ class ENMSClient:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type(httpx.HTTPError)
+        retry=retry_if_exception(_should_retry_exception)
     )
     async def _request(
         self,
