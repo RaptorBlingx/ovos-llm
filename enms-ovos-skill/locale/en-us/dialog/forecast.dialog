@@ -1,0 +1,16 @@
+{% if machine_name and by_machine is defined -%}
+  {%- for m in by_machine -%}
+    {%- if m.machine_name == machine_name -%}
+{{ machine_name }}'s forecast for tomorrow is {{ m.predicted_energy_kwh | round(1) }} kilowatt hours, costing ${{ m.predicted_cost_usd | round(2) }}. Peak power of {{ m.predicted_peak_power_kw | round(1) }} kilowatts with {{ (m.confidence * 100) | round(0) }}% confidence.
+    {%- endif -%}
+  {%- endfor -%}
+{%- elif forecast_type is defined and forecast_type == "factory_wide" -%}
+Tomorrow's factory-wide energy forecast is {{ total_predicted_energy_kwh | round(1) }} kilowatt hours, costing ${{ total_predicted_cost_usd | round(2) }}. Peak demand of {{ predicted_peak_demand_kw | round(1) }} kilowatts expected at {{ predicted_peak_time }}.
+{%- elif predictions is defined and predictions|length > 0 -%}
+  {%- set total = predictions | sum(attribute='predicted_energy_kwh') | round(1) -%}
+The energy forecast for the next {{ predictions|length }} hours is {{ total }} kilowatt hours{% if seu_name is defined %} for {{ seu_name }}{% endif %}.
+{%- elif message is defined -%}
+{{ message }}
+{%- else -%}
+Forecast data not available.
+{%- endif %}

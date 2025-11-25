@@ -53,6 +53,7 @@ class ConversationSession:
     last_metric: Optional[str] = None
     last_intent: Optional[IntentType] = None
     last_time_range: Optional[str] = None
+    pending_clarification: Optional[Dict[str, Any]] = None  # Awaiting user response
     
     def add_turn(self, query: str, intent: Intent, response: str, 
                  api_data: Optional[Dict[str, Any]] = None):
@@ -109,6 +110,18 @@ class ConversationSession:
     def get_last_turn(self) -> Optional[ConversationTurn]:
         """Get most recent conversation turn"""
         return self.history[-1] if self.history else None
+    
+    def get_last_machine(self) -> Optional[str]:
+        """Get last mentioned machine name"""
+        return self.last_machine
+    
+    def update_machine(self, machine: str):
+        """Update last machine context"""
+        self.last_machine = machine
+        self.last_activity = datetime.utcnow()
+        logger.info("context_machine_updated", 
+                   session_id=self.session_id, 
+                   machine=machine)
     
     def get_context_summary(self) -> Dict[str, Any]:
         """Get current context state for display/debugging"""
@@ -198,6 +211,38 @@ class ConversationContextManager:
         """
         query_lower = query.lower()
         
+        # PRIORITY: Check if resolving pending clarification
+        if session.pending_clarification:
+            # Check if query is just a machine name (clarification response)
+            from .validator import ENMSValidator
+            validator = ENMSValidator()
+            
+            # Check if query matches any machine (case-insensitive)
+            matched_machine = None
+            for valid_machine in validator.machine_whitelist:
+                if query.lower() == valid_machine.lower():
+                    matched_machine = valid_machine
+                    break
+            
+            # If query is a valid machine name, resolve pending clarification
+            if matched_machine:
+                logger.info("resolving_pending_clarification",
+                           machine=matched_machine,
+                           pending_intent=session.pending_clarification.get('intent'))
+                
+                # Restore pending intent with machine filled in
+                resolved_intent = intent.model_copy(update={
+                    'intent': session.pending_clarification['intent'],
+                    'machine': matched_machine,
+                    'metric': session.pending_clarification.get('metric'),
+                    'time_range': session.pending_clarification.get('time_range')
+                })
+                
+                # Clear pending clarification
+                session.pending_clarification = None
+                
+                return resolved_intent
+        
         # Detect follow-up patterns
         is_followup = any(pattern in query_lower for pattern in [
             'what about', 'how about', 'and the', 'what\'s the', 
@@ -250,9 +295,9 @@ class ConversationContextManager:
         if intent.intent == IntentType.UNKNOWN:
             return "I'm not sure what you're asking. Could you rephrase that?"
         
-        # Missing machine for machine-specific queries
-        if intent.intent in [IntentType.MACHINE_STATUS, IntentType.POWER_QUERY, 
-                             IntentType.ENERGY_QUERY, IntentType.ANOMALY_DETECTION]:
+        # Missing machine for STRICTLY machine-specific queries
+        # Note: energy_query, power_query, anomaly_detection can work factory-wide
+        if intent.intent in [IntentType.MACHINE_STATUS, IntentType.KPI]:
             if not intent.machine:
                 return "Which machine would you like to know about?"
         

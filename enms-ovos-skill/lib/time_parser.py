@@ -89,6 +89,18 @@ class TimeRangeParser:
             first_last_month = last_day_last_month.replace(day=1)
             return first_last_month, last_day_last_month
         
+        # "the last hour/day/week" (singular, no number)
+        singular_match = re.match(r'(?:in\s+)?(?:the\s+)?(?:last|past)\s+(hour|day|week)', time_range_str)
+        if singular_match:
+            unit = singular_match.group(1)
+            if unit == 'hour':
+                start = now - timedelta(hours=1)
+            elif unit == 'day':
+                start = now - timedelta(days=1)
+            elif unit == 'week':
+                start = now - timedelta(weeks=1)
+            return start, now
+        
         # "last N hours/days/weeks" patterns
         match = re.match(r'(?:last|past)\s+(\d+)\s+(hour|day|week)s?', time_range_str)
         if match:

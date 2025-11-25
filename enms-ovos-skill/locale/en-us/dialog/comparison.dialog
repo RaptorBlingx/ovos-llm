@@ -1,4 +1,8 @@
+{% if machines and machines|length >= 2 %}
+Comparing {{ machine_names[0] }} and {{ machine_names[1] }} for {{ time_period }}: {{ machine_names[0] }} consumed {{ machines[0].total_energy|round(1) }} kilowatt-hours, while {{ machine_names[1] }} consumed {{ machines[1].total_energy|round(1) }} kilowatt-hours.
+{% else %}
 Machine comparison:
 {% for m in machines %}
-{{ loop.index }}. {{ m.machine }}: {{ m.energy_kwh|round(2) }} kWh today ({{ m.power_kw|round(2) }} kW current power)
+{{ loop.index }}. {{ m.machine_name }}: {{ m.total_energy|round(2) }} kWh
 {% endfor %}
+{% endif %}

@@ -1,0 +1,16 @@
+{% if count == 0 -%}
+No machines found matching "{{ query_term }}".
+{%- elif count == 1 -%}
+{# Fallback to single machine #}
+{% set machine = machines[0] %}
+{% set status = machine.current_status.status %}
+{% set power = machine.current_status.power_kw %}
+{{ machine.machine_name }} is {% if status == 'running' %}running at {{ power|round(1) }} kilowatts{% elif status == 'idle' %}idle{% else %}offline{% endif %}.{% if machine.today_stats %} Today: {{ machine.today_stats.energy_kwh|round(1) }} kilowatt-hours, ${{ machine.today_stats.cost_usd|round(1) }}.{% endif %}
+{%- else -%}
+Found {{ count }} machines matching "{{ query_term }}". {% for machine in machines -%}
+{% set status = machine.current_status.status %}
+{% set power = machine.current_status.power_kw %}
+{{ machine.machine_name }} is {% if status == 'running' %}running at {{ power|round(1) }} kilowatts{% elif status == 'idle' %}idle{% else %}offline{% endif %}.{% if machine.today_stats %} Today: {{ machine.today_stats.energy_kwh|round(1) }} kWh, ${{ machine.today_stats.cost_usd|round(1) }}.{% endif %}{% if machine.recent_anomalies and machine.recent_anomalies.count > 0 %} Warning: {{ machine.recent_anomalies.count }} anomalies.{% endif %}{% if not loop.last %} 
+{% endif %}
+{%- endfor %}
+{%- endif %}

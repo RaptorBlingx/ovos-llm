@@ -1,7 +1,10 @@
-{% if current_status is defined %}
+{% if utterance is defined and ('uptime' in utterance or 'how long' in utterance or 'been running' in utterance) and today_stats is defined and today_stats.uptime_hours is defined %}
+{# User asked for uptime specifically #}
+{{ machine_name }} has been running for {{ today_stats.uptime_hours|round(1) }} hours today.
+{% elif current_status is defined %}
 {% set status = current_status.status %}
 {% set power = current_status.power_kw %}
-{% if status == 'running' %}{{ machine_name }} is running{% if power %} at {{ power|round(2) }} kilowatts{% endif %}.{% elif status == 'idle' %}{{ machine_name }} is idle.{% else %}{{ machine_name }} is offline.{% endif %}
+{% if status == 'running' %}{{ machine_name }} is currently running, using {{ power|round(1) }} kilowatts.{% if today_stats %} Today it consumed {{ today_stats.energy_kwh|round(1) }} kilowatt-hours costing ${{ today_stats.cost_usd|round(1) }}.{% endif %}{% if recent_anomalies and recent_anomalies.count > 0 %} Warning: {{ recent_anomalies.count }} anomalies detected ({{ recent_anomalies.critical }} critical).{% else %}{% if today_stats %} No anomalies detected.{% endif %}{% endif %}{% elif status == 'idle' %}{{ machine_name }} is currently idle.{% if today_stats %} Today it consumed {{ today_stats.energy_kwh|round(1) }} kilowatt-hours.{% endif %}{% else %}{{ machine_name }} is offline.{% endif %}
 {% else %}
 {% if status == 'running' %}{{ machine }} is running{% if power_kw %} at {{ power_kw|round(2) }} kW{% endif %}.{% elif status == 'idle' %}{{ machine }} is idle.{% else %}{{ machine }} is offline.{% endif %}
 {% endif %}

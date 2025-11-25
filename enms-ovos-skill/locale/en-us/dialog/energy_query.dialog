@@ -1,9 +1,32 @@
-{% if timeseries_data %}
+{% if timeseries_data and timeseries_data|length > 0 %}
 {# Time-series energy query #}
-{{ machine }} consumed {{ total_energy_kwh|round(2) }} kWh from {{ start_time|voice_time }} to {{ end_time|voice_time }}.
+{% if is_trend_query and trend_periods %}
+{# Trend/pattern analysis - show period-based summary #}
+{{ machine }}'s energy trend from {{ start_time|voice_time }} to {{ end_time|voice_time }}: {% for period in trend_periods -%}
+Period {{ loop.index }}, {{ period.start_time|voice_time }} to {{ period.end_time|voice_time }}: {{ period.total_kwh }} kWh total, averaging {{ period.avg_kwh }} kWh per reading. Peak: {{ period.peak_kwh }} kWh at {{ period.peak_time|voice_time }}{% if not loop.last %}. {% endif %}
+{%- endfor %}. Total consumption: {{ total_energy_kwh|round(2) }} kWh.
+{% elif timeseries_data|length <= 24 and interval == '1hour' %}
+{# Hourly data for today or similar - list all points #}
+{{ machine }} consumed {{ total_energy_kwh|round(2) }} kWh total from {{ start_time|voice_time }} to {{ end_time|voice_time }}. Hourly breakdown: {% for point in timeseries_data -%}
+{{ point.timestamp|voice_time }}: {{ point.value|round(1) }} kWh{% if not loop.last %}, {% endif %}
+{%- endfor %}.
+{% elif timeseries_data|length <= 8 %}
+{# Small number of data points - list them all #}
+{{ machine }} consumed {{ total_energy_kwh|round(2) }} kWh total from {{ start_time|voice_time }} to {{ end_time|voice_time }}. {% if interval == '1hour' %}Hourly breakdown: {% elif interval == '15min' %}15-minute intervals: {% elif interval == '1day' %}Daily breakdown: {% else %}{{ interval }} intervals: {% endif %}{% for point in timeseries_data -%}
+{{ point.timestamp|voice_time }}: {{ point.value|round(1) }} kWh{% if not loop.last %}, {% endif %}
+{%- endfor %}.
+{% else %}
+{# Too many points - just give summary #}
+{{ machine }} consumed {{ total_energy_kwh|round(2) }} kWh total from {{ start_time|voice_time }} to {{ end_time|voice_time }} with {{ timeseries_data|length }} data points at {{ interval }} intervals.
+{% endif %}
 {% elif today_stats is defined and today_stats.energy_kwh is defined %}
 {# Machine-specific energy from today_stats #}
+{% if is_average_query and today_stats.uptime_hours is defined and today_stats.uptime_hours > 0 %}
+{# User asked for average per hour #}
+{{ machine_name }} consumed {{ today_stats.energy_kwh|round(2) }} kilowatt hours today over {{ today_stats.uptime_hours|round(1) }} hours of operation. The average consumption is {{ (today_stats.energy_kwh / today_stats.uptime_hours)|round(1) }} kilowatt hours per hour.
+{% else %}
 {{ machine_name }} consumed {{ today_stats.energy_kwh|round(2) }} kilowatt hours today.
+{% endif %}
 {% elif machine and energy_kwh is defined %}
 {# Current/today energy query for specific machine #}
 {{ machine }} consumed {{ energy_kwh|round(2) }} kWh {{ time_range|default('today') }}.

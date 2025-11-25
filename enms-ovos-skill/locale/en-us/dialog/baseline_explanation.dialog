@@ -1,0 +1,13 @@
+{% if explanation is defined and key_drivers is defined %}
+{# Model explanation with key drivers #}
+The baseline model for {{ machine_name or seu_name or "this machine" }} has an R-squared of {{ r_squared|round(2) }}, meaning it explains {{ (r_squared * 100)|round(1) }}% of energy variations. {% if key_drivers|length > 0 %}The top {{ key_drivers|length if key_drivers|length < 3 else 3 }} energy drivers are: {% for driver in key_drivers[:3] %}{{ loop.index }}. {{ driver.human_name }} ({{ driver.direction }} energy by {{ driver.absolute_impact|round(3) }} kWh per unit){% if not loop.last %}, {% endif %}{% endfor %}.{% endif %}
+{% elif r_squared is defined %}
+{# Just accuracy info #}
+The baseline model for {{ machine_name or seu_name or "this machine" }} has {{ (r_squared * 100)|round(1) }}% accuracy (R-squared {{ r_squared|round(3) }}).
+{% elif message is defined %}
+{# API message #}
+{{ message }}
+{% else %}
+{# Fallback #}
+Baseline model information retrieved for {{ machine_name or seu_name or "the machine" }}.
+{% endif %}

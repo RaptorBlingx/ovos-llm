@@ -64,21 +64,88 @@ class HeuristicRouter:
     # Regex patterns (compiled for speed)
     # CRITICAL: Order matters! More specific patterns first
     PATTERNS = {
-        # NEW: Forecast (check before power_query to catch "predict power")
-        'forecast': [
-            re.compile(r'\bforecast', re.IGNORECASE),
-            re.compile(r'\bpredict.*?(?:energy|power|consumption)', re.IGNORECASE),
-            re.compile(r'\bwhen.*?peak\s+demand', re.IGNORECASE),
+        # NEW: Production queries (units, quality, OEE)
+        'production': [
+            re.compile(r'\bhow\s+many\s+units', re.IGNORECASE),
+            re.compile(r'\bunits?\s+(?:produced|made|manufactured)', re.IGNORECASE),
+            re.compile(r'\bproduction\s+(?:count|total|volume)', re.IGNORECASE),
+            re.compile(r'\bquality\s+(?:rate|percent|percentage)', re.IGNORECASE),
+            re.compile(r'\bOEE\b', re.IGNORECASE),
+            re.compile(r'\boverall\s+equipment\s+effectiveness', re.IGNORECASE),
         ],
         
-        # NEW: Baseline queries (check before ranking to avoid "how accurate" → ranking)
+        # Anomaly detection
+        'anomaly_detection': [
+            re.compile(r'\b(?:show|list|get|display).*?anomal(?:y|ies)', re.IGNORECASE),
+            re.compile(r'\banomal(?:y|ies).*?(?:show|list|get)', re.IGNORECASE),
+            re.compile(r'\bactive\s+(?:anomal(?:y|ies)|alerts?)', re.IGNORECASE),
+            re.compile(r'\b(?:critical|warning|info)\s+anomal(?:y|ies)', re.IGNORECASE),
+            re.compile(r'\bcheck\s+for\s+anomal(?:y|ies)', re.IGNORECASE),
+            re.compile(r'\bdetect\s+anomal(?:y|ies)', re.IGNORECASE),
+            re.compile(r'\b(?:any|are there)\s+anomal(?:y|ies)', re.IGNORECASE),
+            # NEW: Which machines have anomalies
+            re.compile(r'\b(?:which|what).*?machines?.*?(?:anomal|alert|issue|problem)', re.IGNORECASE),
+            re.compile(r'\bmachines?.*?(?:have|with|has).*?(?:anomal|alert)', re.IGNORECASE),
+        ],
+        
+        # NEW: Baseline prediction (expected/predicted energy)
+        'baseline_models': [
+            re.compile(r'\b(?:list|show|get).*?baseline\s+models?', re.IGNORECASE),
+            re.compile(r'\bbaseline\s+models?\s+(?:for|exist|available)', re.IGNORECASE),
+            re.compile(r'\bwhat\s+baseline\s+models?', re.IGNORECASE),
+            re.compile(r'\bhistory\s+of.*?baseline\s+models?', re.IGNORECASE),
+        ],
+        
+        'kpi': [
+            re.compile(r'\bKPIs?\b', re.IGNORECASE),
+            re.compile(r'\bkey\s+performance\s+indicators?', re.IGNORECASE),
+            re.compile(r'\b(?:show|get|what).*?KPIs?\b', re.IGNORECASE),
+            re.compile(r'\b(?:energy\s+efficiency|load\s+factor|peak\s+demand|carbon\s+intensity)', re.IGNORECASE),
+            re.compile(r'\bspecific\s+energy\s+consumption', re.IGNORECASE),
+        ],
+        
+        'performance': [
+            re.compile(r'\banalyze\s+performance', re.IGNORECASE),
+            re.compile(r'\banalyze\s+\w+.*?performance', re.IGNORECASE),
+            re.compile(r'\bperformance\s+(?:analysis|of|for)', re.IGNORECASE),
+            re.compile(r'\b(?:efficiency|performance)\s+(?:score|rating|status)', re.IGNORECASE),
+            re.compile(r'\bhow.*?performing', re.IGNORECASE),
+            re.compile(r'\broot\s+cause', re.IGNORECASE),
+        ],
+        
         'baseline': [
-            re.compile(r'\bbaseline\s+(?:model|prediction)', re.IGNORECASE),
-            re.compile(r'\bexplain.*?baseline', re.IGNORECASE),
-            re.compile(r'\bwhen.*?baseline.*?trained', re.IGNORECASE),
+            re.compile(r'\b(?:expected|predicted)\s+(?:energy|power|consumption)', re.IGNORECASE),
+            re.compile(r'\bpredict.*?(?:energy|power|consumption)', re.IGNORECASE),
+            re.compile(r'\bbaseline\s+prediction', re.IGNORECASE),
+            re.compile(r'\bbaseline\s+for\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            re.compile(r'\b(?:what|get|give|show).*?baseline\s+(?:for|of)', re.IGNORECASE),
+            re.compile(r'\benergy\s+(?:with|at)\s+(?:temp|temperature|pressure|load)', re.IGNORECASE),
+        ],
+        
+        # Baseline models (list models for a machine)
+        'baseline_models': [
+            re.compile(r'\blist.*?baseline.*?models?', re.IGNORECASE),
+            re.compile(r'\bbaseline.*?models?.*?(?:for|of)', re.IGNORECASE),
+            re.compile(r'\b(?:does|do|has|have).*?baseline.*?model', re.IGNORECASE),
+            re.compile(r'\bhow\s+many.*?baseline.*?models?', re.IGNORECASE),
+            re.compile(r'\bshow.*?baseline.*?models?', re.IGNORECASE),
+        ],
+        
+        # Baseline explanation (key drivers, model accuracy)
+        'baseline_explanation': [
+            re.compile(r'\bkey\s+energy\s+drivers?', re.IGNORECASE),
+            re.compile(r'\bexplain.*?(?:baseline|model)', re.IGNORECASE),
             re.compile(r'\bhow\s+accurate.*?(?:model|baseline)', re.IGNORECASE),
-            re.compile(r'\bkey\s+energy\s+drivers', re.IGNORECASE),
-            re.compile(r'\bdoes.*?have.*?baseline', re.IGNORECASE),
+            re.compile(r'\btell\s+me\s+about.*?(?:baseline|model)', re.IGNORECASE),
+            re.compile(r'\bwhat\s+(?:drives?|affects?|impacts?).*?energy', re.IGNORECASE),
+            re.compile(r'\bmodel\s+(?:details?|info|explanation)', re.IGNORECASE),
+        ],
+        
+        # NEW: Forecast (future prediction)
+        'forecast': [
+            re.compile(r'\b(?:forecast|tomorrow|next\s+(?:day|week|month))', re.IGNORECASE),
+            re.compile(r'\bwhat.*?(?:will|going\s+to)\s+(?:consume|use)', re.IGNORECASE),
+            re.compile(r'\bpeak\s+demand.*?(?:tomorrow|next)', re.IGNORECASE),
         ],
         
         # Top N ranking queries (CRITICAL: handle "top 3", "top 5 machines", etc.)
@@ -91,6 +158,18 @@ class HeuristicRouter:
             re.compile(r'\bwhich\s+machine.*?most\s+(?:efficient|cost-effective)', re.IGNORECASE),
             re.compile(r'\bwhich\s+machine.*?(?:uses?|consumes?)\s+(?:the\s+)?most', re.IGNORECASE),
             re.compile(r'\bwhich\s+machine.*?(?:has|have)\s+(?:the\s+)?most\s+alerts', re.IGNORECASE),
+            # NEW: Least/lowest ranking
+            re.compile(r'\bwhich\s+machine.*?(?:uses?|consumes?)\s+(?:the\s+)?least', re.IGNORECASE),
+            re.compile(r'\bwhich\s+machine.*?(?:lowest|minimum)', re.IGNORECASE),
+            # NEW: Which/what {type} units/machines
+            re.compile(r'\b(?:which|what)\s+(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)\s+(?:units?|machines?)', re.IGNORECASE),
+            re.compile(r'\bfind.*?(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)', re.IGNORECASE),
+            # NEW: List machines (moved from factory_overview)
+            re.compile(r'\blist\s+(?:all\s+)?machines', re.IGNORECASE),
+            re.compile(r'\bshow\s+(?:me\s+)?(?:all\s+)?machines', re.IGNORECASE),
+            re.compile(r'\bwhat\s+machines\s+(?:do\s+we\s+have|are\s+there)', re.IGNORECASE),
+            # NEW: How many {type} machines
+            re.compile(r'\bhow\s+many\s+(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)', re.IGNORECASE),
         ],
         
         # Factory-wide queries
@@ -99,11 +178,47 @@ class HeuristicRouter:
             re.compile(r'\btotal\s+(?:factory\s+)?(?:kwh|consumption|energy|power)\b', re.IGNORECASE),
             re.compile(r'\b(?:complete|full)\s+factory\b', re.IGNORECASE),
             re.compile(r'\bfacility\s+(?:overview|status)\b', re.IGNORECASE),
+            # NEW: Carbon/emissions queries
+            re.compile(r'\bcarbon\s+(?:footprint|emissions?)\b', re.IGNORECASE),
+            re.compile(r'\b(?:what|how\s+much).*?carbon\b', re.IGNORECASE),
+            re.compile(r'\bCO2\s+emissions?\b', re.IGNORECASE),
+            re.compile(r'\bemissions?\s+(?:total|today)\b', re.IGNORECASE),
+            # NEW: Significant Energy Uses (SEUs)
+            re.compile(r'\bsignificant\s+energy\s+uses?\b', re.IGNORECASE),
+            re.compile(r'\blist\s+(?:all\s+)?seus?\b', re.IGNORECASE),
+            re.compile(r'\benergy\s+uses\b', re.IGNORECASE),
+            # NEW: SEU baseline queries (with typo tolerance)
+            re.compile(r'\bwhich\s+seu.*?(?:have|has|with|without).*?baselines?', re.IGNORECASE),
+            re.compile(r'\bwhich\s+seu.*?(?:have|has|with|without).*?baslines?', re.IGNORECASE),  # typo: missing 'e'
+            re.compile(r'\bseu.*?(?:don\'t|do not|doesn\'t|does not|no|without).*?baselines?', re.IGNORECASE),
+            re.compile(r'\bseu.*?(?:don\'t|do not|doesn\'t|does not|no|without).*?baslines?', re.IGNORECASE),  # typo
+            re.compile(r'\bseu.*?(?:need|require|missing).*?baselines?', re.IGNORECASE),
+            re.compile(r'\bseu.*?(?:need|require|missing).*?baslines?', re.IGNORECASE),  # typo
+            # NEW: Active/offline machine queries
+            re.compile(r'\b(?:show|list|what).*?(?:active|online|running).*?(?:machines?|equipment)', re.IGNORECASE),
+            re.compile(r'\b(?:show|list|what).*?(?:inactive|offline|stopped).*?(?:machines?|equipment)', re.IGNORECASE),
+            # NEW: Aggregated stats
+            re.compile(r'\baggregated?\s+(?:stats?|statistics?)', re.IGNORECASE),
             # NEW: Multi-factory comparison
             re.compile(r'\bcompare.*?(?:across|all)\s+factories', re.IGNORECASE),
             re.compile(r'\bwhich\s+factory', re.IGNORECASE),
-            # NEW: List machines
-            re.compile(r'\blist\s+(?:all\s+)?machines', re.IGNORECASE),
+            # NEW: Performance engine health
+            re.compile(r'\bperformance\s+engine', re.IGNORECASE),
+            re.compile(r'\bengine\s+(?:health|status|running)', re.IGNORECASE),
+            # NEW: Energy saving opportunities
+            re.compile(r'\bsaving\s+opportunities', re.IGNORECASE),
+            re.compile(r'\benergy\s+saving', re.IGNORECASE),
+            re.compile(r'\bimprovement\s+opportunities', re.IGNORECASE),
+            re.compile(r'\bopportunities', re.IGNORECASE),
+            # NEW: ISO 50001 EnPI reports
+            re.compile(r'\benpi\s+report', re.IGNORECASE),
+            re.compile(r'\benergy\s+performance\s+indicators?', re.IGNORECASE),
+            re.compile(r'\biso\s*50001', re.IGNORECASE),
+            re.compile(r'\bcompliance\s+report', re.IGNORECASE),
+            # NEW: ISO action plans
+            re.compile(r'\blist.*?action\s+plans?', re.IGNORECASE),
+            re.compile(r'\baction\s+plans?.*?list', re.IGNORECASE),
+            re.compile(r'\biso\s+action\s+plans?', re.IGNORECASE),
         ],
         
         # Machine status queries
@@ -111,10 +226,9 @@ class HeuristicRouter:
             re.compile(r'\b({})\s+(?:status|online|offline|running|availability)\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\b(?:is|check)\s+({})\s*(?:running|online|offline)?\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\b({})\s+availability\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
-            # NEW: Energy source queries
-            re.compile(r'\benergy\s+(?:types?|sources?)\s+(?:does|for)\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
-            re.compile(r'\blist.*?energy\s+sources?\s+for\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
-            re.compile(r'\bwhat\s+energy.*?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            # NEW: Show/get info/details for machine
+            re.compile(r'\b(?:show|get|display)\s+(?:info|details|information)\s+(?:for|about)\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            re.compile(r'\b({})(?:\s+info|\s+details|\s+information)\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
         ],
         
         # Power queries
@@ -132,7 +246,13 @@ class HeuristicRouter:
             re.compile(r'\b({})\s+(?:energy|kwh|consumption)\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\benergy\s+(?:of\s+)?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\b({})\s+(?:used|consumed)'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
-            # NEW: Multi-energy support
+            # NEW: Multi-energy support (moved from machine_status)
+            re.compile(r'\benergy\s+(?:types?|sources?)\s+(?:does|for)\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            re.compile(r'\blist.*?energy\s+sources?\s+for\s+({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            re.compile(r'\bwhat\s+energy.*?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
+            re.compile(r'\b(?:what|which)\s+energy\s+(?:types?|sources?)', re.IGNORECASE),
+            re.compile(r'\benergy\s+types?\s+(?:does|for)', re.IGNORECASE),
+            re.compile(r'\benergy\s+summary', re.IGNORECASE),
             re.compile(r'\b(?:natural\s+gas|electricity|steam|compressed\s+air)\s+(?:consumption|usage|readings?)', re.IGNORECASE),
             re.compile(r'\bshow.*?(?:natural\s+gas|steam|electricity|compressed\s+air)', re.IGNORECASE),
             # NEW: Energy breakdown
@@ -143,7 +263,7 @@ class HeuristicRouter:
         
         # Comparison queries
         'comparison': [
-            re.compile(r'\bcompare\s+({})\s+(?:and|vs|versus)\s+({})'.format(
+            re.compile(r'\bcompare\s+.*?(?:between\s+)?({}).*?(?:and|vs|versus)\s+({})'.format(
                 '|'.join(re.escape(m) for m in MACHINES),
                 '|'.join(re.escape(m) for m in MACHINES)
             ), re.IGNORECASE),
@@ -160,6 +280,50 @@ class HeuristicRouter:
         """Initialize heuristic router"""
         self.logger = logger.bind(component="heuristic_router")
     
+    def _extract_machine_fuzzy(self, utterance: str) -> Optional[str]:
+        """
+        Extract machine name with fuzzy matching
+        
+        Handles partial matches like "hvac" → "hvac-main" or "hvac-eu-north"
+        Returns first match OR None if ambiguous (validator will clarify)
+        
+        Args:
+            utterance: User query
+            
+        Returns:
+            Matched machine name or first match from ambiguous set
+        """
+        utterance_lower = utterance.lower()
+        
+        # Try exact match first (full machine name in query)
+        for m in self.MACHINES:
+            if m.lower() in utterance_lower:
+                return m
+        
+        # Try partial match (machine type without suffix)
+        # E.g., "hvac" should match "HVAC-Main", "HVAC-EU-North"
+        machine_types = {
+            'hvac': ['HVAC-Main', 'HVAC-EU-North'],
+            'compressor': ['Compressor-1', 'Compressor-EU-1'],
+            'boiler': ['Boiler-1'],
+            'conveyor': ['Conveyor-A'],
+            'pump': ['Hydraulic-Pump-1'],
+            'injection': ['Injection-Molding-1'],
+        }
+        
+        for machine_type, machines in machine_types.items():
+            if machine_type in utterance_lower:
+                # Find all matches in whitelist
+                matches = [m for m in machines if m in self.MACHINES]
+                if matches:
+                    # Return special marker for validator to detect ambiguity
+                    # Use machine type as placeholder (e.g., "hvac")
+                    if len(matches) > 1:
+                        return machine_type  # Validator will detect this is ambiguous
+                    return matches[0]
+        
+        return None
+    
     def route(self, utterance: str) -> Optional[Dict]:
         """
         Attempt to parse utterance using fast heuristics
@@ -174,9 +338,18 @@ class HeuristicRouter:
         
         # Normalize utterance
         normalized = utterance.strip()
+        utterance_lower = normalized.lower()
+        
+        # Special case: ISO queries should use factory_overview, not performance
+        # This prevents "ISO performance" from matching performance intent
+        iso_query = 'iso' in utterance_lower or 'enpi' in utterance_lower or 'compliance report' in utterance_lower
         
         # Try each pattern category
         for intent_type, patterns in self.PATTERNS.items():
+            # Skip performance if this is an ISO query
+            if intent_type == 'performance' and iso_query:
+                continue
+                
             for pattern in patterns:
                 match = pattern.search(normalized)
                 if match:
@@ -211,7 +384,29 @@ class HeuristicRouter:
                 try:
                     limit = int(match.group(1))
                 except (IndexError, ValueError):
-                    limit = 5  # Default for "which machine uses most"
+                    # Check if this is a machine listing query vs top-N ranking
+                    utterance_lower = utterance.lower()
+                    
+                    # Machine listing patterns: "which HVAC units", "find compressors", "how many", "list machines"
+                    is_listing = any([
+                        re.search(r'\b(?:which|what)\s+(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)', utterance_lower),
+                        'find' in utterance_lower and any(t in utterance_lower for t in ['hvac', 'boiler', 'compressor', 'conveyor']),
+                        'how many' in utterance_lower,
+                        'list' in utterance_lower and 'machine' in utterance_lower,
+                    ])
+                    
+                    # Top-N ranking patterns: "which machine uses most", "which machine has most alerts"
+                    is_ranking = any([
+                        'most' in utterance_lower,
+                        'least' in utterance_lower,
+                        'highest' in utterance_lower,
+                        'lowest' in utterance_lower,
+                    ])
+                    
+                    if is_listing and not is_ranking:
+                        limit = None  # Machine listing query
+                    else:
+                        limit = 1 if is_ranking else 5  # Top-N ranking (1 for "which uses most", 5 for others)
                 
                 # Determine ranking metric from query
                 metric = 'energy'  # default
@@ -223,6 +418,11 @@ class HeuristicRouter:
                 elif 'alert' in utterance_lower:
                     metric = 'alerts'
                 
+                # For machine listing queries, set metric to None
+                is_listing_final = limit is None or (limit == 1 and not any(word in utterance_lower for word in ['most', 'least', 'highest', 'lowest']))
+                if is_listing_final and any(word in utterance_lower for word in ['which', 'what', 'find', 'list', 'how many']):
+                    metric = None
+                
                 return {
                     'intent': 'ranking',
                     'confidence': 0.95,
@@ -231,13 +431,59 @@ class HeuristicRouter:
                     'ranking_metric': metric  # NEW: explicit ranking metric
                 }
             
-            elif intent_type == 'baseline':
-                # Baseline queries - may or may not have machine name
+            elif intent_type == 'baseline_models':
+                # List baseline models - requires machine name
+                machine = self._extract_machine_fuzzy(utterance)
+                
+                return {
+                    'intent': 'baseline_models',
+                    'confidence': 0.95,
+                    'machine': machine
+                }
+            
+            elif intent_type == 'baseline_explanation':
+                # Explain baseline model (key drivers, accuracy) - requires machine name
+                machine = self._extract_machine_fuzzy(utterance)
+                
+                return {
+                    'intent': 'baseline_explanation',
+                    'confidence': 0.95,
+                    'machine': machine
+                }
+            
+            elif intent_type == 'kpi':
+                # KPI queries - extract machine name
                 machine = None
+                utterance_lower = utterance.lower()
                 for m in self.MACHINES:
-                    if m in utterance:
+                    if m.lower() in utterance_lower:
                         machine = m
                         break
+                
+                return {
+                    'intent': 'kpi',
+                    'confidence': 0.95,
+                    'machine': machine
+                }
+            
+            elif intent_type == 'performance':
+                # Performance analysis - extract machine name
+                machine = None
+                utterance_lower = utterance.lower()
+                for m in self.MACHINES:
+                    if m.lower() in utterance_lower:
+                        machine = m
+                        break
+                
+                return {
+                    'intent': 'performance',
+                    'confidence': 0.95,
+                    'machine': machine
+                }
+            
+            elif intent_type == 'baseline':
+                # Baseline queries - may or may not have machine name
+                machine = self._extract_machine_fuzzy(utterance)
                 
                 return {
                     'intent': 'baseline',
@@ -245,11 +491,27 @@ class HeuristicRouter:
                     'machine': machine
                 }
             
+            elif intent_type == 'production':
+                # Production queries - extract machine name
+                machine = None
+                utterance_lower = utterance.lower()
+                for m in self.MACHINES:
+                    if m.lower() in utterance_lower:
+                        machine = m
+                        break
+                
+                return {
+                    'intent': 'production',
+                    'confidence': 0.95,
+                    'machine': machine
+                }
+            
             elif intent_type == 'forecast':
                 # Forecast queries - may or may not have machine name
                 machine = None
+                utterance_lower = utterance.lower()
                 for m in self.MACHINES:
-                    if m in utterance:
+                    if m.lower() in utterance_lower:
                         machine = m
                         break
                 
@@ -260,9 +522,18 @@ class HeuristicRouter:
                 }
             
             elif intent_type == 'factory_overview':
+                # Factory overview - may include machine name for filtering (e.g., opportunities for Compressor-1)
+                machine = None
+                utterance_lower = utterance.lower()
+                for m in self.MACHINES:
+                    if m.lower() in utterance_lower:
+                        machine = m
+                        break
+                
                 return {
                     'intent': 'factory_overview',
-                    'confidence': 0.95
+                    'confidence': 0.95,
+                    'machine': machine
                 }
             
             elif intent_type == 'machine_status':
@@ -312,6 +583,21 @@ class HeuristicRouter:
                     'intent': 'comparison',
                     'confidence': 0.95,
                     'machines': f"{self._normalize_machine_name(machine1)},{self._normalize_machine_name(machine2)}"
+                }
+            
+            elif intent_type == 'anomaly_detection':
+                # Anomaly detection - may or may not have machine name
+                machine = None
+                utterance_lower = utterance.lower()
+                for m in self.MACHINES:
+                    if m.lower() in utterance_lower:
+                        machine = m
+                        break
+                
+                return {
+                    'intent': 'anomaly_detection',
+                    'confidence': 0.95,
+                    'machine': machine
                 }
             
             return None
@@ -427,8 +713,11 @@ class HybridParser:
                 else:
                     # Try other patterns
                     for pattern in [
+                        r'in\s+the\s+last\s+(\d+\s+)?(\w+)',  # "in the last hour", "in the last 2 days"
+                        r'this\s+(week|month|year)',
+                        r'last\s+(week|month|year|\d+\s+(?:hour|day|week)s?)',
                         r'between\s+(.+?)\s+and\s+(.+?)(?:\s|$)',
-                        r'(yesterday|today|last\s+\d+\s+(?:hour|day|week)s?)',
+                        r'(yesterday|today)',
                     ]:
                         match = re.search(pattern, utterance.lower())
                         if match:

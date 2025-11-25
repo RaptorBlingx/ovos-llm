@@ -1,0 +1,5 @@
+{% if summary_by_type is defined and summary_by_type|length > 0 -%}
+{{ machine_name }}'s energy summary: {% for et in summary_by_type %}{{ et.total_kwh | round(1) }} {{ et.unit }} of {{ et.energy_type }}{% if not loop.last %}, {% endif %}{% endfor %}. Total energy types: {{ total_energy_types }}.
+{%- else -%}
+No energy summary data available for {{ machine_name }}.
+{%- endif %}
