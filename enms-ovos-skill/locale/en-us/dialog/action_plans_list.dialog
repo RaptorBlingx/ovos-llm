@@ -1,0 +1,5 @@
+{% if action_plans is defined and action_plans|length > 0 -%}
+Found {{ total_plans }} ISO action plan{% if total_plans != 1 %}s{% endif %}: {% for plan in action_plans %}{{ plan.title }} for {{ plan.seu_name }}, status {{ plan.status }}, {{ plan.progress_percent | round(0) | int }} percent complete{% if not loop.last %}; {% endif %}{% endfor %}.
+{%- else -%}
+No ISO action plans found{% if status is defined %} with status {{ status }}{% endif %}.
+{%- endif %}

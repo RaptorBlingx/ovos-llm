@@ -1,0 +1,5 @@
+{% if models is defined and models|length > 0 %}
+Found {{ models|length }} baseline models for {{ seu_name }}. Active model: version {{ active_version }}, R-squared {{ active_r_squared }}, trained on {{ active_samples }} samples.
+{% else %}
+No baseline models found for {{ seu_name }}.
+{% endif %}

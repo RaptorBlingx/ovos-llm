@@ -1,0 +1,5 @@
+{% if energy_types is defined and energy_types|length > 0 -%}
+{{ machine_name }} uses {{ total_energy_types }} energy type{% if total_energy_types > 1 %}s{% endif %}: {% for et in energy_types %}{{ et.energy_type }}{% if not loop.last %}, {% endif %}{% endfor %}.
+{%- else -%}
+No energy type data available for {{ machine_name }}.
+{%- endif %}

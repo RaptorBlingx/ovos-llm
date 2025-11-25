@@ -1,4 +1,59 @@
-{% if anomalies %}
+{% if is_detection is defined and is_detection %}
+{# ML anomaly detection from POST /anomaly/detect #}
+{% if anomalies_detected == 0 %}
+No anomalies detected in {{ machine_name }} for the specified period using ML analysis.
+{% elif anomalies_detected == 1 %}
+Detected 1 anomaly in {{ machine_name }} using baseline model version {{ baseline_model_version }}.
+{% else %}
+Detected {{ anomalies_detected }} anomalies in {{ machine_name }} using baseline model version {{ baseline_model_version }}.
+{% endif %}
+{% elif is_active is defined and is_active %}
+{# Active anomalies from GET /anomaly/active #}
+{% if total_count == 0 %}
+No active alerts. All anomalies have been resolved.
+{% elif total_count == 1 %}
+There is 1 active alert requiring attention{% if by_severity is defined %}: {% set ns = namespace(items=[]) %}{% for severity, count in by_severity.items() %}{% if count > 0 %}{% set ns.items = ns.items + [count|string + " " + severity] %}{% endif %}{% endfor %}{% if ns.items %}{{ ns.items|join(", ") }}{% endif %}{% endif %}.
+{% else %}
+There are {{ total_count }} active alerts requiring attention{% if by_severity is defined %}: {% set ns = namespace(items=[]) %}{% for severity, count in by_severity.items() %}{% if count > 0 %}{% set ns.items = ns.items + [count|string + " " + severity] %}{% endif %}{% endfor %}{% if ns.items %}{{ ns.items|join(", ") }}{% endif %}{% endif %}.
+{% endif %}
+{% elif total_count is defined %}
+{# Anomalies from /anomaly/recent or /anomaly/search #}
+{% if filters is defined and filters.start_date is defined %}
+{# Search results with custom date range from /anomaly/search #}
+{% if total_count == 0 %}
+No anomalies found{% if machine_name %} for {{ machine_name }}{% endif %} in the specified time range.
+{% elif total_count == 1 %}
+Found 1 anomaly{% if machine_name %} for {{ machine_name }}{% endif %} in the specified time range.
+{% else %}
+Found {{ total_count }} anomalies{% if machine_name %} for {{ machine_name }}{% endif %} in the specified time range.
+{% endif %}
+{% elif machine_name is defined and machine_name %}
+{# Machine-specific from /anomaly/recent?machine_id= #}
+{% if total_count == 0 %}
+No anomalies detected for {{ machine_name }} in the last 7 days.
+{% elif total_count == 1 %}
+One anomaly detected for {{ machine_name }} in the last 7 days.
+{% else %}
+{{ total_count }} anomalies detected for {{ machine_name }} in the last 7 days.
+{% endif %}
+{% else %}
+{# Factory-wide from /anomaly/recent #}
+{% if total_count == 0 %}
+No recent anomalies detected in the last 7 days.
+{% elif total_count == 1 %}
+One anomaly detected in the last 7 days{% if affected_machines %} on {{ affected_machines|join(', ') }}{% endif %}.
+{% else %}
+{{ total_count }} most recent anomalies detected in the last 7 days{% if affected_machines %} across {{ affected_machines|length }} machines: {{ affected_machines|join(', ') }}{% endif %}.
+{% endif %}
+{% endif %}
+{% elif recent_anomalies is defined and recent_anomalies.anomaly_count is defined %}
+{# Machine-specific anomalies from /machines/status/{name} #}
+{% if recent_anomalies.anomaly_count == 0 %}
+No anomalies detected for {{ machine_name }}.
+{% else %}
+{{ machine_name }} has {{ recent_anomalies.anomaly_count }} anomalies detected.
+{% endif %}
+{% elif anomalies %}
 Detected {{ anomalies | length }} anomalies:
 {% for anomaly in anomalies[:3] %}
 {{ anomaly.machine }}: {{ anomaly.severity }} severity at {{ anomaly.timestamp | voice_time }}

@@ -1,0 +1,5 @@
+{% if production_today is defined %}
+{{ machine_name }} produced {{ production_today.units_produced | int }} units today{% if production_today.quality_percent is defined %} with {{ production_today.quality_percent | round(1) }}% quality{% endif %}{% if production_today.oee_percent is defined %} and {{ production_today.oee_percent | round(1) }}% OEE{% endif %}.
+{% else %}
+Production data not available for {{ machine_name }}.
+{% endif %}

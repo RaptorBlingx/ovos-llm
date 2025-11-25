@@ -1,4 +1,13 @@
-{% if current_status is defined and current_status.power_kw is defined %}
+{% if timeseries_data is defined and avg_power_kw is defined %}
+{# Time-series power query #}
+{{ machine }}'s average power was {{ avg_power_kw|round(2) }} kilowatts from {{ start_time|voice_time }} to {{ end_time|voice_time }}.
+{% elif utterance is defined and ('average' in utterance or 'avg' in utterance) and today_stats is defined and today_stats.avg_power_kw is defined %}
+{# User asked for average power today #}
+{{ machine_name }}'s average power today is {{ today_stats.avg_power_kw|round(2) }} kilowatts.
+{% elif utterance is defined and 'peak' in utterance and today_stats is defined and today_stats.peak_power_kw is defined %}
+{# User asked for peak power specifically #}
+{{ machine_name }}'s peak power today was {{ today_stats.peak_power_kw|round(2) }} kilowatts.
+{% elif current_status is defined and current_status.power_kw is defined %}
 {# Machine-specific power from current_status #}
 {{ machine_name }} is currently using {{ current_status.power_kw|round(2) }} kilowatts.
 {% elif machine %}

@@ -1,0 +1,9 @@
+{% if seus is defined and seus|length > 0 -%}
+  {%- if filtered_by -%}
+Found {{ total_count }} {{ filtered_by }} significant energy uses: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  {%- else -%}
+Found {{ total_count }} significant energy uses: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
+  {%- endif -%}
+{%- else -%}
+No significant energy uses found.
+{%- endif %}

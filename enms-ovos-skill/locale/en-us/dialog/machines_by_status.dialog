@@ -1,0 +1,21 @@
+{% if filter_type == 'active' -%}
+{% if total_count == 0 -%}
+No active machines found in the system.
+{%- elif total_count == 1 -%}
+1 active machine: {{ machines[0].name }}
+{%- else -%}
+{{ total_count }} active machines: {% for machine in machines -%}
+{{ machine.name }}{% if not loop.last %}, {% endif %}
+{%- endfor %}
+{%- endif %}
+{%- elif filter_type == 'offline' -%}
+{% if total_count == 0 -%}
+All machines are currently active. No offline machines found.
+{%- elif total_count == 1 -%}
+1 offline machine: {{ machines[0].name }}
+{%- else -%}
+{{ total_count }} offline machines: {% for machine in machines -%}
+{{ machine.name }}{% if not loop.last %}, {% endif %}
+{%- endfor %}
+{%- endif %}
+{%- endif %}

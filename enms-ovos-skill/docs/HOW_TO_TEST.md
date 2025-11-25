@@ -24,79 +24,81 @@ This guide ensures you test the **actual skill behavior** without accidentally t
 
 ## 🛠️ Test Tools Available
 
-### 1. `scripts/test_gui_standalone.py` ✅ RECOMMENDED
+### 1. `scripts/test_skill_logic.py` ✅ RECOMMENDED FOR AUTOMATED TESTING
 
-**Purpose:** Interactive browser-based testing  
-**Architecture:** Direct skill component testing (no OVOS Core needed)  
-**Status:** ✅ Uses real components, real templates, real API
+**Purpose:** Single-query command-line testing for systematic validation  
+**Architecture:** Direct component testing (Parser → Validator → API → Formatter)  
+**Status:** ✅ Uses REAL skill logic copied from `__init__.py`, real templates, real API
 
 **How to Run:**
 ```bash
 cd /home/ubuntu/ovos/enms-ovos-skill
 source venv/bin/activate
-PYTHONPATH=/home/ubuntu/ovos/enms-ovos-skill:$PYTHONPATH python3 scripts/test_gui_standalone.py
+python3 scripts/test_skill_logic.py "QUERY HERE"
 ```
 
-**Open:** http://localhost:7862
+**Example:**
+```bash
+python3 scripts/test_skill_logic.py "What's the status of Compressor-1?"
+```
 
 **What It Tests:**
-- Real `HybridParser` (LLM/Adapt/Heuristic)
+- Real `HybridParser` (LLM/Adapt/Heuristic tiers)
 - Real `ENMSValidator` (zero-trust validation)
 - Real `ENMSClient` (actual HTTP calls to http://10.33.10.109:8001)
 - Real `ResponseFormatter` (loads `.dialog` templates from `locale/en-us/dialog/`)
-- Real conversation flow
+- EXACT API logic from `__init__.py` lines 372-520
+- EXACT formatting logic from `__init__.py` lines 547-577
 
-**Verification:**
-- Check terminal output shows `[Parsing]`, `[Validating]`, `[API Call]`, `[Formatting]`
-- Debug panel shows actual intent, API endpoint called, response
-- Response comes from templates, not hardcoded strings
+**Output Shows:**
+- [STEP 1] Parsing → Intent classification and confidence
+- [STEP 2] Validating → Intent validation and machine name resolution
+- [STEP 3] API Call → Endpoint called and data keys returned
+- [STEP 4] Formatting → Template used and final response
+- FINAL RESPONSE → Actual voice response that would be spoken
 
 ---
 
-### 2. `scripts/quick_test.py` ✅ RECOMMENDED FOR CLI
+### 2. `scripts/test_skill_chat.py` ✅ RECOMMENDED FOR INTERACTIVE TESTING
 
-**Purpose:** Command-line testing for automation  
-**Architecture:** Same as GUI - direct component testing  
-**Status:** ✅ Uses real templates (fixed Nov 20, 2025)
+**Purpose:** Interactive chat interface for manual exploratory testing  
+**Architecture:** Same as test_skill_logic.py but with conversation loop  
+**Status:** ✅ Uses EXACT skill logic from `__init__.py`, real templates, real API
 
 **How to Run:**
 ```bash
 cd /home/ubuntu/ovos/enms-ovos-skill
 source venv/bin/activate
-python3 scripts/quick_test.py --query "Check system health"
+python3 scripts/test_skill_chat.py
 ```
 
 **Output Shows:**
 ```
-[Tier 1] LLM parsing...
-  Intent: factory_overview
-  Confidence: 0.90
+You: Show me active machines
 
-[Tier 2] Validating...
-  ✅ Valid - Intent: IntentType.FACTORY_OVERVIEW
+[Parse] Intent: ranking (confidence: 0.85)
+[Validate] ✅ Intent: ranking, Machine: None
+[API] Calling /machines (list all machines)
+[API] ✅ Data retrieved
+[Format] Using ranking.dialog
 
-[Tier 3] Calling EnMS API...
-  ✅ API Response (Health Check):
-     Status: healthy
-     Active Machines: 8
-
-[Tier 4] Formatting response using templates...
-  ✅ Data retrieved successfully
-  📄 Template used: health_check.dialog
-
-FINAL RESPONSE (would be spoken):
-Yes, the energy management system is online and healthy. 8 machines are currently active with 285 trained baseline models.
+Skill: We have 8 machines: Boiler-1, Compressor-1, Compressor-EU-1, 
+Conveyor-A, HVAC-EU-North, HVAC-Main, Hydraulic-Pump-1, Injection-Molding-1.
 ```
 
-**Key Indicator:** Look for `📄 Template used: XXX.dialog` - confirms real template rendering!
+**Key Features:**
+- Type queries interactively
+- See full processing pipeline
+- Press Ctrl+C to exit
+- Restart anytime to test code changes
 
 ---
 
-### 3. ~~`scripts/chat_gui.py`~~ ❌ DELETED
+### 3. `scripts/test_gui_standalone.py` ⚠️ LEGACY (Not Currently Used)
 
-**Status:** Deleted on Nov 20, 2025  
-**Reason:** Was hardcoding responses, not using real templates  
-**Do NOT use:** File no longer exists
+**Status:** Exists but not actively maintained  
+**Reason:** Browser-based GUI, slower for systematic testing  
+**Use Instead:** `test_skill_logic.py` for automation, `test_skill_chat.py` for interactive
 
 ---
 
@@ -119,75 +121,80 @@ Yes, the energy management system is online and healthy. 8 machines are currentl
 
 ### Step-by-Step Process
 
-#### 1. **Start the Test GUI**
+#### 1. **Activate Virtual Environment**
 ```bash
 cd /home/ubuntu/ovos/enms-ovos-skill
 source venv/bin/activate
-PYTHONPATH=/home/ubuntu/ovos/enms-ovos-skill:$PYTHONPATH python3 scripts/test_gui_standalone.py
 ```
 
-Keep this running in Terminal 1.
-
 ---
 
-#### 2. **Open Browser**
-Navigate to: http://localhost:7862
-
----
-
-#### 3. **Run API Verification (Terminal 2)**
+#### 2. **Run API Verification First**
 
 For each test query, first verify the API works:
 
 ```bash
-# Example: Query 1.1 - Health Check
-curl -s http://10.33.10.109:8001/api/v1/health | jq '.'
+# Example: EP6 Query - Machine Status
+curl -s http://10.33.10.109:8001/api/v1/machines/status/Compressor-1 | jq '.'
 ```
 
 **Save the JSON output** - you'll compare this with OVOS response.
 
 ---
 
-#### 4. **Test in GUI**
+#### 3. **Test with Skill Logic**
 
-Type the query in the browser GUI, e.g., "Check system health"
-
-**What to verify:**
-- ✅ Debug panel shows correct intent
-- ✅ Debug panel shows correct API data
-- ✅ Response matches API data
-- ✅ Response is voice-friendly (not raw JSON)
-
----
-
-#### 5. **Verify Template Usage (Terminal 1)**
-
-Check the terminal running the GUI - you should see:
-```
-[Parsing] Check system health
-[Validating] Intent: factory_overview
-[API Call] Intent: factory_overview, Machine: None
-[Formatting] Using templates...
-```
-
-**Critical:** If you don't see this output, the test tool is not working correctly!
-
----
-
-#### 6. **Alternative: CLI Testing**
-
-If you prefer terminal testing:
+Run the query through the skill:
 
 ```bash
-cd /home/ubuntu/ovos/enms-ovos-skill
-source venv/bin/activate
-
-# Test query
-python3 scripts/quick_test.py --query "Check system health"
-
-# Look for this line in output:
-# 📄 Template used: health_check.dialog
+python3 scripts/test_skill_logic.py "What's the status of Compressor-1?"
 ```
+
+**What to verify:**
+- ✅ Intent classification is correct
+- ✅ API endpoint called matches curl endpoint
+- ✅ Response data matches curl JSON data
+- ✅ Response is voice-friendly (not raw JSON)
+- ✅ Template name is shown in output
+
+**Output Example:**
+```
+[STEP 1] Parsing...
+  Intent: machine_status
+  Confidence: 0.85
+
+[STEP 2] Validating...
+  ✅ Valid - Intent: machine_status, Machine: Compressor-1
+
+[STEP 3] Calling EnMS API...
+  → Calling /machines/status/Compressor-1
+  ✅ API returned data
+
+[STEP 4] Formatting response...
+  → Using standard formatter for intent: machine_status
+
+FINAL RESPONSE:
+Compressor-1 is running at 50.84 kilowatts.
+```
+
+---
+
+#### 4. **Compare Results**
+
+| Aspect | curl Output | OVOS Response | Match? |
+|--------|-------------|---------------|--------|
+| Status | `"status": "running"` | "Compressor-1 is running" | ✅ |
+| Power | `"power_kw": 50.84` | "at 50.84 kilowatts" | ✅ |
+| API Endpoint | `/machines/status/Compressor-1` | Same | ✅ |
+
+---
+
+#### 5. **Mark Results in 1by1.md**
+
+Update the test plan:
+- ✅ PASS: All verifications passed
+- ❌ FAIL: Wrong endpoint, wrong data, or template error
+- ⚠️ PARTIAL: Works but with issues (e.g., wrong intent classification)
 
 ---
 
@@ -303,36 +310,55 @@ For each query in `1by1.md`:
 Run this to confirm your setup is working:
 
 ```bash
-# Terminal 1: Start GUI
 cd /home/ubuntu/ovos/enms-ovos-skill
 source venv/bin/activate
-PYTHONPATH=/home/ubuntu/ovos/enms-ovos-skill:$PYTHONPATH python3 scripts/test_gui_standalone.py
 
-# Terminal 2: Test API
-curl -s http://10.33.10.109:8001/api/v1/health | jq '.active_machines'
-# Should show: 8
+# Test 1: Health check query
+python3 scripts/test_skill_logic.py "Is the energy system online?"
 
-# Browser: http://localhost:7862
-# Type: "Check system health"
-# Expected response: "Yes, the energy management system is online and healthy. 8 machines are currently active with 285 trained baseline models."
+# Expected output:
+# [STEP 1] Intent: factory_overview (0.95)
+# [STEP 2] ✅ Valid
+# [STEP 3] → Calling /health
+# [STEP 4] → Using health_check.dialog
+# FINAL RESPONSE: Yes, the energy management system is online and healthy...
 
-# Terminal 1 should show:
-# [Parsing] Check system health
-# [Validating] Intent: factory_overview
-# [API Call] Intent: factory_overview, Machine: None
-# [Formatting] Using templates...
+# Test 2: Machine status query
+python3 scripts/test_skill_logic.py "What's the status of Compressor-1?"
+
+# Expected output:
+# [STEP 1] Intent: machine_status (0.85)
+# [STEP 2] ✅ Valid - Machine: Compressor-1
+# [STEP 3] → Calling /machines/status/Compressor-1
+# [STEP 4] → Using machine_status.dialog
+# FINAL RESPONSE: Compressor-1 is running at XX kilowatts.
+
+# Test 3: Interactive chat
+python3 scripts/test_skill_chat.py
+# Type: "Show me active machines"
+# Expected: We have 8 machines: Boiler-1, Compressor-1, ...
 ```
 
-**If you see this output, you're testing the REAL skill behavior!** ✅
+**If you see these outputs with template names and correct responses, you're testing REAL skill behavior!** ✅
 
 ---
 
 ## 🚀 Ready to Start Testing
 
 You now have:
-1. ✅ Proper test tools (`test_gui_standalone.py`, `quick_test.py`)
-2. ✅ Verification methods (template usage indicators)
+1. ✅ Proper test tools (`test_skill_logic.py`, `test_skill_chat.py`)
+2. ✅ Verification methods (template usage, API endpoint tracking)
 3. ✅ Understanding of real vs fake responses
-4. ✅ Checklist for each test query
+4. ✅ Systematic testing methodology
+5. ✅ No mocks - testing EXACT skill behavior from `__init__.py`
 
-**Proceed to `1by1.md` and start testing from Batch 1, EP1, Query 1.1!**
+**Current Test Progress:**
+- ✅ EP2: System Statistics (8/8 PASS)
+- ✅ EP6: Machine Status (4/4 tested PASS)
+- ✅ EP4: Machine List (2/3 PASS)
+- ⏳ EP3: Aggregated Stats (Not Implemented)
+- ⏳ EP9: Time-Series (Not Implemented)
+
+**See `TEST_SESSION_RESULTS.md` for detailed results and bugs fixed.**
+
+**Proceed to `1by1.md` to continue testing remaining endpoints!**

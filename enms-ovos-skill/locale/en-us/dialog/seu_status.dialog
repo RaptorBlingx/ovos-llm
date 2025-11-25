@@ -1,0 +1,21 @@
+{% if filter_type == 'active' -%}
+{% if total_count == 0 -%}
+No active SEUs found. All SEUs need baseline models to become active.
+{%- elif total_count == 1 -%}
+1 active SEU with baseline model: {{ seus[0].name }}
+{%- else -%}
+{{ total_count }} active SEUs with baseline models: {% for seu in seus -%}
+{{ seu.name }}{% if not loop.last %}, {% endif %}
+{%- endfor %}
+{%- endif %}
+{%- elif filter_type == 'offline' -%}
+{% if total_count == 0 -%}
+All SEUs are active with baseline models. Great job on compliance!
+{%- elif total_count == 1 -%}
+1 SEU needs a baseline model: {{ seus[0].name }}
+{%- else -%}
+{{ total_count }} SEUs need baseline models: {% for seu in seus -%}
+{{ seu.name }}{% if not loop.last %}, {% endif %}
+{%- endfor %}
+{%- endif %}
+{%- endif %}

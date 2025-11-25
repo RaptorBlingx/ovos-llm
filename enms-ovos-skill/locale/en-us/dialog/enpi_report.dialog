@@ -1,0 +1,5 @@
+{% if overall_performance is defined -%}
+ISO 50001 report for {{ report_period }}: Your factory status is {{ overall_performance.iso_status }}. Total energy consumption {{ overall_performance.deviation_percent | round(1) }} percent {%- if overall_performance.deviation_percent < 0 %}below{%- else %}above{%- endif %} baseline. Analyzed {{ seus_analyzed }} significant energy use{% if seus_analyzed != 1 %}s{% endif %}. Cumulative savings: {{ overall_performance.cumulative_savings_kwh | round(0) | int }} kilowatt-hours, {{ overall_performance.cumulative_savings_usd | round(2) }} dollars. Action plans: {{ action_plans_status.completed }} completed, {{ action_plans_status.in_progress }} in progress.
+{%- else -%}
+No EnPI report data available for the requested period.
+{%- endif %}

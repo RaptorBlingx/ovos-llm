@@ -124,6 +124,23 @@ class ENMSValidator:
                 elif isinstance(machines_str, list):
                     machines_list = machines_str
             
+            # Parse time range - prefer pre-parsed times from parser
+            time_range_obj = None
+            start_time = entities.get('start_time')
+            end_time = entities.get('end_time')
+            time_range_str = llm_output.get("time_range") or entities.get("time_range")
+            
+            if start_time and end_time:
+                # Parser already extracted times
+                time_range_obj = TimeRange(
+                    start=start_time,
+                    end=end_time,
+                    relative=time_range_str  # Store original string
+                )
+            elif time_range_str:
+                # Fall back to validator parsing
+                time_range_obj = self._parse_time_range(time_range_str)
+            
             intent = Intent(
                 intent=IntentType(llm_output.get("intent", "unknown")),
                 confidence=float(llm_output.get("confidence", 0.0)),
@@ -131,7 +148,7 @@ class ENMSValidator:
                 machine=machine,
                 machines=machines_list,
                 metric=llm_output.get("metric") or entities.get("metric"),
-                time_range=self._parse_time_range(llm_output.get("time_range") or entities.get("time_range")),
+                time_range=time_range_obj,
                 aggregation=llm_output.get("aggregation") or entities.get("aggregation"),
                 limit=llm_output.get("limit") or entities.get("limit")
             )
@@ -156,22 +173,90 @@ class ENMSValidator:
         factory_wide_intents = [IntentType.FACTORY_OVERVIEW, IntentType.RANKING, IntentType.COST_ANALYSIS]
         
         if intent.machine and intent.intent not in factory_wide_intents:
-            machine_valid, matched_machine, suggestion = self._validate_machine(intent.machine)
-            if not machine_valid:
-                errors.append(f"Invalid machine name: '{intent.machine}'")
-                if suggestion:
-                    suggestions.append(f"Did you mean '{suggestion}'?")
-                return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
-            
-            # Update intent with normalized machine name (Pydantic v2 immutability)
-            if matched_machine and matched_machine != intent.machine:
-                warnings.append(f"Normalized '{intent.machine}' to '{matched_machine}'")
-                intent = intent.model_copy(update={'machine': matched_machine})
+            # Special handling for COMPARISON: detect group/plural terms
+            if intent.intent == IntentType.COMPARISON:
+                machine_lower = intent.machine.lower()
+                is_group_query = any([
+                    machine_lower.startswith('all '),
+                    machine_lower.endswith('s') and machine_lower not in ['status'],  # plurals: compressors, HVACs
+                    machine_lower in ['compressor', 'hvac', 'boiler', 'conveyor', 'pump'],  # machine types
+                ])
+                
+                if is_group_query:
+                    # Find all matching machines for this type/group
+                    all_matches = self.find_all_matching_machines(intent.machine)
+                    
+                    if len(all_matches) >= 2:
+                        # Populate intent.machines for comparison
+                        intent = intent.model_copy(update={'machines': all_matches, 'machine': None})
+                        logger.info("comparison_group_detected", 
+                                   query_term=intent.machine, 
+                                   matches=all_matches,
+                                   count=len(all_matches))
+                    elif len(all_matches) == 1:
+                        # Only one match - not enough for comparison
+                        warnings.append(f"Only one {intent.machine} found - comparison needs at least 2 machines")
+                        intent = intent.model_copy(update={'machine': all_matches[0]})
+                    else:
+                        # No matches
+                        errors.append(f"No machines found matching '{intent.machine}'")
+                        return ValidationResult(valid=False, intent=None, errors=errors)
+                else:
+                    # Not a group query - validate as single machine (will ask for clarification)
+                    machine_valid, matched_machine, suggestion = self._validate_machine(intent.machine)
+                    if not machine_valid:
+                        errors.append(f"Invalid machine name: '{intent.machine}'")
+                        if suggestion:
+                            suggestions.append(f"Did you mean '{suggestion}'?")
+                        return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
+                    intent = intent.model_copy(update={'machine': matched_machine})
+            else:
+                # Non-COMPARISON intents: Standard machine validation with ambiguity check
+                machine_valid, matched_machine, suggestion = self._validate_machine(intent.machine)
+                if not machine_valid:
+                    errors.append(f"Invalid machine name: '{intent.machine}'")
+                    if suggestion:
+                        suggestions.append(f"Did you mean '{suggestion}'?")
+                    return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
+                
+                # Check for ambiguous machine names ONLY if fuzzy match was used
+                # If exact match found, skip ambiguity check
+                machine_normalized = intent.machine.lower().replace(" ", "-").replace("_", "-")
+                is_exact_match = matched_machine and matched_machine.lower().replace(" ", "-").replace("_", "-") == machine_normalized
+                
+                if not is_exact_match:
+                    all_matches = self.find_all_matching_machines(intent.machine)
+                    if len(all_matches) > 1:
+                        # For BASELINE intent: show predictions for all matches
+                        # For other intents: ask for clarification
+                        if intent.intent == IntentType.BASELINE:
+                            logger.info("baseline_ambiguous_machines",
+                                       query_term=intent.machine,
+                                       matches=all_matches,
+                                       count=len(all_matches))
+                            intent = intent.model_copy(update={'machines': all_matches, 'machine': None})
+                        else:
+                            errors.append(f"Ambiguous machine name: '{intent.machine}' matches {len(all_matches)} machines")
+                            suggestions.append(f"Please specify which one: {', '.join(all_matches)}")
+                            return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
+                
+                # Update intent with normalized machine name (Pydantic v2 immutability)
+                if matched_machine and matched_machine != intent.machine:
+                    warnings.append(f"Normalized '{intent.machine}' to '{matched_machine}'")
+                    intent = intent.model_copy(update={'machine': matched_machine})
         
         # For factory-wide intents, clear the machine field if it was incorrectly extracted
+        # EXCEPTIONS: Allow machine for factory_overview if:
+        # 1. Opportunities query (for filtering)
+        # 2. Action plan query (required for plan creation)
         if intent.intent in factory_wide_intents and intent.machine:
-            warnings.append(f"Ignoring machine '{intent.machine}' for factory-wide query")
-            intent = intent.model_copy(update={'machine': None})
+            utterance_lower = intent.utterance.lower()
+            is_opportunities = 'opportunities' in utterance_lower or 'saving' in utterance_lower
+            is_action_plan = 'action plan' in utterance_lower or 'create plan' in utterance_lower
+            
+            if not (is_opportunities or is_action_plan):
+                warnings.append(f"Ignoring machine '{intent.machine}' for factory-wide query")
+                intent = intent.model_copy(update={'machine': None})
         
         # Layer 5: Multi-machine validation (for comparisons)
         if intent.machines:
@@ -225,13 +310,31 @@ class ENMSValidator:
         
         # Fuzzy matching
         if self.enable_fuzzy_matching:
-            # Try partial match
+            # Normalize: lowercase, replace spaces/underscores with hyphens
             machine_lower = machine_name.lower().replace(" ", "-").replace("_", "-")
+            
+            # Strip common suffixes from user input (e.g., "injection molding machine" → "injection-molding")
+            machine_base = re.sub(r'-(machine|equipment|unit|system)$', '', machine_lower)
+            
             for valid_machine in self.machine_whitelist:
                 valid_lower = valid_machine.lower().replace(" ", "-").replace("_", "-")
                 
+                # Exact match after normalization
+                if machine_lower == valid_lower or machine_base == valid_lower:
+                    return True, valid_machine, None
+                
                 # Substring match
                 if machine_lower in valid_lower or valid_lower in machine_lower:
+                    return True, valid_machine, None
+                
+                # Machine type match (e.g., "injection molding" → "Injection-Molding-1")
+                # Remove trailing numbers/hyphens from valid machine name
+                valid_base = re.sub(r'[-_]\d+$', '', valid_lower)
+                if machine_lower == valid_base or machine_base == valid_base:
+                    return True, valid_machine, None
+                
+                # Check if normalized input is substring of base name
+                if machine_base in valid_base or valid_base in machine_base:
                     return True, valid_machine, None
                 
                 # Levenshtein distance check (simple version)
@@ -239,6 +342,57 @@ class ENMSValidator:
                     return False, None, valid_machine  # Suggest but don't auto-correct
         
         return False, None, None
+    
+    def find_all_matching_machines(self, machine_name: str) -> List[str]:
+        """
+        Find ALL machines that match the query (for ambiguous requests)
+        
+        Returns:
+            List of matching machine names (empty if no matches)
+        """
+        if not machine_name:
+            return []
+        
+        matches = []
+        
+        # Normalize: lowercase, replace spaces/underscores with hyphens
+        machine_lower = machine_name.lower().replace(" ", "-").replace("_", "-")
+        
+        # Strip common suffixes from user input
+        machine_base = re.sub(r'-(machine|equipment|unit|system)s?$', '', machine_lower)
+        
+        for valid_machine in self.machine_whitelist:
+            valid_lower = valid_machine.lower().replace(" ", "-").replace("_", "-")
+            
+            # Exact match after normalization
+            if machine_lower == valid_lower or machine_base == valid_lower:
+                matches.append(valid_machine)
+                continue
+            
+            # Substring match
+            if machine_lower in valid_lower or valid_lower in machine_lower:
+                matches.append(valid_machine)
+                continue
+            
+            # Machine type match (e.g., "hvac" → ["HVAC-Main", "HVAC-EU-North"])
+            # Remove trailing location/number suffixes iteratively: -main, -eu-north, -1, -eu-1, etc.
+            valid_base = valid_lower
+            while True:
+                new_base = re.sub(r'[-_](main|eu|north|south|east|west|\d+)$', '', valid_base, flags=re.IGNORECASE)
+                if new_base == valid_base:
+                    break
+                valid_base = new_base
+            
+            if machine_lower == valid_base or machine_base == valid_base:
+                matches.append(valid_machine)
+                continue
+            
+            # Check if normalized input is substring of base name
+            if machine_base and len(machine_base) > 3:  # Avoid matching too short strings
+                if machine_base in valid_base or valid_base in machine_base:
+                    matches.append(valid_machine)
+        
+        return matches
     
     def _fuzzy_match(self, s1: str, s2: str, threshold: int = 2) -> bool:
         """Simple fuzzy string matching (Levenshtein distance)"""
@@ -298,6 +452,36 @@ class ENMSValidator:
                 start=yesterday.replace(hour=0, minute=0, second=0, microsecond=0),
                 end=yesterday.replace(hour=23, minute=59, second=59, microsecond=999999),
                 relative="yesterday"
+            )
+        
+        elif time_lower in ["this week", "current week"]:
+            # Start of current week (Sunday or Monday, using Sunday)
+            days_since_sunday = now.weekday() + 1 if now.weekday() != 6 else 0
+            week_start = now - timedelta(days=days_since_sunday)
+            return TimeRange(
+                start=week_start.replace(hour=0, minute=0, second=0, microsecond=0),
+                end=now,
+                relative="this_week"
+            )
+        
+        elif time_lower in ["this month", "current month"]:
+            # Start of current month
+            month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            return TimeRange(
+                start=month_start,
+                end=now,
+                relative="this_month"
+            )
+        
+        elif time_lower in ["last month", "previous month"]:
+            # Last month: first day to last day of previous month
+            first_of_this_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            last_month_end = first_of_this_month - timedelta(days=1)
+            last_month_start = last_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            return TimeRange(
+                start=last_month_start,
+                end=last_month_end.replace(hour=23, minute=59, second=59, microsecond=999999),
+                relative="last_month"
             )
         
         elif time_lower in ["last week", "week"]:

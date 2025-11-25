@@ -20,6 +20,11 @@ class IntentType(str, Enum):
     COST_ANALYSIS = "cost_analysis"
     FORECAST = "forecast"
     BASELINE = "baseline"
+    BASELINE_MODELS = "baseline_models"
+    BASELINE_EXPLANATION = "baseline_explanation"
+    KPI = "kpi"
+    PERFORMANCE = "performance"
+    PRODUCTION = "production"
     HELP = "help"
     UNKNOWN = "unknown"
 

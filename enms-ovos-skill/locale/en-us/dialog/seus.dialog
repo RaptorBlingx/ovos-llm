@@ -1,0 +1,22 @@
+{% if filter_type == 'without_baseline' -%}
+{%- if total_count > 0 -%}
+{{ total_count }} SEUs need baselines: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
+{%- else -%}
+All SEUs have baseline models trained.
+{%- endif -%}
+{%- elif filter_type == 'with_baseline' -%}
+{%- if total_count > 0 -%}
+{{ total_count }} SEUs have baseline models: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
+{%- else -%}
+No SEUs have baseline models yet.
+{%- endif -%}
+{%- elif total_count is defined -%}
+I found {{ total_count }} significant energy uses{% if filtered_by %} for {{ filtered_by }}{% endif %}. 
+{%- if seus and seus|length > 0 %}
+{%- set seus_with_baseline = seus | selectattr('has_baseline', 'equalto', true) | list %}
+{%- set seus_without_baseline = seus | rejectattr('has_baseline', 'equalto', true) | list %}
+{{ seus_with_baseline|length }} have baseline models trained{% if seus_without_baseline|length > 0 %}, and {{ seus_without_baseline|length }} need baselines{% endif %}.
+{%- endif %}
+{%- else -%}
+No significant energy uses found.
+{%- endif %}

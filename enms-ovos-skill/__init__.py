@@ -22,6 +22,7 @@ Target Performance:
 from typing import Optional, Dict, Any, List
 import asyncio
 import time
+import re
 from datetime import datetime
 import structlog
 from ovos_workshop.decorators import intent_handler
@@ -35,6 +36,7 @@ from .lib.api_client import ENMSClient
 from .lib.response_formatter import ResponseFormatter
 from .lib.conversation_context import ConversationContextManager, get_conversation_context_manager
 from .lib.voice_feedback import VoiceFeedbackManager, FeedbackType, get_voice_feedback_manager
+from .lib.feature_extractor import FeatureExtractor
 from .lib.models import IntentType, Intent
 from .lib.observability import (
     queries_total,
@@ -226,6 +228,27 @@ class EnmsSkill(OVOSSkill):
             # Track tier routing
             tier_routing.labels(tier=tier).inc()
             
+            # Step 3.5: Check for pending clarification BEFORE validation
+            # If query is just a machine name answering clarification
+            if session.pending_clarification:
+                # Check if query matches any machine (case-insensitive)
+                matched_machine = None
+                for valid_machine in self.validator.machine_whitelist:
+                    if utterance.lower() == valid_machine.lower():
+                        matched_machine = valid_machine
+                        break
+                
+                if matched_machine:
+                    self.logger.info("resolving_pending_clarification_early",
+                                   machine=matched_machine,
+                                   pending_intent=session.pending_clarification['intent'].value)
+                    
+                    # Override parse result with pending intent
+                    llm_output['intent'] = session.pending_clarification['intent'].value
+                    llm_output['entities'] = {'machine': matched_machine}
+                    llm_output['machine'] = matched_machine
+                    llm_output['confidence'] = 0.99  # User provided clarification
+            
             # Step 4: Validate
             validation_start = time.time()
             validation = self.validator.validate(llm_output)
@@ -264,10 +287,24 @@ class EnmsSkill(OVOSSkill):
             # Step 5: Resolve context references (multi-turn support)
             intent = self.context_manager.resolve_context_references(utterance, intent, session)
             
+            # Clear pending clarification if it was resolved early
+            if session.pending_clarification and intent.machine:
+                self.logger.info("cleared_pending_clarification", machine=intent.machine)
+                session.pending_clarification = None
+            
             # Step 6: Check if clarification needed
-            clarification = self.context_manager.needs_clarification(intent, session)
+            clarification = self.context_manager.needs_clarification(intent)
             if clarification:
-                clarification_response = self.context_manager.generate_clarification_response(clarification)
+                # Store pending clarification in session
+                session.pending_clarification = {
+                    'intent': intent.intent,
+                    'metric': intent.metric,
+                    'time_range': intent.time_range,
+                    'timestamp': time.time()
+                }
+                clarification_response = self.context_manager.generate_clarification_response(
+                    intent, session, validation.suggestions
+                )
                 
                 total_latency_ms = (time.time() - start_time) * 1000
                 query_latency.observe(total_latency_ms / 1000)
@@ -305,7 +342,8 @@ class EnmsSkill(OVOSSkill):
             
             # Step 8: Format response with templates
             format_start = time.time()
-            response_text = self._format_response(intent, api_data['data'])
+            custom_template = api_data.get('template')
+            response_text = self._format_response(intent, api_data['data'], custom_template=custom_template)
             format_latency_ms = (time.time() - format_start) * 1000
             
             # Step 9: Update conversation context
@@ -378,14 +416,93 @@ class EnmsSkill(OVOSSkill):
         """
         try:
             if intent.intent == IntentType.MACHINE_STATUS and intent.machine:
-                data = self._run_async(self.api_client.get_machine_status(intent.machine))
-                return {'success': True, 'data': data}
+                # Check for multiple matching machines (e.g., "HVAC" matches both HVAC-Main and HVAC-EU-North)
+                all_matches = self.validator.find_all_matching_machines(intent.machine)
+                
+                if len(all_matches) > 1:
+                    # Multiple machines match - fetch status for ALL of them
+                    self.logger.info("multiple_machines_matched", 
+                                   query=intent.machine, 
+                                   matches=all_matches,
+                                   count=len(all_matches))
+                    
+                    # Fetch status for each machine
+                    machine_statuses = []
+                    for machine_name in all_matches:
+                        status_data = self._run_async(self.api_client.get_machine_status(machine_name))
+                        machine_statuses.append(status_data)
+                    
+                    # Return multi-machine response
+                    return {
+                        'success': True,
+                        'data': {
+                            'machines': machine_statuses,
+                            'count': len(machine_statuses),
+                            'query_term': intent.machine
+                        },
+                        'template': 'multi_machine_status'
+                    }
+                else:
+                    # Single machine match (existing behavior)
+                    data = self._run_async(self.api_client.get_machine_status(intent.machine))
+                    return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.POWER_QUERY:
                 if intent.machine:
                     # Machine-specific power query
-                    # Check if time range is specified
-                    if hasattr(intent, 'entities') and intent.entities:
+                    # Check if time range is specified (via time_range or entities)
+                    if intent.time_range and intent.time_range.relative not in ["today", "now", None]:
+                        # Time-series power query
+                        self.logger.info("power_query_timeseries",
+                                       machine=intent.machine,
+                                       time_range=intent.time_range.relative)
+                        
+                        # Get machine ID
+                        machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        if not machines:
+                            return {'success': False, 'error': f"Machine {intent.machine} not found"}
+                        
+                        machine_id = machines[0]['id']
+                        
+                        # Determine interval
+                        time_delta = intent.time_range.end - intent.time_range.start
+                        if time_delta.days > 30:
+                            interval = '1day'
+                        elif time_delta.days > 7:
+                            interval = '1day'
+                        elif time_delta.days > 1:
+                            interval = '1hour'
+                        else:
+                            interval = '15min'
+                        
+                        # Get time-series power data
+                        timeseries = self._run_async(
+                            self.api_client.get_power_timeseries(
+                                machine_id=machine_id,
+                                start_time=intent.time_range.start,
+                                end_time=intent.time_range.end,
+                                interval=interval
+                            )
+                        )
+                        
+                        # Calculate average power from timeseries
+                        avg_power = 0
+                        if 'data_points' in timeseries and isinstance(timeseries['data_points'], list):
+                            avg_power = sum(point.get('value', 0) for point in timeseries['data_points']) / len(timeseries['data_points'])
+                        
+                        # Structure response for template
+                        data = {
+                            'machine': intent.machine,
+                            'time_range': intent.time_range.relative or 'custom',
+                            'start_time': intent.time_range.start,
+                            'end_time': intent.time_range.end,
+                            'timeseries_data': timeseries.get('data_points', []),
+                            'avg_power_kw': avg_power,
+                            'interval': interval
+                        }
+                        
+                        return {'success': True, 'data': data}
+                    elif hasattr(intent, 'entities') and intent.entities:
                         entities = intent.entities if isinstance(intent.entities, dict) else {}
                         
                         if 'start_time' in entities and 'end_time' in entities:
@@ -430,53 +547,198 @@ class EnmsSkill(OVOSSkill):
             elif intent.intent == IntentType.ENERGY_QUERY:
                 if intent.machine:
                     # Machine-specific energy query
-                    # Check if time range is specified
-                    if hasattr(intent, 'entities') and intent.entities:
-                        entities = intent.entities if isinstance(intent.entities, dict) else {}
+                    # Debug: Check time_range
+                    self.logger.info("debug_time_range", 
+                                   has_time_range=intent.time_range is not None,
+                                   time_range_value=intent.time_range,
+                                   relative=intent.time_range.relative if intent.time_range else None)
+                    
+                    # Check if utterance mentions interval keywords (hourly, 15-minute, etc.)
+                    utterance_lower = intent.utterance.lower() if hasattr(intent, 'utterance') else ''
+                    needs_timeseries = False
+                    requested_interval = None
+                    
+                    # Check for multi-energy queries
+                    is_energy_types = 'energy types' in utterance_lower or 'energy sources' in utterance_lower or 'what energy' in utterance_lower
+                    is_energy_summary = 'energy summary' in utterance_lower or 'all energy' in utterance_lower
+                    specific_energy_type = None
+                    
+                    if 'electricity' in utterance_lower or 'electric' in utterance_lower:
+                        specific_energy_type = 'electricity'
+                    elif 'natural gas' in utterance_lower or 'gas' in utterance_lower:
+                        specific_energy_type = 'natural_gas'
+                    elif 'steam' in utterance_lower:
+                        specific_energy_type = 'steam'
+                    elif 'compressed air' in utterance_lower or 'air' in utterance_lower:
+                        specific_energy_type = 'compressed_air'
+                    
+                    # Handle multi-energy queries
+                    if is_energy_types or is_energy_summary or specific_energy_type:
+                        # Lookup machine ID
+                        machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        if not machines:
+                            return {'success': False, 'error': f'Machine {intent.machine} not found'}
                         
-                        if 'start_time' in entities and 'end_time' in entities:
-                            # Time-series query - get energy for specific time range
-                            self.logger.info("energy_query_timeseries",
-                                           machine=intent.machine,
-                                           start=entities['start_time'].isoformat(),
-                                           end=entities['end_time'].isoformat())
-                            
-                            # First get machine ID
-                            machines = self._run_async(self.api_client.list_machines(search=intent.machine))
-                            if not machines:
-                                return {'success': False, 'error': f"Machine {intent.machine} not found"}
-                            
-                            machine_id = machines[0]['id']
-                            
-                            # Get time-series data
-                            timeseries = self._run_async(
-                                self.api_client.get_energy_timeseries(
-                                    machine_id=machine_id,
-                                    start_time=entities['start_time'],
-                                    end_time=entities['end_time'],
-                                    interval='1hour'
-                                )
+                        machine_id = machines[0]['id']
+                        
+                        if is_energy_types:
+                            # List energy types
+                            data = self._run_async(self.api_client.get_energy_types(machine_id=machine_id, hours=24))
+                            data['machine_name'] = intent.machine
+                            return {'success': True, 'data': data, 'template': 'energy_types'}
+                        elif is_energy_summary:
+                            # Multi-energy summary
+                            data = self._run_async(self.api_client.get_energy_summary(machine_id=machine_id))
+                            data['machine_name'] = intent.machine
+                            return {'success': True, 'data': data, 'template': 'energy_summary'}
+                        elif specific_energy_type:
+                            # Specific energy type readings
+                            data = self._run_async(self.api_client.get_energy_readings(
+                                machine_id=machine_id,
+                                energy_type=specific_energy_type,
+                                hours=24
+                            ))
+                            data['machine_name'] = intent.machine
+                            data['energy_type'] = specific_energy_type
+                            return {'success': True, 'data': data, 'template': 'energy_type_readings'}
+                    
+                    if 'hourly' in utterance_lower or 'hour by hour' in utterance_lower:
+                        needs_timeseries = True
+                        requested_interval = '1hour'
+                    elif '15-minute' in utterance_lower or '15 minute' in utterance_lower or 'fifteen minute' in utterance_lower:
+                        needs_timeseries = True
+                        requested_interval = '15min'
+                    elif '5-minute' in utterance_lower or '5 minute' in utterance_lower:
+                        needs_timeseries = True
+                        requested_interval = '5min'
+                    elif 'daily' in utterance_lower or 'day by day' in utterance_lower:
+                        needs_timeseries = True
+                        requested_interval = '1day'
+                    
+                    # Check if time range is specified (beyond "today") OR if interval keywords detected
+                    if intent.time_range and (intent.time_range.relative not in ["today", "now", None] or needs_timeseries):
+                        # Time-series query - get energy for specific time range
+                        self.logger.info("energy_query_timeseries",
+                                       machine=intent.machine,
+                                       start=intent.time_range.start.isoformat(),
+                                       end=intent.time_range.end.isoformat(),
+                                       relative=intent.time_range.relative,
+                                       needs_timeseries=needs_timeseries,
+                                       requested_interval=requested_interval)
+                        
+                        # First get machine ID
+                        machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        if not machines:
+                            return {'success': False, 'error': f"Machine {intent.machine} not found"}
+                        
+                        machine_id = machines[0]['id']
+                        
+                        # Determine interval based on explicit request or time range
+                        if requested_interval:
+                            interval = requested_interval
+                        else:
+                            time_delta = intent.time_range.end - intent.time_range.start
+                            if time_delta.days > 30:
+                                interval = '1day'
+                            elif time_delta.days > 7:
+                                interval = '1day'  # Changed from 6hour
+                            elif time_delta.days > 1:
+                                interval = '1hour'
+                            else:
+                                interval = '15min'
+                        
+                        # Get time-series data
+                        timeseries = self._run_async(
+                            self.api_client.get_energy_timeseries(
+                                machine_id=machine_id,
+                                start_time=intent.time_range.start,
+                                end_time=intent.time_range.end,
+                                interval=interval
                             )
+                        )
+                        
+                        # Calculate total energy and parse timestamps
+                        total_energy = 0
+                        data_points_parsed = []
+                        if 'data_points' in timeseries and isinstance(timeseries['data_points'], list):
+                            for point in timeseries['data_points']:
+                                total_energy += point.get('value', 0)
+                                # Parse timestamp string to datetime for voice_time filter
+                                timestamp_str = point.get('timestamp')
+                                if timestamp_str:
+                                    try:
+                                        from dateutil import parser as date_parser
+                                        timestamp_dt = date_parser.parse(timestamp_str)
+                                    except:
+                                        timestamp_dt = timestamp_str
+                                    data_points_parsed.append({
+                                        'timestamp': timestamp_dt,
+                                        'value': point.get('value', 0),
+                                        'unit': point.get('unit', 'kWh')
+                                    })
+                        
+                        # Detect trend/pattern queries
+                        utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
+                        is_trend_query = 'trend' in utterance or 'pattern' in utterance
+                        
+                        # Calculate trend analysis if requested
+                        trend_periods = None
+                        if is_trend_query and len(data_points_parsed) > 3:
+                            # Divide into 3-4 periods based on data density
+                            num_periods = 3 if len(data_points_parsed) <= 24 else 4
+                            period_size = len(data_points_parsed) // num_periods
+                            trend_periods = []
                             
-                            # Calculate total energy from timeseries
-                            total_energy = 0
-                            if 'data_points' in timeseries and isinstance(timeseries['data_points'], list):
-                                total_energy = sum(point.get('value', 0) for point in timeseries['data_points'])
-                            
-                            # Structure response for template
-                            data = {
-                                'machine': intent.machine,
-                                'time_range': entities.get('time_range', 'custom'),
-                                'start_time': entities['start_time'],
-                                'end_time': entities['end_time'],
-                                'timeseries_data': timeseries.get('data_points', []),
-                                'total_energy_kwh': total_energy
-                            }
-                            
-                            return {'success': True, 'data': data}
+                            for i in range(num_periods):
+                                start_idx = i * period_size
+                                end_idx = start_idx + period_size if i < num_periods - 1 else len(data_points_parsed)
+                                period_data = data_points_parsed[start_idx:end_idx]
+                                
+                                if period_data:
+                                    period_total = sum(p['value'] for p in period_data)
+                                    period_avg = period_total / len(period_data)
+                                    period_start = period_data[0]['timestamp']
+                                    period_end = period_data[-1]['timestamp']
+                                    
+                                    # Find peak hour in this period
+                                    peak_point = max(period_data, key=lambda p: p['value'])
+                                    
+                                    trend_periods.append({
+                                        'start_time': period_start,
+                                        'end_time': period_end,
+                                        'total_kwh': round(period_total, 2),
+                                        'avg_kwh': round(period_avg, 1),
+                                        'peak_kwh': round(peak_point['value'], 1),
+                                        'peak_time': peak_point['timestamp']
+                                    })
+                        
+                        # Structure response for template
+                        data = {
+                            'machine': intent.machine,
+                            'time_range': intent.time_range.relative or 'custom',
+                            'start_time': intent.time_range.start,
+                            'end_time': intent.time_range.end,
+                            'timeseries_data': data_points_parsed,
+                            'total_energy_kwh': total_energy,
+                            'interval': interval,
+                            'is_trend_query': is_trend_query,
+                            'trend_periods': trend_periods
+                        }
+                        
+                        return {'success': True, 'data': data}
                     
                     # Default: current/today data for specific machine
                     data = self._run_async(self.api_client.get_machine_status(intent.machine))
+                    
+                    # Check if user asked for average per hour or trend/pattern analysis
+                    utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
+                    if 'average' in utterance or 'per hour' in utterance or 'hourly average' in utterance:
+                        data['is_average_query'] = True
+                    
+                    # Detect trend/pattern queries for aggregated time-series analysis
+                    if 'trend' in utterance or 'pattern' in utterance:
+                        data['is_trend_query'] = True
+                    
                     return {'success': True, 'data': data}
                 else:
                     # Factory-wide energy query (no machine specified)
@@ -487,11 +749,214 @@ class EnmsSkill(OVOSSkill):
             elif intent.intent == IntentType.FACTORY_OVERVIEW:
                 # Check if this is a health/status check vs stats query
                 utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
-                health_keywords = ['online', 'health', 'status of', 'system status', 'running']
                 
-                if any(keyword in utterance for keyword in health_keywords):
+                # Check for carbon/emissions queries
+                if 'carbon' in utterance or 'emission' in utterance or 'co2' in utterance:
+                    data = self._run_async(self.api_client.system_stats())
+                    # Mark as carbon query for template
+                    data['is_carbon_query'] = True
+                    return {'success': True, 'data': data}
+                
+                # Check for active/offline machine queries
+                if re.search(r'\b(?:active|online|running|inactive|offline|stopped)\b.*?\b(?:machines?|equipment)\b', utterance):
+                    is_active = bool(re.search(r'\b(?:active|online|running)\b', utterance))
+                    machines = self._run_async(self.api_client.list_machines(is_active=is_active))
+                    
+                    return {
+                        'success': True,
+                        'data': {
+                            'machines': machines,
+                            'total_count': len(machines),
+                            'filter_type': 'active' if is_active else 'offline'
+                        },
+                        'template': 'machines_by_status'
+                    }
+                
+                # Check for performance engine health
+                if 'performance engine' in utterance or ('engine' in utterance and 'running' in utterance):
+                    data = self._run_async(self.api_client.get_performance_health())
+                    return {'success': True, 'data': data, 'template': 'performance_health'}
+                elif 'opportunities' in utterance or 'saving' in utterance:
+                    # Get factory_id from first machine (all machines share same factory)
+                    machines = self._run_async(self.api_client.list_machines())
+                    factory_id = machines[0]['factory_id'] if machines else None
+                    
+                    if not factory_id:
+                        return {'success': False, 'error': 'Could not determine factory ID'}
+                    
+                    # Get all opportunities from API
+                    data = self._run_async(self.api_client.get_performance_opportunities(
+                        factory_id=factory_id,
+                        period='week'
+                    ))
+                    
+                    # Filter by SEU name if specified (API doesn't support filtering)
+                    if intent.machine:
+                        filtered_opps = [opp for opp in data.get('opportunities', []) 
+                                        if opp.get('seu_name') == intent.machine]
+                        
+                        if filtered_opps:
+                            # Update data with filtered opportunities
+                            data['opportunities'] = filtered_opps
+                            data['total_opportunities'] = len(filtered_opps)
+                            # Recalculate total savings
+                            data['total_potential_savings_kwh'] = sum(o.get('potential_savings_kwh', 0) for o in filtered_opps)
+                            data['total_potential_savings_usd'] = sum(o.get('potential_savings_usd', 0) for o in filtered_opps)
+                        else:
+                            # No opportunities for this specific machine
+                            data['opportunities'] = []
+                            data['total_opportunities'] = 0
+                            data['total_potential_savings_kwh'] = 0
+                            data['total_potential_savings_usd'] = 0
+                    
+                    return {'success': True, 'data': data, 'template': 'opportunities'}
+                elif 'action plan' in utterance and 'list' in utterance:
+                    # List ISO action plans (check BEFORE create action plan)
+                    status_filter = None
+                    priority_filter = None
+                    
+                    if 'completed' in utterance or 'complete' in utterance:
+                        status_filter = 'completed'
+                    elif 'in progress' in utterance or 'active' in utterance:
+                        status_filter = 'in_progress'
+                    elif 'planned' in utterance:
+                        status_filter = 'planned'
+                    
+                    if 'high priority' in utterance or 'critical' in utterance:
+                        priority_filter = 'high' if 'high' in utterance else 'critical'
+                    
+                    # Get factory_id
+                    machines = self._run_async(self.api_client.list_machines())
+                    factory_id = machines[0]['factory_id'] if machines else "11111111-1111-1111-1111-111111111111"
+                    
+                    data = self._run_async(self.api_client.list_action_plans(
+                        factory_id=factory_id,
+                        status=status_filter,
+                        priority=priority_filter
+                    ))
+                    return {'success': True, 'data': data, 'template': 'action_plans_list'}
+                elif 'action plan' in utterance or 'create plan' in utterance:
+                    # Create action plan for improvement
+                    if not intent.machine:
+                        return {'success': False, 'error': 'Machine name required for action plan'}
+                    
+                    # Determine issue type from query or use default
+                    issue_type = 'inefficient_scheduling'  # default
+                    if 'idle' in utterance:
+                        issue_type = 'excessive_idle'
+                    elif 'drift' in utterance or 'degradation' in utterance or 'efficiency' in utterance:
+                        issue_type = 'baseline_drift'
+                    elif 'setpoint' in utterance or 'setting' in utterance:
+                        issue_type = 'suboptimal_setpoints'
+                    
+                    data = self._run_async(self.api_client.create_action_plan(
+                        seu_name=intent.machine,
+                        issue_type=issue_type
+                    ))
+                    return {'success': True, 'data': data, 'template': 'action_plan'}
+                elif any(keyword in utterance for keyword in health_keywords):
                     # Health check query - use /health endpoint
                     data = self._run_async(self.api_client.health_check())
+                    return {'success': True, 'data': data}
+                elif 'summary' in utterance:
+                    # Factory summary - comprehensive overview
+                    data = self._run_async(self.api_client.factory_summary())
+                    return {'success': True, 'data': data, 'template': 'factory_summary'}
+                elif 'significant energy' in utterance or 'list seus' in utterance or 'energy uses' in utterance:
+                    # List SEUs (significant energy uses)
+                    # Check if filtering by energy source
+                    energy_source = None
+                    if 'electricity' in utterance or 'electric' in utterance:
+                        energy_source = 'electricity'
+                    elif 'gas' in utterance or 'natural gas' in utterance:
+                        energy_source = 'natural_gas'
+                    elif 'steam' in utterance:
+                        energy_source = 'steam'
+                    
+                    data = self._run_async(self.api_client.list_seus(energy_source=energy_source))
+                    return {'success': True, 'data': data, 'template': 'seus_list'}
+                elif 'seu' in utterance or 'significant energy' in utterance or 'energy uses' in utterance:
+                    # SEU queries (with typo tolerance for common misspellings)
+                    asking_without_baseline = any(phrase in utterance for phrase in [
+                        "don't have", "doesn't have", "do not have", "does not have",
+                        "without baseline", "without basline",  # typo tolerance
+                        "no baseline", "no basline",  # typo tolerance
+                        "need baseline", "need basline",  # typo tolerance
+                        "missing baseline", "missing basline"  # typo tolerance
+                    ])
+                    asking_with_baseline = any(phrase in utterance for phrase in [
+                        "have baseline", "have basline",  # typo tolerance
+                        "has baseline", "has basline",  # typo tolerance
+                        "with baseline", "with basline"  # typo tolerance
+                    ])
+                    
+                    energy_source = None
+                    if 'electricity' in utterance or 'electric' in utterance:
+                        energy_source = 'electricity'
+                    elif 'gas' in utterance or 'natural gas' in utterance:
+                        energy_source = 'natural_gas'
+                    elif 'steam' in utterance:
+                        energy_source = 'steam'
+                    
+                    data = self._run_async(self.api_client.list_seus(energy_source=energy_source))
+                    
+                    # Filter by baseline status if requested
+                    if asking_without_baseline:
+                        data['seus'] = [seu for seu in data.get('seus', []) if not seu.get('has_baseline')]
+                        data['total_count'] = len(data['seus'])
+                        data['filter_type'] = 'without_baseline'
+                    elif asking_with_baseline:
+                        data['seus'] = [seu for seu in data.get('seus', []) if seu.get('has_baseline')]
+                        data['total_count'] = len(data['seus'])
+                        data['filter_type'] = 'with_baseline'
+                    
+                    return {'success': True, 'data': data, 'template': 'seus'}
+                elif 'enpi' in utterance or 'iso' in utterance or 'compliance report' in utterance or 'energy performance indicator' in utterance:
+                    # ISO 50001 EnPI report
+                    # Extract period from utterance (Q1, Q2, Q3, Q4, or year)
+                    import re
+                    from datetime import datetime
+                    
+                    period = None
+                    
+                    # Check for quarters
+                    quarter_match = re.search(r'q[1-4]|quarter\s*[1-4]', utterance, re.IGNORECASE)
+                    if quarter_match:
+                        quarter_text = quarter_match.group().lower()
+                        quarter_num = re.search(r'[1-4]', quarter_text).group()
+                        # Get year from utterance or use current year
+                        year_match = re.search(r'20\d{2}', utterance)
+                        year = year_match.group() if year_match else str(datetime.now().year)
+                        period = f"{year}-Q{quarter_num}"
+                    else:
+                        # Check for explicit year (e.g., "2025")
+                        year_match = re.search(r'20\d{2}', utterance)
+                        if year_match:
+                            period = year_match.group()
+                        else:
+                            # Default to current quarter
+                            now = datetime.now()
+                            current_quarter = (now.month - 1) // 3 + 1
+                            period = f"{now.year}-Q{current_quarter}"
+                    
+                    # Get factory_id from first machine
+                    machines = self._run_async(self.api_client.list_machines())
+                    factory_id = machines[0]['factory_id'] if machines else "11111111-1111-1111-1111-111111111111"
+                    
+                    data = self._run_async(self.api_client.get_enpi_report(
+                        factory_id=factory_id,
+                        period=period
+                    ))
+                    return {'success': True, 'data': data, 'template': 'enpi_report'}
+                elif 'aggregat' in utterance and intent.time_range:
+                    # Aggregated stats with time range
+                    data = self._run_async(self.api_client.aggregated_stats(
+                        start_time=intent.time_range.start,
+                        end_time=intent.time_range.end,
+                        machine_ids='all'
+                    ))
+                    # Use aggregated_stats template instead of factory_overview
+                    return {'success': True, 'data': data, 'template': 'aggregated_stats'}
                 else:
                     # General stats query - use /stats/system endpoint
                     data = self._run_async(self.api_client.get_system_stats())
@@ -499,30 +964,493 @@ class EnmsSkill(OVOSSkill):
                 return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.RANKING:
-                limit = intent.limit or 5
-                data = self._run_async(self.api_client.get_top_consumers(limit=limit))
-                return {'success': True, 'data': data}
+                # Check if this is a machine list request vs top consumers ranking
+                if not intent.limit and not intent.metric:
+                    # This is "list all machines" or "what machines do we have"
+                    # Check if utterance contains a search term (e.g., "which HVAC units")
+                    utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
+                    search_term = None
+                    
+                    # Extract search term from common patterns
+                    import re
+                    search_patterns = [
+                        r'\b(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)s?\b',  # Match plural forms
+                        r'\bfind.*?(?:the\s+)?(\w+)\b',
+                        r'\bhow\s+many\s+(\w+)\b',  # "how many compressors"
+                    ]
+                    
+                    for pattern in search_patterns:
+                        match = re.search(pattern, utterance, re.IGNORECASE)
+                        if match:
+                            search_term = match.group(1).rstrip('s')  # Remove plural 's'
+                            break
+                    
+                    # Call list_machines with optional search parameter
+                    if search_term:
+                        machines = self._run_async(self.api_client.list_machines(search=search_term))
+                    else:
+                        machines = self._run_async(self.api_client.list_machines())
+                    
+                    return {'success': True, 'data': {'machines': machines, 'count': len(machines)}}
+                else:
+                    # This is top N ranking by metric
+                    limit = intent.limit or 5
+                    metric = getattr(intent, 'ranking_metric', 'energy') or getattr(intent, 'metric', 'energy') or 'energy'
+                    data = self._run_async(self.api_client.get_top_consumers(limit=limit, metric=metric))
+                    return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.COMPARISON and intent.machines:
-                # Get data for all machines
-                machines_data = []
-                for machine in intent.machines:
-                    try:
-                        m_data = self._run_async(self.api_client.get_machine_status(machine))
-                        machines_data.append(m_data)
-                    except Exception as e:
-                        self.logger.warning("comparison_machine_failed", machine=machine, error=str(e))
-                
-                return {'success': True, 'data': {'machines': machines_data, 'comparison': intent.machines}}
+                # Multi-machine energy comparison
+                try:
+                    # Get machine IDs for all machines in comparison
+                    machine_ids = []
+                    machine_names = []
+                    
+                    for machine_name in intent.machines:
+                        machines = self._run_async(self.api_client.list_machines(search=machine_name))
+                        if not machines:
+                            self.logger.warning("comparison_machine_not_found", machine=machine_name)
+                            continue
+                        machine_ids.append(machines[0]['id'])
+                        machine_names.append(machines[0]['name'])
+                    
+                    if len(machine_ids) < 2:
+                        return {'success': False, 'error': "Need at least 2 machines to compare"}
+                    
+                    # Get time range (default: today)
+                    from datetime import datetime, timezone
+                    if intent.time_range and intent.time_range.start and intent.time_range.end:
+                        start_time = intent.time_range.start
+                        end_time = intent.time_range.end
+                    else:
+                        # Default: today
+                        end_time = datetime.now(timezone.utc)
+                        start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                    # Call multi-machine comparison API
+                    data = self._run_async(self.api_client.get_multi_machine_energy(
+                        machine_ids=machine_ids,
+                        start_time=start_time,
+                        end_time=end_time,
+                        interval="1hour"
+                    ))
+                    
+                    # Calculate total energy for each machine from data_points
+                    machines_with_totals = []
+                    for machine in data.get('machines', []):
+                        total_energy = sum(dp['value'] for dp in machine.get('data_points', []))
+                        machines_with_totals.append({
+                            'machine_name': machine['machine_name'],
+                            'total_energy': total_energy,
+                            'data_points': machine.get('data_points', [])
+                        })
+                    
+                    # Add machine names for template
+                    data['machines'] = machines_with_totals
+                    data['machine_names'] = machine_names
+                    data['time_period'] = f"today ({start_time.strftime('%Y-%m-%d')})"
+                    
+                    return {'success': True, 'data': data}
+                    
+                except Exception as e:
+                    self.logger.error("comparison_failed", error=str(e), machines=intent.machines)
+                    return {'success': False, 'error': f"Comparison failed: {str(e)}"}
             
             elif intent.intent == IntentType.COST_ANALYSIS:
-                # Factory-wide cost
-                data = self._run_async(self.api_client.get_system_stats())
+                # Extract machine if not provided by Adapt parser
+                machine = intent.machine
+                if not machine:
+                    # Try to extract from utterance using validator's whitelist
+                    utterance = getattr(intent, 'utterance', '')
+                    machine_whitelist = self.validator.machine_whitelist if hasattr(self, 'validator') else []
+                    for machine_name in machine_whitelist:
+                        if machine_name.lower() in utterance.lower():
+                            machine = machine_name
+                            break
+                
+                if machine:
+                    # Machine-specific cost
+                    data = self._run_async(self.api_client.get_machine_status(machine))
+                    return {'success': True, 'data': data}
+                else:
+                    # Factory-wide cost
+                    data = self._run_async(self.api_client.get_system_stats())
+                    return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.ANOMALY_DETECTION:
+                # Check what type of anomaly query this is
+                utterance = getattr(intent, 'utterance', '').lower()
+                is_detection_request = any(kw in utterance for kw in ['check for', 'detect', 'scan for', 'analyze for']) and intent.machine
+                is_active_request = any(kw in utterance for kw in ['active', 'unresolved', 'alerts', 'need attention'])
+                is_search_request = any(kw in utterance for kw in ['find', 'search']) and intent.time_range and intent.time_range.start
+                
+                # Extract severity from utterance (critical, warning, info)
+                severity = None
+                if 'critical' in utterance:
+                    severity = 'critical'
+                elif 'warning' in utterance or 'warn' in utterance:
+                    severity = 'warning'
+                elif 'info' in utterance or 'information' in utterance:
+                    severity = 'info'
+                
+                if is_detection_request:
+                    # RUN ML anomaly detection - POST /anomaly/detect
+                    machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                    if not machines:
+                        return {'success': False, 'error': f"Machine {intent.machine} not found"}
+                    
+                    machine_id = machines[0]['id']
+                    
+                    # Get time range (default: today)
+                    from datetime import datetime, timezone
+                    if intent.time_range and intent.time_range.start and intent.time_range.end:
+                        start_time = intent.time_range.start
+                        end_time = intent.time_range.end
+                    else:
+                        end_time = datetime.now(timezone.utc)
+                        start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                    # Run ML detection
+                    data = self._run_async(self.api_client.detect_anomalies(
+                        machine_id=machine_id,
+                        start=start_time,
+                        end=end_time
+                    ))
+                    data['machine_name'] = intent.machine
+                    data['is_detection'] = True
+                    return {'success': True, 'data': data}
+                
+                elif is_active_request:
+                    # GET active (unresolved) anomalies - GET /anomaly/active
+                    data = self._run_async(self.api_client.get_active_anomalies())
+                    data['is_active'] = True
+                    return {'success': True, 'data': data}
+                
+                elif is_search_request:
+                    # SEARCH anomalies by date range - GET /anomaly/search
+                    machine_id = None
+                    if intent.machine:
+                        machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        if machines:
+                            machine_id = machines[0]['id']
+                    
+                    data = self._run_async(self.api_client.search_anomalies(
+                        start_time=intent.time_range.start,
+                        end_time=intent.time_range.end,
+                        machine_id=machine_id,
+                        severity=severity,
+                        limit=50
+                    ))
+                    if intent.machine:
+                        data['machine_name'] = intent.machine
+                    return {'success': True, 'data': data}
+                
+                elif intent.machine:
+                    # LIST recent anomalies - GET /anomaly/recent
+                    machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                    if not machines:
+                        return {'success': False, 'error': f"Machine {intent.machine} not found"}
+                    
+                    machine_id = machines[0]['id']
+                    data = self._run_async(self.api_client.get_recent_anomalies(
+                        machine_id=machine_id,
+                        severity=severity,
+                        limit=10
+                    ))
+                    # Add machine name for template
+                    data['machine_name'] = intent.machine
+                    return {'success': True, 'data': data}
+                else:
+                    # Factory-wide recent anomalies
+                    data = self._run_async(self.api_client.get_recent_anomalies(
+                        severity=severity,
+                        limit=10
+                    ))
+                    
+                    # Extract unique affected machines from anomalies list
+                    if 'anomalies' in data and isinstance(data['anomalies'], list):
+                        affected_machines = list(set(
+                            anomaly.get('machine_name') 
+                            for anomaly in data['anomalies'] 
+                            if anomaly.get('machine_name')
+                        ))
+                        data['affected_machines'] = sorted(affected_machines)
+                    
+                    return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.BASELINE_MODELS:
+                # List baseline models for a machine
+                if not intent.machine:
+                    return {'success': False, 'error': 'Machine name required for baseline models'}
+                
+                self.logger.info("baseline_models_query", machine=intent.machine)
+                
+                # Call list_baseline_models API
+                response = self._run_async(
+                    self.api_client.list_baseline_models(
+                        seu_name=intent.machine,
+                        energy_source="electricity"
+                    )
+                )
+                
+                # Process response to extract active model and summary
+                models = response.get('models', [])
+                active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+                
+                data = {
+                    'seu_name': response.get('seu_name', intent.machine),
+                    'models': models,
+                    'active_version': active_model.get('model_version') if active_model else None,
+                    'active_r_squared': active_model.get('r_squared') if active_model else None,
+                    'active_samples': active_model.get('training_samples') if active_model else None
+                }
+                
                 return {'success': True, 'data': data}
             
-            elif intent.intent == IntentType.ANOMALY_DETECTION and intent.machine:
-                # Get machine status (includes recent anomalies)
-                data = self._run_async(self.api_client.get_machine_status(intent.machine))
+            elif intent.intent == IntentType.BASELINE_EXPLANATION:
+                # Explain baseline model (key drivers, accuracy)
+                if not intent.machine:
+                    return {'success': False, 'error': 'Machine name required for baseline explanation'}
+                
+                self.logger.info("baseline_explanation_query", machine=intent.machine)
+                
+                # First get the list of models to find the active model ID
+                models_response = self._run_async(
+                    self.api_client.list_baseline_models(
+                        seu_name=intent.machine,
+                        energy_source="electricity"
+                    )
+                )
+                
+                models = models_response.get('models', [])
+                active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+                
+                if not active_model:
+                    return {'success': False, 'error': f'No baseline model found for {intent.machine}'}
+                
+                # Get detailed explanation for the active model
+                model_id = active_model.get('id')
+                explanation_response = self._run_async(
+                    self.api_client.get_baseline_model_explanation(
+                        model_id=model_id,
+                        include_explanation=True
+                    )
+                )
+                
+                # Extract explanation data for template
+                explanation = explanation_response.get('explanation', {})
+                data = {
+                    'machine_name': explanation_response.get('machine_name', intent.machine),
+                    'seu_name': intent.machine,
+                    'r_squared': explanation_response.get('r_squared'),
+                    'model_version': explanation_response.get('model_version'),
+                    'explanation': explanation,
+                    'key_drivers': explanation.get('key_drivers', []),
+                    'accuracy_explanation': explanation.get('accuracy_explanation'),
+                    'formula_explanation': explanation.get('formula_explanation')
+                }
+                
+                return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.BASELINE:
+                # Baseline prediction - get expected energy for given conditions
+                machine = intent.machine
+                machines = intent.machines if intent.machines else []
+                
+                # If no machine specified, try conversation context
+                if not machine and not machines and self.context_manager:
+                    session = self.context_manager.get_or_create_session("default_user")
+                    machine = session.get_last_machine()
+                    if machine:
+                        self.logger.info("baseline_using_context", machine=machine)
+                
+                if not machine and not machines:
+                    return {'success': False, 'error': 'Which machine? Please specify a machine name.', 'needs_clarification': True}
+                
+                # Extract features from utterance (temperature, pressure, load, production)
+                utterance = message.data.get('utterance', '')
+                features = FeatureExtractor.extract_all_features(
+                    utterance,
+                    defaults={
+                        "total_production_count": 5000000,
+                        "avg_outdoor_temp_c": 22.0,
+                        "avg_pressure_bar": 7.0,
+                        "avg_load_factor": 0.85
+                    }
+                )
+                
+                self.logger.info("baseline_features_extracted", features=features)
+                
+                # Handle multiple machines (ambiguous query like "HVAC" or "compressor")
+                if machines:
+                    self.logger.info("baseline_multi_prediction", machines=machines, count=len(machines))
+                    predictions = []
+                    
+                    for seu_name in machines:
+                        try:
+                            prediction = self._run_async(
+                                self.api_client.predict_baseline(
+                                    seu_name=seu_name,
+                                    energy_source="electricity",
+                                    features=features,
+                                    include_message=False
+                                )
+                            )
+                            prediction['seu_name'] = seu_name
+                            predictions.append(prediction)
+                        except Exception as e:
+                            self.logger.warning("baseline_prediction_failed", machine=seu_name, error=str(e))
+                    
+                    # Return multi-machine predictions
+                    return {
+                        'success': True,
+                        'data': {
+                            'predictions': predictions,
+                            'features': features,
+                            'machine_count': len(predictions)
+                        }
+                    }
+                
+                # Single machine prediction
+                self.logger.info("baseline_prediction", machine=machine)
+                
+                # Call baseline prediction API
+                prediction = self._run_async(
+                    self.api_client.predict_baseline(
+                        seu_name=machine,
+                        energy_source="electricity",
+                        features=features,
+                        include_message=False  # Don't use API message, we format with features
+                    )
+                )
+                
+                # Add SEU name and features to response for template
+                prediction['seu_name'] = machine
+                prediction['features'] = features
+                
+                # Update conversation context with this machine
+                if self.context_manager:
+                    session = self.context_manager.get_or_create_session("default_user")
+                    session.update_machine(machine)
+                
+                return {'success': True, 'data': prediction}
+            
+            elif intent.intent == IntentType.KPI:
+                # KPI query - get all KPIs for a machine
+                machine = intent.machine
+                
+                if not machine:
+                    return {'success': False, 'error': 'Which machine? Please specify a machine name for KPIs.', 'needs_clarification': True}
+                
+                self.logger.info("kpi_query", machine=machine, time_range=intent.time_range)
+                
+                # Get time range (default to today)
+                if intent.time_range and intent.time_range.start:
+                    start_time = intent.time_range.start
+                    end_time = intent.time_range.end if intent.time_range.end else datetime.now(timezone.utc)
+                else:
+                    start_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_time = datetime.now(timezone.utc)
+                
+                # Get machine ID
+                machines = self._run_async(self.api_client.list_machines(search=machine))
+                if not machines or len(machines) == 0:
+                    return {'success': False, 'error': f'Machine {machine} not found'}
+                
+                machine_id = machines[0]['id']
+                
+                # Call KPI API
+                kpis = self._run_async(
+                    self.api_client.get_all_kpis(
+                        machine_id=machine_id,
+                        start_time=start_time,
+                        end_time=end_time
+                    )
+                )
+                
+                return {'success': True, 'data': kpis}
+            
+            elif intent.intent == IntentType.PERFORMANCE:
+                # Performance analysis - analyze SEU performance vs baseline
+                machine = intent.machine
+                
+                if not machine:
+                    return {'success': False, 'error': 'Which machine? Please specify a machine name for performance analysis.', 'needs_clarification': True}
+                
+                self.logger.info("performance_query", machine=machine)
+                
+                # Use "energy" as default energy source (works for most machines)
+                # Boiler-1 would need "electricity" but that's an edge case
+                energy_source = "energy"
+                
+                # Get analysis date (default to today)
+                from datetime import date
+                analysis_date = date.today().isoformat()
+                
+                # Call performance API
+                performance = self._run_async(
+                    self.api_client.analyze_performance(
+                        seu_name=machine,
+                        energy_source=energy_source,
+                        analysis_date=analysis_date
+                    )
+                )
+                
+                return {'success': True, 'data': performance}
+            
+            elif intent.intent == IntentType.FORECAST:
+                # Forecast - get future energy prediction
+                self.logger.info("forecast_query", machine=intent.machine)
+                
+                # Check if this is a demand forecast (detailed ARIMA predictions)
+                utterance = getattr(intent, 'utterance', '').lower()
+                is_demand_forecast = 'demand' in utterance or 'detailed' in utterance
+                
+                if is_demand_forecast and intent.machine:
+                    # Use /forecast/demand endpoint (requires machine UUID)
+                    # Lookup machine ID
+                    machines = self._run_async(
+                        self.api_client.list_machines(search=intent.machine)
+                    )
+                    
+                    if not machines:
+                        return {'success': False, 'error': f'Machine {intent.machine} not found'}
+                    
+                    machine_id = machines[0]['id']
+                    
+                    # Get detailed demand forecast
+                    forecast = self._run_async(
+                        self.api_client.forecast_demand(
+                            machine_id=machine_id,
+                            horizon="short",
+                            periods=4
+                        )
+                    )
+                    # Add machine name for template
+                    forecast['machine_name'] = intent.machine
+                    return {'success': True, 'data': forecast, 'custom_template': 'demand_forecast'}
+                else:
+                    # Use /forecast/short-term endpoint (simplified daily forecast)
+                    forecast = self._run_async(
+                        self.api_client.get_forecast(
+                            machine=intent.machine,
+                            hours=24  # Default to 24 hour forecast
+                        )
+                    )
+                    return {'success': True, 'data': forecast}
+            
+            elif intent.intent == IntentType.PRODUCTION:
+                # Production - get production stats from machine status
+                if not intent.machine:
+                    return {'success': False, 'error': 'Machine name required for production queries'}
+                
+                self.logger.info("production_query", machine=intent.machine)
+                
+                # Get machine status (includes production_today)
+                data = self._run_async(
+                    self.api_client.get_machine_status(intent.machine)
+                )
+                
                 return {'success': True, 'data': data}
             
             else:
@@ -544,9 +1472,14 @@ class EnmsSkill(OVOSSkill):
                 'error_type': 'api_timeout' if 'timeout' in str(e).lower() else 'api_error'
             }
     
-    def _format_response(self, intent: Intent, api_data: Dict[str, Any]) -> str:
+    def _format_response(self, intent: Intent, api_data: Dict[str, Any], custom_template: Optional[str] = None) -> str:
         """Format API response using Jinja2 templates"""
         try:
+            # Use custom template if specified
+            if custom_template:
+                template = self.response_formatter.env.get_template(f'{custom_template}.dialog')
+                return template.render(**api_data).strip()
+            
             # Special handling for health check responses within factory_overview
             if intent.intent == IntentType.FACTORY_OVERVIEW and 'status' in api_data and 'database' in api_data:
                 # This is a health check response, use health_check template
@@ -563,7 +1496,10 @@ class EnmsSkill(OVOSSkill):
             return self.response_formatter.format_response(
                 intent_type=intent.intent.value,
                 api_data=api_data,
-                context={"machine_name": intent.machine} if intent.machine else {}
+                context={
+                    "machine_name": intent.machine,
+                    "utterance": getattr(intent, 'utterance', '').lower()
+                } if intent.machine or hasattr(intent, 'utterance') else {}
             )
         except Exception as e:
             self.logger.error("response_formatting_failed", error=str(e))

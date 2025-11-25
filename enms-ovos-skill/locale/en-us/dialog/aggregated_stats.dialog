@@ -1,0 +1,11 @@
+{% if time_period is defined %}
+{# Aggregated stats with time period #}
+{% if query == "All machines" %}
+Factory consumed {{ totals.total_energy_kwh | round(0) }} kilowatt hours from {{ time_period.start | voice_time }} to {{ time_period.end | voice_time }}. Total cost: ${{ totals.total_cost_usd | round(2) }}. Carbon footprint: {{ totals.total_carbon_kg_co2 | round(0) }} kilograms.
+{% else %}
+Aggregated stats for {{ machines_count }} machines from {{ time_period.start | voice_time }} to {{ time_period.end | voice_time }}. Total energy: {{ totals.total_energy_kwh | round(0) }} kilowatt hours, costing ${{ totals.total_cost_usd | round(2) }}.
+{% endif %}
+{% else %}
+{# Fallback to factory_overview template #}
+Aggregated data retrieved.
+{% endif %}

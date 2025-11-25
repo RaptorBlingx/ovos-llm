@@ -1,0 +1,17 @@
+{% if message is defined %}
+{# API includes a formatted message #}
+{{ message }}
+{% elif predictions is defined %}
+{# Multiple machine predictions (ambiguous query) #}
+Baseline predictions{% if features is defined %} with {% if features.total_production_count is defined %}{{ "{:,.0f}".format(features.total_production_count) }} units production{% endif %}{% if features.avg_outdoor_temp_c is defined %}{% if features.total_production_count is defined %}, {% endif %}{{ features.avg_outdoor_temp_c }}°C{% endif %}{% if features.avg_pressure_bar is defined %}{% if features.total_production_count is defined or features.avg_outdoor_temp_c is defined %}, {% endif %}{{ features.avg_pressure_bar }} bar{% endif %}{% if features.avg_load_factor is defined %}{% if features.total_production_count is defined or features.avg_outdoor_temp_c is defined or features.avg_pressure_bar is defined %}, and {% endif %}{{ (features.avg_load_factor * 100)|round(0) }}% load{% endif %}{% endif %}: {% for pred in predictions %}{{ pred.seu_name }}: {{ pred.predicted_energy_kwh|round(1) }} kWh{% if not loop.last %}, {% endif %}{% endfor %}.
+{% elif predicted_energy_kwh is defined %}
+{# Single machine baseline prediction result with conditions #}
+{% set machine_name = seu_name or machine or "The machine" %}
+{{ machine_name }} is predicted to consume {{ predicted_energy_kwh|round(1) }} kilowatt hours{% if features is defined %} with{% if features.total_production_count is defined %} {{ "{:,.0f}".format(features.total_production_count) }} units production{% endif %}{% if features.avg_outdoor_temp_c is defined %}{% if features.total_production_count is defined %},{% endif %} {{ features.avg_outdoor_temp_c }}°C temperature{% endif %}{% if features.avg_pressure_bar is defined %}{% if features.total_production_count is defined or features.avg_outdoor_temp_c is defined %},{% endif %} {{ features.avg_pressure_bar }} bar pressure{% endif %}{% if features.avg_load_factor is defined %}{% if features.total_production_count is defined or features.avg_outdoor_temp_c is defined or features.avg_pressure_bar is defined %}, and{% endif %} {{ (features.avg_load_factor * 100)|round(0) }}% load{% endif %}{% endif %}.
+{% elif model_version is defined %}
+{# Model information #}
+Baseline model version {{ model_version }} for {{ seu_name or machine }}.
+{% else %}
+{# Fallback #}
+Baseline prediction data retrieved{{ " for " + (seu_name or machine) if seu_name or machine else "" }}.
+{% endif %}

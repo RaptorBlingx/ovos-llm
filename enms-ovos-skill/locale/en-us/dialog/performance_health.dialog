@@ -1,0 +1,5 @@
+{% if status == "healthy" %}
+The {{ service }} is {{ status }}. Version {{ version }}. Performance analysis is {{ features.performance_analysis }}.
+{% else %}
+The performance engine status is {{ status }}.
+{% endif %}
