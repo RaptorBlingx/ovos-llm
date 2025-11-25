@@ -183,10 +183,126 @@ class SkillChatTester:
             import traceback
             traceback.print_exc()
     
+    async def _get_factory_wide_drivers(self):
+        """Get aggregated key energy drivers across ALL machines with baseline models."""
+        all_drivers = []
+        machines_analyzed = []
+        
+        machines = list(self.validator.machine_whitelist)
+        
+        for machine_name in machines:
+            try:
+                models_response = await self.api_client.list_baseline_models(
+                    seu_name=machine_name,
+                    energy_source="electricity"
+                )
+                
+                models = models_response.get('models', [])
+                active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+                
+                if not active_model:
+                    continue
+                
+                explanation_response = await self.api_client.get_baseline_model_explanation(
+                    model_id=active_model.get('id'),
+                    include_explanation=True
+                )
+                
+                explanation = explanation_response.get('explanation', {})
+                key_drivers = explanation.get('key_drivers', [])
+                
+                for driver in key_drivers:
+                    driver['machine'] = machine_name
+                    all_drivers.append(driver)
+                
+                machines_analyzed.append(machine_name)
+                
+            except Exception as e:
+                print(f"[API] ⚠️ Failed to get drivers for {machine_name}: {e}")
+                continue
+        
+        if not all_drivers:
+            return {'error': 'No baseline models found across factory'}
+        
+        # Aggregate drivers by feature
+        driver_summary = {}
+        for driver in all_drivers:
+            feature = driver.get('human_name', driver.get('feature'))
+            if feature not in driver_summary:
+                driver_summary[feature] = {
+                    'human_name': feature,
+                    'total_impact': 0,
+                    'machines': [],
+                    'direction': driver.get('direction', 'affects')
+                }
+            driver_summary[feature]['total_impact'] += abs(driver.get('absolute_impact', 0))
+            driver_summary[feature]['machines'].append(driver['machine'])
+        
+        # Sort by total impact and get top 5
+        sorted_drivers = sorted(
+            driver_summary.values(),
+            key=lambda x: x['total_impact'],
+            reverse=True
+        )[:5]
+        
+        print(f"[API] ✅ Analyzed {len(machines_analyzed)} machines with baseline models")
+        
+        return {
+            'factory_wide': True,
+            'machines_analyzed': len(machines_analyzed),
+            'top_drivers': sorted_drivers,
+            'machines_list': machines_analyzed
+        }
+    
     async def _call_api(self, intent: Intent, utterance: str):
         """Call API using EXACT logic from __init__.py lines 372-610"""
         
-        if intent.intent == IntentType.FACTORY_OVERVIEW:
+        if intent.intent == IntentType.SEUS:
+            # Significant Energy Uses (SEUs) queries
+            utterance_lower = utterance.lower()
+            
+            # Extract energy source from intent or utterance
+            energy_source = intent.energy_source
+            if not energy_source:
+                if 'electricity' in utterance_lower or 'electric' in utterance_lower:
+                    energy_source = 'electricity'
+                elif 'gas' in utterance_lower or 'natural gas' in utterance_lower:
+                    energy_source = 'natural_gas'
+                elif 'steam' in utterance_lower:
+                    energy_source = 'steam'
+                elif 'compressed air' in utterance_lower:
+                    energy_source = 'compressed_air'
+            
+            # Check for baseline filtering
+            asking_without_baseline = any(phrase in utterance_lower for phrase in [
+                "don't have", "doesn't have", "do not have", "does not have",
+                "without baseline", "without basline",
+                "no baseline", "no basline",
+                "need baseline", "need basline",
+                "missing baseline", "missing basline"
+            ])
+            asking_with_baseline = any(phrase in utterance_lower for phrase in [
+                "have baseline", "have basline",
+                "has baseline", "has basline",
+                "with baseline", "with basline"
+            ])
+            
+            print(f"[API] Calling /seus (energy_source={energy_source or 'all'})")
+            data = await self.api_client.list_seus(energy_source=energy_source)
+            
+            # Filter by baseline status if requested
+            if asking_without_baseline:
+                data['seus'] = [seu for seu in data.get('seus', []) if not seu.get('has_baseline')]
+                data['total_count'] = len(data['seus'])
+                data['filter_type'] = 'without_baseline'
+            elif asking_with_baseline:
+                data['seus'] = [seu for seu in data.get('seus', []) if seu.get('has_baseline')]
+                data['total_count'] = len(data['seus'])
+                data['filter_type'] = 'with_baseline'
+            
+            return (data, 'seus')
+        
+        elif intent.intent == IntentType.FACTORY_OVERVIEW:
             # Check if this is a health/status check vs stats query  
             utterance_lower = utterance.lower()
             
@@ -770,8 +886,9 @@ class SkillChatTester:
         
         elif intent.intent == IntentType.BASELINE_EXPLANATION:
             if not intent.machine:
-                print(f"[API] ⚠️  Baseline explanation requires machine name")
-                return None
+                # Factory-wide key drivers (no machine specified)
+                print(f"[API] Getting factory-wide key energy drivers")
+                return await self._get_factory_wide_drivers()
             
             print(f"[API] Getting baseline explanation for {intent.machine}")
             

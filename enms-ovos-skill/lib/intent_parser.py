@@ -141,6 +141,23 @@ class HeuristicRouter:
             re.compile(r'\bmodel\s+(?:details?|info|explanation)', re.IGNORECASE),
         ],
         
+        # NEW: SEUs - Significant Energy Uses (case insensitive: seu, seus, SEU, SEUs)
+        'seus': [
+            re.compile(r'\bseus?\b', re.IGNORECASE),  # seu, seus, SEU, SEUs
+            re.compile(r'\bsignificant\s+energy\s+uses?\b', re.IGNORECASE),
+            re.compile(r'\benergy\s+uses?\b', re.IGNORECASE),
+            re.compile(r'\blist.*?(?:all\s+)?(?:available\s+)?seus?\b', re.IGNORECASE),
+            re.compile(r'\b(?:show|get|what).*?seus?\b', re.IGNORECASE),
+            re.compile(r'\bwhich\s+seus?\b', re.IGNORECASE),
+            re.compile(r'\belectricity\s+seus?\b', re.IGNORECASE),
+            re.compile(r'\bnatural\s+gas\s+seus?\b', re.IGNORECASE),
+            re.compile(r'\bsteam\s+seus?\b', re.IGNORECASE),
+            # SEU baseline queries
+            re.compile(r'\bwhich\s+seu.*?(?:have|has|with|without).*?baselines?', re.IGNORECASE),
+            re.compile(r'\bseu.*?(?:don\'t|do not|doesn\'t|does not|no|without).*?baselines?', re.IGNORECASE),
+            re.compile(r'\bseu.*?(?:need|require|missing).*?baselines?', re.IGNORECASE),
+        ],
+        
         # NEW: Forecast (future prediction)
         'forecast': [
             re.compile(r'\b(?:forecast|tomorrow|next\s+(?:day|week|month))', re.IGNORECASE),
@@ -183,17 +200,6 @@ class HeuristicRouter:
             re.compile(r'\b(?:what|how\s+much).*?carbon\b', re.IGNORECASE),
             re.compile(r'\bCO2\s+emissions?\b', re.IGNORECASE),
             re.compile(r'\bemissions?\s+(?:total|today)\b', re.IGNORECASE),
-            # NEW: Significant Energy Uses (SEUs)
-            re.compile(r'\bsignificant\s+energy\s+uses?\b', re.IGNORECASE),
-            re.compile(r'\blist\s+(?:all\s+)?seus?\b', re.IGNORECASE),
-            re.compile(r'\benergy\s+uses\b', re.IGNORECASE),
-            # NEW: SEU baseline queries (with typo tolerance)
-            re.compile(r'\bwhich\s+seu.*?(?:have|has|with|without).*?baselines?', re.IGNORECASE),
-            re.compile(r'\bwhich\s+seu.*?(?:have|has|with|without).*?baslines?', re.IGNORECASE),  # typo: missing 'e'
-            re.compile(r'\bseu.*?(?:don\'t|do not|doesn\'t|does not|no|without).*?baselines?', re.IGNORECASE),
-            re.compile(r'\bseu.*?(?:don\'t|do not|doesn\'t|does not|no|without).*?baslines?', re.IGNORECASE),  # typo
-            re.compile(r'\bseu.*?(?:need|require|missing).*?baselines?', re.IGNORECASE),
-            re.compile(r'\bseu.*?(?:need|require|missing).*?baslines?', re.IGNORECASE),  # typo
             # NEW: Active/offline machine queries
             re.compile(r'\b(?:show|list|what).*?(?:active|online|running).*?(?:machines?|equipment)', re.IGNORECASE),
             re.compile(r'\b(?:show|list|what).*?(?:inactive|offline|stopped).*?(?:machines?|equipment)', re.IGNORECASE),
@@ -449,6 +455,26 @@ class HeuristicRouter:
                     'intent': 'baseline_explanation',
                     'confidence': 0.95,
                     'machine': machine
+                }
+            
+            elif intent_type == 'seus':
+                # SEUs - Significant Energy Uses - extract energy source filter
+                utterance_lower = utterance.lower()
+                energy_source = None
+                
+                if 'electricity' in utterance_lower or 'electric' in utterance_lower:
+                    energy_source = 'electricity'
+                elif 'natural gas' in utterance_lower or 'gas' in utterance_lower:
+                    energy_source = 'natural_gas'
+                elif 'steam' in utterance_lower:
+                    energy_source = 'steam'
+                elif 'compressed air' in utterance_lower:
+                    energy_source = 'compressed_air'
+                
+                return {
+                    'intent': 'seus',
+                    'confidence': 0.95,
+                    'energy_source': energy_source
                 }
             
             elif intent_type == 'kpi':

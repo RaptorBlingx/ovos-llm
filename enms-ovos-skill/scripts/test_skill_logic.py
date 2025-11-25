@@ -401,6 +401,52 @@ async def test_full_pipeline(query_text):
             
             api_data = data
     
+    elif intent.intent == IntentType.SEUS:
+        # Significant Energy Uses (SEUs) queries
+        utterance_lower = query_text.lower()
+        
+        # Extract energy source from intent or utterance
+        energy_source = intent.energy_source
+        if not energy_source:
+            if 'electricity' in utterance_lower or 'electric' in utterance_lower:
+                energy_source = 'electricity'
+            elif 'gas' in utterance_lower or 'natural gas' in utterance_lower:
+                energy_source = 'natural_gas'
+            elif 'steam' in utterance_lower:
+                energy_source = 'steam'
+            elif 'compressed air' in utterance_lower:
+                energy_source = 'compressed_air'
+        
+        # Check for baseline filtering
+        asking_without_baseline = any(phrase in utterance_lower for phrase in [
+            "don't have", "doesn't have", "do not have", "does not have",
+            "without baseline", "without basline",
+            "no baseline", "no basline",
+            "need baseline", "need basline",
+            "missing baseline", "missing basline"
+        ])
+        asking_with_baseline = any(phrase in utterance_lower for phrase in [
+            "have baseline", "have basline",
+            "has baseline", "has basline",
+            "with baseline", "with basline"
+        ])
+        
+        print(f"  → Calling GET /seus (energy_source={energy_source or 'all'})")
+        data = await api_client.list_seus(energy_source=energy_source)
+        
+        # Filter by baseline status if requested
+        if asking_without_baseline:
+            data['seus'] = [seu for seu in data.get('seus', []) if not seu.get('has_baseline')]
+            data['total_count'] = len(data['seus'])
+            data['filter_type'] = 'without_baseline'
+        elif asking_with_baseline:
+            data['seus'] = [seu for seu in data.get('seus', []) if seu.get('has_baseline')]
+            data['total_count'] = len(data['seus'])
+            data['filter_type'] = 'with_baseline'
+        
+        api_data = data
+        custom_template = 'seus'
+    
     elif intent.intent == IntentType.FACTORY_OVERVIEW:
         utterance = getattr(intent, 'utterance', '').lower()
         
@@ -585,6 +631,115 @@ async def test_full_pipeline(query_text):
             'active_samples': active_model.get('training_samples') if active_model else None
         }
     
+    elif intent.intent == IntentType.BASELINE_EXPLANATION:
+        if not intent.machine:
+            # Factory-wide key drivers (no machine specified)
+            print(f"  → Getting factory-wide key energy drivers...")
+            
+            all_drivers = []
+            machines_analyzed = []
+            machines = list(validator.machine_whitelist)
+            
+            for machine_name in machines:
+                try:
+                    models_response = await api_client.list_baseline_models(
+                        seu_name=machine_name,
+                        energy_source="electricity"
+                    )
+                    
+                    models = models_response.get('models', [])
+                    active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+                    
+                    if not active_model:
+                        continue
+                    
+                    explanation_response = await api_client.get_baseline_model_explanation(
+                        model_id=active_model.get('id'),
+                        include_explanation=True
+                    )
+                    
+                    explanation = explanation_response.get('explanation', {})
+                    key_drivers = explanation.get('key_drivers', [])
+                    
+                    for driver in key_drivers:
+                        driver['machine'] = machine_name
+                        all_drivers.append(driver)
+                    
+                    machines_analyzed.append(machine_name)
+                    
+                except Exception as e:
+                    # Skip machines without baseline models (404)
+                    continue
+            
+            if not all_drivers:
+                print("  ⚠️  No baseline models found across factory")
+                return
+            
+            # Aggregate drivers by feature
+            driver_summary = {}
+            for driver in all_drivers:
+                feature = driver.get('human_name', driver.get('feature'))
+                if feature not in driver_summary:
+                    driver_summary[feature] = {
+                        'human_name': feature,
+                        'total_impact': 0,
+                        'machines': [],
+                        'direction': driver.get('direction', 'affects')
+                    }
+                driver_summary[feature]['total_impact'] += abs(driver.get('absolute_impact', 0))
+                driver_summary[feature]['machines'].append(driver['machine'])
+            
+            # Sort by total impact and get top 5
+            sorted_drivers = sorted(
+                driver_summary.values(),
+                key=lambda x: x['total_impact'],
+                reverse=True
+            )[:5]
+            
+            print(f"  ✅ Analyzed {len(machines_analyzed)} machines with baseline models")
+            
+            api_data = {
+                'factory_wide': True,
+                'machines_analyzed': len(machines_analyzed),
+                'top_drivers': sorted_drivers,
+                'machines_list': machines_analyzed
+            }
+        else:
+            # Machine-specific baseline explanation
+            print(f"  → Getting baseline explanation for {intent.machine}")
+            
+            models_response = await api_client.list_baseline_models(
+                seu_name=intent.machine,
+                energy_source="electricity"
+            )
+            
+            models = models_response.get('models', [])
+            active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+            
+            if not active_model:
+                print(f"  ⚠️  No baseline model found for {intent.machine}")
+                return
+            
+            model_id = active_model.get('id')
+            print(f"  → Calling GET /baseline/model/{model_id}?include_explanation=true")
+            
+            explanation_response = await api_client.get_baseline_model_explanation(
+                model_id=model_id,
+                include_explanation=True
+            )
+            
+            explanation = explanation_response.get('explanation', {})
+            api_data = {
+                'machine_name': explanation_response.get('machine_name', intent.machine),
+                'seu_name': intent.machine,
+                'r_squared': explanation_response.get('r_squared'),
+                'model_version': explanation_response.get('model_version'),
+                'explanation': explanation,
+                'key_drivers': explanation.get('key_drivers', []),
+                'accuracy_explanation': explanation.get('accuracy_explanation'),
+                'formula_explanation': explanation.get('formula_explanation')
+            }
+
     elif intent.intent == IntentType.BASELINE:
         machine = intent.machine
         machines = intent.machines if intent.machines else []
