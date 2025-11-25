@@ -4,28 +4,12 @@ __pycache__/
 *$py.class
 *.so
 .Python
-*.egg-info/
-dist/
-build/
-*.egg
 
-# Virtual environments
+# Virtual Environment
 venv/
 env/
 ENV/
-
-# LLM Models (LARGE - don't commit!)
-models/
-*.gguf
-*.bin
-*.safetensors
-
-# Test coverage reports
-htmlcov/
-.coverage
-coverage.xml
-*.cover
-.pytest_cache/
+.venv
 
 # IDE
 .vscode/
@@ -34,15 +18,34 @@ coverage.xml
 *.swo
 *~
 
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Models (large files)
+models/*.gguf
+models/*.bin
+models/*.pt
+models/*.pth
+*.gguf
+
 # Logs
 *.log
 logs/
 
-# Backup files
-*.backup
-*.bak
-*~
-
 # OS
 .DS_Store
 Thumbs.db
+
+# Backups
+*.backup
+*.bak
+*.backup_*
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
