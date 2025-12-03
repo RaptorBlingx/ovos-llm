@@ -689,15 +689,20 @@ class ENMSClient:
         Get short-term forecast
         
         Args:
-            machine: Machine name (optional)
+            machine: Machine name (optional). Will be resolved to machine_id.
             hours: Forecast horizon in hours
             
         Returns:
             Forecast data
         """
-        params = {"hours": hours}
+        params = {}
         if machine:
-            params["machine"] = machine
+            # Lookup machine ID by name
+            machines = await self.list_machines(search=machine)
+            if not machines:
+                raise ValueError(f"Machine not found: {machine}")
+            params["machine_id"] = machines[0]["id"]
+        
         return await self._request("GET", "/forecast/short-term", params=params)
     
     # ISO 50001 Compliance

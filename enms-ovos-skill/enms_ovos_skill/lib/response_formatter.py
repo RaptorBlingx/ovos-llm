@@ -69,11 +69,17 @@ class ResponseFormatter:
             1234.5 → "1,234.5"
             0.5 → "0.5"
             1000000 → "1,000,000"
+            0.00006132 → "0.00006" (scientific notation for very small)
         """
         if value is None:
             return "0"
         
         rounded = round(float(value), precision)
+        
+        # Handle very small numbers (< 0.001) with more precision
+        if 0 < abs(float(value)) < 0.001:
+            # Use 5 decimal places for tiny values like SEC
+            return f"{float(value):.5f}"
         
         # For integers or .0, show without decimals
         if rounded == int(rounded):

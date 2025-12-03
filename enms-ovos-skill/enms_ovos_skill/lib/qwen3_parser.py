@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import json
 import time
+import threading
+import concurrent.futures
 import structlog
 
 try:
@@ -48,7 +50,7 @@ class Qwen3Parser:
     
     def __init__(
         self,
-        model_path: str = "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+        model_path: str = None,
         n_ctx: int = 2048,
         n_threads: int = 4,
         temperature: float = 0.1,
@@ -64,6 +66,11 @@ class Qwen3Parser:
             temperature: Sampling temperature (0.1 = deterministic)
             max_tokens: Maximum output tokens
         """
+        # Default to package-relative path if not specified
+        if model_path is None:
+            pkg_dir = Path(__file__).parent.parent
+            model_path = pkg_dir / "models" / "Qwen_Qwen3-1.7B-Q4_K_M.gguf"
+        
         self.model_path = Path(model_path)
         self.n_ctx = n_ctx
         self.n_threads = n_threads
@@ -79,10 +86,9 @@ class Qwen3Parser:
                    n_ctx=n_ctx,
                    n_threads=n_threads)
         
-        # Pre-load model for persistent warm inference (massive latency reduction)
-        # First query: ~1s load + 200ms inference
-        # Subsequent: ~200ms inference (16x faster!)
-        self.load_model()
+        # DO NOT pre-load model in __init__ - it blocks OVOS's main thread for 30+ seconds!
+        # Model will be loaded lazily on first parse() call
+        # self.load_model()  # REMOVED - causes deadlock in OVOS environment
     
     def load_model(self):
         """Load Qwen3 model into memory (only once)"""
@@ -103,8 +109,8 @@ class Qwen3Parser:
             n_threads=self.n_threads,
             n_gpu_layers=0,  # CPU only
             verbose=False,
-            use_mlock=True,  # Lock model in RAM (prevents swapping)
-            use_mmap=True    # Memory-mapped file (faster loading)
+            use_mlock=False,  # Disabled - can cause deadlocks in OVOS environment
+            use_mmap=True     # Memory-mapped file (faster loading)
         )
         
         # Apply JSON grammar constraint
@@ -115,12 +121,13 @@ class Qwen3Parser:
         logger.info("model_loaded",
                    model_size_mb=self.model_path.stat().st_size / 1024 / 1024)
     
-    def parse(self, utterance: str) -> Dict[str, Any]:
+    def parse(self, utterance: str, timeout_seconds: int = 60) -> Dict[str, Any]:
         """
         Parse natural language utterance to structured intent
         
         Args:
             utterance: User's spoken/typed query
+            timeout_seconds: Max time for inference (default 60s)
             
         Returns:
             Intent dict with: intent, confidence, entities
@@ -144,19 +151,30 @@ class Qwen3Parser:
         
         logger.info("llm_inference_start", utterance=utterance)
         
+        # Run inference with timeout to prevent infinite hang
         try:
-            # Call LLM with stricter parameters to force JSON output
-            response = self.llm(
-                prompt,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                stop=["```", "\n\nUser:", "\n\nExample:", "User:"],  # Stop before repeating
-                echo=False,
-                repeat_penalty=1.2,  # Penalize repetition
-                top_p=0.95,
-                top_k=40
-            )
-            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._run_inference, prompt)
+                try:
+                    response = future.result(timeout=timeout_seconds)
+                except concurrent.futures.TimeoutError:
+                    logger.error("llm_inference_timeout", 
+                               utterance=utterance, 
+                               timeout_seconds=timeout_seconds)
+                    return {
+                        "intent": "unknown",
+                        "confidence": 0.0,
+                        "error": f"LLM inference timed out after {timeout_seconds}s"
+                    }
+        except Exception as e:
+            logger.error("llm_inference_executor_error", error=str(e))
+            return {
+                "intent": "unknown",
+                "confidence": 0.0,
+                "error": str(e)
+            }
+        
+        try:
             # Extract generated text
             text = response["choices"][0]["text"].strip()
             
@@ -194,17 +212,31 @@ class Qwen3Parser:
             return {
                 "intent": "unknown",
                 "confidence": 0.0,
-                "entities": {},
-                "error": "Failed to parse LLM output as JSON"
+                "error": f"JSON parse error: {e}"
             }
         except Exception as e:
-            logger.error("llm_inference_error", error=str(e))
+            logger.error("llm_parse_error", error=str(e))
             return {
                 "intent": "unknown",
                 "confidence": 0.0,
-                "entities": {},
                 "error": str(e)
             }
+    
+    def _run_inference(self, prompt: str) -> Dict[str, Any]:
+        """Run LLM inference (called in thread with timeout).
+        
+        Returns raw response dict from llama-cpp.
+        """
+        return self.llm(
+            prompt,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            stop=["```", "\n\nUser:", "\n\nExample:", "User:"],
+            echo=False,
+            repeat_penalty=1.2,
+            top_p=0.95,
+            top_k=40
+        )
     
     def _build_prompt(self, utterance: str) -> str:
         """

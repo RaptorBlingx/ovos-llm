@@ -1,0 +1,7 @@
+{% if count == 0 -%}
+No machines found.
+{%- elif count == 1 -%}
+There is 1 machine: {{ machines[0] }}.
+{%- else -%}
+We have {{ count }} machines: {{ machines | join(', ') }}.
+{%- endif %}

@@ -1,0 +1,7 @@
+{% if data is defined and data|length > 0 -%}
+{%- set total_consumption = data | sum(attribute='consumption_m3') if energy_type == 'natural_gas' else (data | sum(attribute='consumption_kg') if energy_type == 'steam' else data | sum(attribute='power_kw')) -%}
+{%- set avg_power = (data | sum(attribute='power_kw')) / (data | length) -%}
+{{ machine_name }}'s {{ energy_type }} readings show {{ count }} data points. Average power: {{ avg_power | round(1) }} kilowatts. Total consumption: {{ total_consumption | round(1) }} {{ unit }}.
+{%- else -%}
+No {{ energy_type }} data available for {{ machine_name }}.
+{%- endif %}

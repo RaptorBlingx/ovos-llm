@@ -1,0 +1,14 @@
+{% if predictions is defined and predictions|length > 0 -%}
+  {%- set avg_power = (predictions | sum / predictions|length) | round(1) -%}
+  {%- if confidence_intervals is defined and confidence_intervals.lower is defined and confidence_intervals.upper is defined -%}
+    {%- set min_confidence = (confidence_intervals.lower | min) | round(1) -%}
+    {%- set max_confidence = (confidence_intervals.upper | max) | round(1) -%}
+{{ machine_name }}'s demand forecast for the next {{ periods }} periods: average {{ avg_power }} kilowatts, with 95% confidence ranging from {{ min_confidence }} to {{ max_confidence }} kilowatts. Forecasted using {{ model_type }} model with {{ frequency }} intervals.
+  {%- else -%}
+    {%- set min_power = predictions | min | round(1) -%}
+    {%- set max_power = predictions | max | round(1) -%}
+{{ machine_name }}'s demand forecast for the next {{ periods }} periods: average {{ avg_power }} kilowatts, ranging from {{ min_power }} to {{ max_power }} kilowatts. Forecasted using {{ model_type }} model with {{ frequency }} intervals.
+  {%- endif -%}
+{%- else -%}
+Demand forecast data not available.
+{%- endif %}
