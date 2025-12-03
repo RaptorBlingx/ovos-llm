@@ -220,17 +220,35 @@ class ENMSValidator:
                     return ValidationResult(valid=False, intent=None, errors=errors, suggestions=suggestions)
                 
                 # Check for ambiguous machine names ONLY if fuzzy match was used
-                # If exact match found, skip ambiguity check
-                machine_normalized = intent.machine.lower().replace(" ", "-").replace("_", "-")
-                is_exact_match = matched_machine and matched_machine.lower().replace(" ", "-").replace("_", "-") == machine_normalized
+                # If exact match found (after number normalization), skip ambiguity check
+                # Number words to digits mapping (same as in _validate_machine)
+                number_words = {
+                    'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+                    'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
+                    'first': '1', 'second': '2', 'third': '3'
+                }
+                
+                # Normalize user input with number conversion
+                machine_normalized = intent.machine.lower()
+                for word, digit in number_words.items():
+                    machine_normalized = re.sub(rf'\b{word}\b', digit, machine_normalized)
+                machine_normalized_dash = machine_normalized.replace(" ", "-").replace("_", "-")
+                
+                # Check if matched_machine is an exact match after normalization
+                is_exact_match = False
+                if matched_machine:
+                    matched_lower_dash = matched_machine.lower().replace(" ", "-").replace("_", "-")
+                    is_exact_match = (machine_normalized == matched_machine.lower() or 
+                                     machine_normalized_dash == matched_lower_dash)
                 
                 if not is_exact_match:
                     all_matches = self.find_all_matching_machines(intent.machine)
                     if len(all_matches) > 1:
-                        # For BASELINE intent: show predictions for all matches
+                        # For BASELINE, MACHINE_STATUS, and ENERGY_QUERY intents: aggregate results for all matches
                         # For other intents: ask for clarification
-                        if intent.intent == IntentType.BASELINE:
-                            logger.info("baseline_ambiguous_machines",
+                        if intent.intent in (IntentType.BASELINE, IntentType.MACHINE_STATUS, IntentType.ENERGY_QUERY):
+                            logger.info("multi_machine_aggregation",
+                                       intent=intent.intent.value,
                                        query_term=intent.machine,
                                        matches=all_matches,
                                        count=len(all_matches))
@@ -303,15 +321,34 @@ class ENMSValidator:
         if not machine_name:
             return True, None, None
         
-        # Exact match (case-insensitive)
+        # Number words to digits mapping for spoken input
+        number_words = {
+            'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
+            'first': '1', 'second': '2', 'third': '3'
+        }
+        
+        # Convert number words to digits (e.g., "compressor one" -> "compressor 1")
+        machine_normalized = machine_name.lower()
+        for word, digit in number_words.items():
+            machine_normalized = re.sub(rf'\b{word}\b', digit, machine_normalized)
+        
+        # Normalize: lowercase, replace spaces/underscores with hyphens
+        machine_normalized_dash = machine_normalized.replace(" ", "-").replace("_", "-")
+        
+        # Exact match (case-insensitive) - check both original and dash-normalized
         for valid_machine in self.machine_whitelist:
-            if machine_name.lower() == valid_machine.lower():
+            valid_lower = valid_machine.lower()
+            valid_lower_dash = valid_lower.replace(" ", "-").replace("_", "-")
+            
+            # Direct exact match or dash-normalized exact match
+            if machine_normalized == valid_lower or machine_normalized_dash == valid_lower_dash:
                 return True, valid_machine, None
         
         # Fuzzy matching
         if self.enable_fuzzy_matching:
             # Normalize: lowercase, replace spaces/underscores with hyphens
-            machine_lower = machine_name.lower().replace(" ", "-").replace("_", "-")
+            machine_lower = machine_normalized.replace(" ", "-").replace("_", "-")
             
             # Strip common suffixes from user input (e.g., "injection molding machine" → "injection-molding")
             machine_base = re.sub(r'-(machine|equipment|unit|system)$', '', machine_lower)
@@ -355,21 +392,42 @@ class ENMSValidator:
         
         matches = []
         
+        # Number words to digits mapping for spoken input
+        number_words = {
+            'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
+            'first': '1', 'second': '2', 'third': '3'
+        }
+        
+        # Convert number words to digits (e.g., "compressor one" -> "compressor 1")
+        machine_lower = machine_name.lower()
+        for word, digit in number_words.items():
+            machine_lower = re.sub(rf'\b{word}\b', digit, machine_lower)
+        
         # Normalize: lowercase, replace spaces/underscores with hyphens
-        machine_lower = machine_name.lower().replace(" ", "-").replace("_", "-")
+        machine_lower = machine_lower.replace(" ", "-").replace("_", "-")
         
         # Strip common suffixes from user input
         machine_base = re.sub(r'-(machine|equipment|unit|system)s?$', '', machine_lower)
         
+        # FIRST: Check for exact matches only
+        exact_matches = []
         for valid_machine in self.machine_whitelist:
             valid_lower = valid_machine.lower().replace(" ", "-").replace("_", "-")
             
             # Exact match after normalization
             if machine_lower == valid_lower or machine_base == valid_lower:
-                matches.append(valid_machine)
-                continue
+                exact_matches.append(valid_machine)
+        
+        # If exact match found, return ONLY exact matches (no fuzzy/substring)
+        if exact_matches:
+            return exact_matches
+        
+        # FALLBACK: No exact match - do fuzzy/substring matching for ambiguous queries
+        for valid_machine in self.machine_whitelist:
+            valid_lower = valid_machine.lower().replace(" ", "-").replace("_", "-")
             
-            # Substring match
+            # Substring match (only if no exact match found)
             if machine_lower in valid_lower or valid_lower in machine_lower:
                 matches.append(valid_machine)
                 continue

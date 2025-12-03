@@ -1,0 +1,5 @@
+# WSL2 OVOS Bridge - Requirements
+# Install these in WSL2 with: pip install -r requirements-wsl.txt
+
+websockets>=12.0
+ovos-bus-client>=0.0.9

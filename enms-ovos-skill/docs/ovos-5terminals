@@ -1,0 +1,34 @@
+Yes, 100% correct! Here are the **exact 5 terminals**:
+
+## Correct Terminal Setup for OVOS
+
+**WSL2 Terminals:**
+
+1. **Terminal 1 - Message Bus (FIRST):**
+   ```bash
+   ovos-messagebus
+   ```
+
+2. **Terminal 2 - OVOS Core:**
+   ```bash
+   ovos-core
+   ```
+
+3. **Terminal 3 - OVOS Audio:**
+   ```bash
+   ovos-audio
+   ```
+
+**Bridge Terminals:**
+
+4. **Terminal 4 - WSL OVOS Bridge (WSL2):**
+   ```bash
+   wsl bash -c "source ~/ovos-env/bin/activate && python3 /mnt/d/ovos-llm-core/ovos-llm/enms-ovos-skill/bridge/wsl_ovos_bridge.py"
+   ```
+
+5. **Terminal 5 - Windows STT Bridge (PowerShell/CMD):**
+   ```bash
+   python d:\ovos-llm-core\ovos-llm\enms-ovos-skill\bridge\windows_stt_bridge_final.py
+   ```
+
+The bridges handle audio I/O between Windows and WSL2. Terminal order matters - messagebus must start first!

@@ -1,5 +1,0 @@
-{% if total_energy_kwh is defined -%}
-{{ machine_name }}'s {{ energy_type }} consumption: {{ total_energy_kwh | round(1) }} {{ unit }}, averaging {{ avg_power_kw | round(1) }} kilowatts over {{ time_period_hours }} hours.
-{%- else -%}
-No {{ energy_type }} data available for {{ machine_name }}.
-{%- endif %}

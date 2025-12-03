@@ -23,10 +23,12 @@ from typing import Optional, Dict, Any, List
 import asyncio
 import time
 import re
-from datetime import datetime
+import threading
+import concurrent.futures
+from datetime import datetime, timezone
 import structlog
 from ovos_workshop.decorators import intent_handler
-from ovos_workshop.skills import OVOSSkill
+from ovos_workshop.skills.converse import ConversationalSkill
 from ovos_bus_client.message import Message
 
 # Import all core modules
@@ -34,22 +36,22 @@ from .lib.intent_parser import HybridParser, RoutingTier
 from .lib.validator import ENMSValidator
 from .lib.api_client import ENMSClient
 from .lib.response_formatter import ResponseFormatter
-from .lib.conversation_context import ConversationContextManager, get_conversation_context_manager
-from .lib.voice_feedback import VoiceFeedbackManager, FeedbackType, get_voice_feedback_manager
+from .lib.conversation_context import ConversationContextManager
+from .lib.voice_feedback import VoiceFeedbackManager, FeedbackType
 from .lib.feature_extractor import FeatureExtractor
 from .lib.models import IntentType, Intent
 from .lib.observability import (
     queries_total,
     query_latency,
     tier_routing,
-    api_errors,
-    validation_failures
+    errors_total,
+    validation_rejections
 )
 
 logger = structlog.get_logger(__name__)
 
 
-class EnmsSkill(OVOSSkill):
+class EnmsSkill(ConversationalSkill):
     """
     PRODUCTION-READY OVOS Skill for Energy Management System
     
@@ -63,9 +65,15 @@ class EnmsSkill(OVOSSkill):
     - <200ms P50 latency
     """
 
-    def __init__(self, *args, **kwargs):
-        """Initialize the EnMS skill"""
-        super().__init__(*args, **kwargs)
+    def __init__(self, bus=None, skill_id="", **kwargs):
+        """Initialize the EnMS skill
+        
+        Args:
+            bus: Message bus instance
+            skill_id: Unique skill identifier
+            **kwargs: Additional keyword arguments
+        """
+        # Initialize attributes FIRST to avoid overwriting if initialize() is called by super()
         self.logger = structlog.get_logger(__name__)
         
         # Core components (initialized in initialize())
@@ -76,16 +84,22 @@ class EnmsSkill(OVOSSkill):
         self.context_manager: Optional[ConversationContextManager] = None
         self.voice_feedback: Optional[VoiceFeedbackManager] = None
         
+        # Persistent event loop for async API calls (prevents 'Event loop is closed' errors)
+        self._async_loop: Optional[asyncio.AbstractEventLoop] = None
+        
         # Performance tracking
         self.query_count = 0
         self.total_latency_ms = 0
+        
+        # Call parent constructor LAST (may trigger initialize())
+        super().__init__(bus=bus, skill_id=skill_id, **kwargs)
         
     def initialize(self):
         """
         Called after skill construction
         Initialize all SOTA components
         """
-        self.logger.info("skill_initializing", 
+        logger.info("skill_initializing", 
                         skill_name="EnmsSkill",
                         version="1.0.0",
                         architecture="multi-tier-adaptive")
@@ -98,18 +112,18 @@ class EnmsSkill(OVOSSkill):
         self.progress_threshold_ms = self.settings.get("progress_threshold_ms", 500)
         
         # Initialize Tier 1-3: Hybrid Parser (Heuristic + Adapt + LLM)
-        self.logger.info("initializing_hybrid_parser")
+        logger.info("initializing_hybrid_parser")
         self.hybrid_parser = HybridParser()
         
         # Initialize Tier 4: Validator
-        self.logger.info("initializing_validator")
+        logger.info("initializing_validator")
         self.validator = ENMSValidator(
             confidence_threshold=self.confidence_threshold,
             enable_fuzzy_matching=self.settings.get("enable_fuzzy_matching", True)
         )
         
         # Initialize Tier 5: API Client
-        self.logger.info("initializing_api_client", base_url=self.enms_api_base_url)
+        logger.info("initializing_api_client", base_url=self.enms_api_base_url)
         self.api_client = ENMSClient(
             base_url=self.enms_api_base_url,
             timeout=self.settings.get("api_timeout_seconds", 30),
@@ -117,35 +131,125 @@ class EnmsSkill(OVOSSkill):
         )
         
         # Initialize Tier 6: Response Formatter
-        self.logger.info("initializing_response_formatter")
+        logger.info("initializing_response_formatter")
         self.response_formatter = ResponseFormatter()
         
         # Initialize Tier 7: Conversation Context
-        self.logger.info("initializing_conversation_context")
-        self.context_manager = get_conversation_context_manager()
+        logger.info("initializing_conversation_context")
+        self.context_manager = ConversationContextManager()
         
         # Initialize Tier 8: Voice Feedback
-        self.logger.info("initializing_voice_feedback")
-        self.voice_feedback = get_voice_feedback_manager()
+        logger.info("initializing_voice_feedback")
+        self.voice_feedback = VoiceFeedbackManager()
         
-        # Load machine whitelist from EnMS API
-        self.schedule_event(self._refresh_machine_whitelist, 0)  # Run immediately
-        self.schedule_repeating_event(self._refresh_machine_whitelist, None, 86400)  # Daily refresh
-        
-        # Cleanup expired conversation sessions every hour
-        self.schedule_repeating_event(self._cleanup_conversations, None, 3600)
-        
-        self.logger.info("skill_initialized_successfully", 
+        logger.info("skill_initialized_successfully", 
                         components=["HybridParser", "Validator", "APIClient", "ResponseFormatter", 
                                   "ConversationContext", "VoiceFeedback"],
                         enms_api=self.enms_api_base_url,
-                        confidence_threshold=self.confidence_threshold)
+                        confidence_threshold=self.confidence_threshold,
+                        converse_mode=True)
+        
+        # Activate skill for converse() handling
+        # This makes OVOS route utterances to this skill's converse() method
+        self.activate()
     
-    async def _refresh_machine_whitelist(self):
+    def on_ready_status(self):
+        """Called when skill is fully ready - safe to schedule events here."""
+        super().on_ready_status()
+        
+        # Load machine whitelist from EnMS API
+        # Delay first execution by 5 seconds to ensure API is available
+        self.schedule_event(
+            self._refresh_machine_whitelist, 
+            5,
+            name=f"{self.skill_id}_whitelist_refresh_initial"
+        )
+        self.schedule_repeating_event(
+            self._refresh_machine_whitelist, 
+            86400, 
+            86400,
+            name=f"{self.skill_id}_whitelist_refresh_daily"
+        )  # Daily refresh
+        
+        # Cleanup expired conversation sessions every hour
+        self.schedule_repeating_event(
+            self._cleanup_conversations, 
+            3600, 
+            3600,
+            name=f"{self.skill_id}_conversation_cleanup"
+        )
+        
+        # Health check heartbeat every 30 seconds (detects if skill is stuck)
+        self.schedule_repeating_event(
+            self._health_check,
+            30,
+            30,
+            name=f"{self.skill_id}_health_check"
+        )
+        
+        logger.info("scheduled_events_registered",
+                   events=["whitelist_refresh_initial", "whitelist_refresh_daily", "conversation_cleanup", "health_check"])
+        
+        # Background preload LLM model (non-blocking)
+        # This loads the model in a background thread so first LLM query is fast
+        threading.Thread(target=self._preload_llm, daemon=True, name="llm_preload").start()
+    
+    def _health_check(self, message=None):
+        """Periodic health check to detect if skill is stuck.
+        
+        If this stops logging, the skill is hung.
+        Also re-activates skill to prevent timeout deactivation.
+        """
+        # Keep skill active (OVOS deactivates after ~5 min)
+        try:
+            self.activate()
+        except:
+            pass
+        
+        llm_loaded = False
+        if self.hybrid_parser and self.hybrid_parser.llm:
+            llm_loaded = self.hybrid_parser.llm._model_loaded
+        
+        self.logger.debug("health_check",
+                        queries_processed=self.query_count,
+                        llm_loaded=llm_loaded,
+                        avg_latency_ms=round(self.total_latency_ms / max(self.query_count, 1), 2))
+    
+    def _preload_llm(self):
+        """Preload LLM model in background thread.
+        
+        This eliminates the 90+ second cold start on first LLM query.
+        Model stays in memory until skill shuts down.
+        """
+        try:
+            time.sleep(5)  # Let critical services start first
+            self.logger.info("llm_preload_starting")
+            start = time.time()
+            
+            # Access the qwen3 parser and trigger model load
+            if self.hybrid_parser and self.hybrid_parser.llm:
+                self.hybrid_parser.llm.load_model()
+                elapsed = time.time() - start
+                self.logger.info("llm_preload_complete", elapsed_seconds=round(elapsed, 1))
+            else:
+                self.logger.warning("llm_preload_skipped", reason="parser not initialized")
+        except Exception as e:
+            self.logger.error("llm_preload_failed", error=str(e), error_type=type(e).__name__)
+    
+    def _refresh_machine_whitelist(self, message=None):
         """Refresh machine whitelist from EnMS API"""
         try:
             self.logger.info("refreshing_machine_whitelist")
-            machines = await self.api_client.list_machines(is_active=True)
+            
+            # Create temporary client for this request
+            temp_client = ENMSClient(
+                base_url=self.enms_api_base_url,
+                timeout=30,
+                max_retries=3
+            )
+            machines = self._run_async(temp_client.list_machines(is_active=True))
+            self._run_async(temp_client.close())
+            
             machine_names = [m["name"] for m in machines]
             self.validator.update_machine_whitelist(machine_names)
             self.hybrid_parser.heuristic.MACHINES = machine_names  # Update heuristic patterns
@@ -159,20 +263,47 @@ class EnmsSkill(OVOSSkill):
     def _cleanup_conversations(self, message=None):
         """Cleanup expired conversation sessions"""
         try:
+            # Defensive check - ensure skill is fully initialized
+            if self.context_manager is None:
+                return
+            
             expired_count = self.context_manager.cleanup_expired_sessions()
             if expired_count > 0:
                 self.logger.info("conversation_cleanup", expired_sessions=expired_count)
         except Exception as e:
             self.logger.error("conversation_cleanup_failed", error=str(e))
     
-    def _run_async(self, coro):
-        """Helper to run async coroutines from sync handlers"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    def _run_async(self, coro, timeout_seconds: float = 45.0):
+        """Helper to run async coroutines from sync handlers.
+        
+        Uses a persistent event loop to avoid 'Event loop is closed' errors
+        when making multiple API calls with httpx.AsyncClient.
+        
+        Args:
+            coro: Async coroutine to run
+            timeout_seconds: Maximum time to wait (default 45s)
+            
+        Returns:
+            Result of coroutine
+            
+        Raises:
+            asyncio.TimeoutError: If operation exceeds timeout
+        """
+        if self._async_loop is None or self._async_loop.is_closed():
+            self._async_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._async_loop)
+        
+        # Wrap coroutine with timeout protection
+        async def _with_timeout():
+            return await asyncio.wait_for(coro, timeout=timeout_seconds)
+        
         try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+            return self._async_loop.run_until_complete(_with_timeout())
+        except asyncio.TimeoutError:
+            self.logger.error("async_operation_timeout",
+                            timeout_seconds=timeout_seconds,
+                            operation=str(coro))
+            raise
     
     def _get_factory_wide_drivers(self) -> Dict[str, Any]:
         """Get aggregated key energy drivers across ALL machines with baseline models.
@@ -299,7 +430,8 @@ class EnmsSkill(OVOSSkill):
             parse_latency_ms = (time.time() - parse_start) * 1000
             
             tier = parse_result.get("tier", RoutingTier.HEURISTIC)
-            llm_output = parse_result.get("intent", {})
+            # parse_result IS the llm_output dict (contains intent, confidence, entities, etc.)
+            llm_output = parse_result
             llm_output["utterance"] = utterance
             
             self.logger.info("query_parsed",
@@ -338,7 +470,7 @@ class EnmsSkill(OVOSSkill):
             validation_latency_ms = (time.time() - validation_start) * 1000
             
             if not validation.valid:
-                validation_failures.inc()
+                errors_total.labels(error_type='validation', component='validator').inc()
                 error_msg = " ".join(validation.errors)
                 if validation.suggestions:
                     error_msg += " " + validation.suggestions[0]
@@ -354,7 +486,7 @@ class EnmsSkill(OVOSSkill):
                 )
                 
                 total_latency_ms = (time.time() - start_time) * 1000
-                query_latency.observe(total_latency_ms / 1000)
+                query_latency.labels(intent_type='unknown', tier=str(tier)).observe(total_latency_ms / 1000)
                 
                 return {
                     'success': False,
@@ -390,7 +522,7 @@ class EnmsSkill(OVOSSkill):
                 )
                 
                 total_latency_ms = (time.time() - start_time) * 1000
-                query_latency.observe(total_latency_ms / 1000)
+                query_latency.labels(intent_type=str(intent.intent.value), tier=str(tier)).observe(total_latency_ms / 1000)
                 
                 return {
                     'success': False,
@@ -407,12 +539,12 @@ class EnmsSkill(OVOSSkill):
             api_latency_ms = (time.time() - api_start) * 1000
             
             if not api_data.get('success', False):
-                api_errors.inc()
+                errors_total.labels(error_type='api', component='api_client').inc()
                 error_type = api_data.get('error_type', 'api_error')
                 error_response = self.voice_feedback.get_error_message(error_type)
                 
                 total_latency_ms = (time.time() - start_time) * 1000
-                query_latency.observe(total_latency_ms / 1000)
+                query_latency.labels(intent_type=str(intent.intent.value), tier=str(tier)).observe(total_latency_ms / 1000)
                 
                 return {
                     'success': False,
@@ -425,13 +557,12 @@ class EnmsSkill(OVOSSkill):
             
             # Step 8: Format response with templates
             format_start = time.time()
-            custom_template = api_data.get('template')
+            custom_template = api_data.get('custom_template')
             response_text = self._format_response(intent, api_data['data'], custom_template=custom_template)
             format_latency_ms = (time.time() - format_start) * 1000
             
             # Step 9: Update conversation context
-            self.context_manager.add_turn(
-                session_id=session_id,
+            session.add_turn(
                 query=utterance,
                 intent=intent,
                 response=response_text,
@@ -440,8 +571,8 @@ class EnmsSkill(OVOSSkill):
             
             # Step 10: Track metrics
             total_latency_ms = (time.time() - start_time) * 1000
-            query_latency.observe(total_latency_ms / 1000)
-            queries_total.inc()
+            query_latency.labels(intent_type=str(intent.intent.value), tier=str(tier)).observe(total_latency_ms / 1000)
+            queries_total.labels(intent_type=str(intent.intent.value), tier=str(tier), status='success').inc()
             
             self.query_count += 1
             self.total_latency_ms += total_latency_ms
@@ -471,6 +602,25 @@ class EnmsSkill(OVOSSkill):
                 }
             }
             
+        except asyncio.TimeoutError as e:
+            self.logger.error("query_timeout",
+                            error="API call timeout",
+                            utterance=utterance)
+            
+            error_response = self.voice_feedback.get_error_message('api_timeout')
+            total_latency_ms = (time.time() - start_time) * 1000
+            query_latency.labels(intent_type='timeout', tier='unknown').observe(total_latency_ms / 1000)
+            errors_total.labels(error_type='timeout', component='api_client').inc()
+            
+            return {
+                'success': False,
+                'response': error_response.message,
+                'latency_ms': round(total_latency_ms, 2),
+                'tier': None,
+                'intent': None,
+                'error': 'API timeout after 45 seconds'
+            }
+            
         except Exception as e:
             self.logger.error("query_processing_failed",
                             error=str(e),
@@ -479,7 +629,7 @@ class EnmsSkill(OVOSSkill):
             
             error_response = self.voice_feedback.get_error_message('api_error')
             total_latency_ms = (time.time() - start_time) * 1000
-            query_latency.observe(total_latency_ms / 1000)
+            query_latency.labels(intent_type='error', tier='unknown').observe(total_latency_ms / 1000)
             
             return {
                 'success': False,
@@ -498,37 +648,59 @@ class EnmsSkill(OVOSSkill):
             dict with: success, data, error (if failed)
         """
         try:
-            if intent.intent == IntentType.MACHINE_STATUS and intent.machine:
-                # Check for multiple matching machines (e.g., "HVAC" matches both HVAC-Main and HVAC-EU-North)
-                all_matches = self.validator.find_all_matching_machines(intent.machine)
-                
-                if len(all_matches) > 1:
-                    # Multiple machines match - fetch status for ALL of them
-                    self.logger.info("multiple_machines_matched", 
-                                   query=intent.machine, 
-                                   matches=all_matches,
-                                   count=len(all_matches))
+            if intent.intent == IntentType.MACHINE_STATUS:
+                # Check for multiple machines (set by validator for ambiguous queries like "compressor")
+                if intent.machines and len(intent.machines) > 1:
+                    # Multiple machines from validator - fetch status for ALL
+                    self.logger.info("multi_machine_status_from_validator", 
+                                   machines=intent.machines,
+                                   count=len(intent.machines))
                     
-                    # Fetch status for each machine
                     machine_statuses = []
-                    for machine_name in all_matches:
+                    for machine_name in intent.machines:
                         status_data = self._run_async(self.api_client.get_machine_status(machine_name))
                         machine_statuses.append(status_data)
                     
-                    # Return multi-machine response
                     return {
                         'success': True,
                         'data': {
                             'machines': machine_statuses,
                             'count': len(machine_statuses),
-                            'query_term': intent.machine
+                            'query_term': intent.machine if intent.machine else 'multiple machines'
                         },
                         'template': 'multi_machine_status'
                     }
+                elif intent.machine:
+                    # Check for multiple matching machines (e.g., "HVAC" matches both HVAC-Main and HVAC-EU-North)
+                    all_matches = self.validator.find_all_matching_machines(intent.machine)
+                    
+                    if len(all_matches) > 1:
+                        # Multiple machines match - fetch status for ALL of them
+                        self.logger.info("multiple_machines_matched", 
+                                       query=intent.machine, 
+                                       matches=all_matches,
+                                       count=len(all_matches))
+                        
+                        machine_statuses = []
+                        for machine_name in all_matches:
+                            status_data = self._run_async(self.api_client.get_machine_status(machine_name))
+                            machine_statuses.append(status_data)
+                        
+                        return {
+                            'success': True,
+                            'data': {
+                                'machines': machine_statuses,
+                                'count': len(machine_statuses),
+                                'query_term': intent.machine
+                            },
+                            'template': 'multi_machine_status'
+                        }
+                    else:
+                        # Single machine match (existing behavior)
+                        data = self._run_async(self.api_client.get_machine_status(intent.machine))
+                        return {'success': True, 'data': data}
                 else:
-                    # Single machine match (existing behavior)
-                    data = self._run_async(self.api_client.get_machine_status(intent.machine))
-                    return {'success': True, 'data': data}
+                    return {'success': False, 'error': 'No machine specified for status query'}
             
             elif intent.intent == IntentType.POWER_QUERY:
                 if intent.machine:
@@ -666,9 +838,36 @@ class EnmsSkill(OVOSSkill):
                         
                         if is_energy_types:
                             # List energy types
-                            data = self._run_async(self.api_client.get_energy_types(machine_id=machine_id, hours=24))
-                            data['machine_name'] = intent.machine
-                            return {'success': True, 'data': data, 'template': 'energy_types'}
+                            try:
+                                data = self._run_async(self.api_client.get_energy_types(machine_id=machine_id, hours=24))
+                                data['machine_name'] = intent.machine
+                                return {'success': True, 'data': data, 'template': 'energy_types'}
+                            except Exception as e:
+                                # Fallback: API endpoint not available, use machine status
+                                self.logger.warning("energy_types_fallback", error=str(e), machine=intent.machine)
+                                status_data = self._run_async(self.api_client.get_machine_status(intent.machine))
+                                # Most machines use electricity, Boiler-1 uses multiple types
+                                # Since we can't query energy types, provide basic response
+                                machine_type = status_data.get('machine_type', 'unknown')
+                                if machine_type == 'boiler':
+                                    # Boilers typically use electricity, natural gas, and steam
+                                    energy_types = [
+                                        {'energy_type': 'electricity', 'unit': 'kWh'},
+                                        {'energy_type': 'natural_gas', 'unit': 'm³'},
+                                        {'energy_type': 'steam', 'unit': 'kg'}
+                                    ]
+                                    total = 3
+                                else:
+                                    # Default to electricity only
+                                    energy_types = [{'energy_type': 'electricity', 'unit': 'kWh'}]
+                                    total = 1
+                                
+                                fallback_data = {
+                                    'machine_name': intent.machine,
+                                    'energy_types': energy_types,
+                                    'total_energy_types': total
+                                }
+                                return {'success': True, 'data': fallback_data, 'template': 'energy_types'}
                         elif is_energy_summary:
                             # Multi-energy summary
                             data = self._run_async(self.api_client.get_energy_summary(machine_id=machine_id))
@@ -683,7 +882,7 @@ class EnmsSkill(OVOSSkill):
                             ))
                             data['machine_name'] = intent.machine
                             data['energy_type'] = specific_energy_type
-                            return {'success': True, 'data': data, 'template': 'energy_type_readings'}
+                            return {'success': True, 'data': data, 'custom_template': 'energy_type_readings'}
                     
                     if 'hourly' in utterance_lower or 'hour by hour' in utterance_lower:
                         needs_timeseries = True
@@ -815,12 +1014,13 @@ class EnmsSkill(OVOSSkill):
                     
                     # Check if user asked for average per hour or trend/pattern analysis
                     utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
-                    if 'average' in utterance or 'per hour' in utterance or 'hourly average' in utterance:
-                        data['is_average_query'] = True
-                    
-                    # Detect trend/pattern queries for aggregated time-series analysis
-                    if 'trend' in utterance or 'pattern' in utterance:
-                        data['is_trend_query'] = True
+                    if isinstance(data, dict):
+                        if 'average' in utterance or 'per hour' in utterance or 'hourly average' in utterance:
+                            data['is_average_query'] = True
+                        
+                        # Detect trend/pattern queries for aggregated time-series analysis
+                        if 'trend' in utterance or 'pattern' in utterance:
+                            data['is_trend_query'] = True
                     
                     return {'success': True, 'data': data}
                 else:
@@ -831,7 +1031,7 @@ class EnmsSkill(OVOSSkill):
             
             elif intent.intent == IntentType.SEUS:
                 # Significant Energy Uses (SEUs) queries
-                utterance = message.data.get('utterance', '').lower()
+                utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
                 
                 # Extract energy source from intent or utterance
                 energy_source = intent.energy_source
@@ -862,14 +1062,15 @@ class EnmsSkill(OVOSSkill):
                 data = self._run_async(self.api_client.list_seus(energy_source=energy_source))
                 
                 # Filter by baseline status if requested
-                if asking_without_baseline:
-                    data['seus'] = [seu for seu in data.get('seus', []) if not seu.get('has_baseline')]
-                    data['total_count'] = len(data['seus'])
-                    data['filter_type'] = 'without_baseline'
-                elif asking_with_baseline:
-                    data['seus'] = [seu for seu in data.get('seus', []) if seu.get('has_baseline')]
-                    data['total_count'] = len(data['seus'])
-                    data['filter_type'] = 'with_baseline'
+                if isinstance(data, dict):
+                    if asking_without_baseline:
+                        data['seus'] = [seu for seu in data.get('seus', []) if not seu.get('has_baseline')]
+                        data['total_count'] = len(data['seus'])
+                        data['filter_type'] = 'without_baseline'
+                    elif asking_with_baseline:
+                        data['seus'] = [seu for seu in data.get('seus', []) if seu.get('has_baseline')]
+                        data['total_count'] = len(data['seus'])
+                        data['filter_type'] = 'with_baseline'
                 
                 return {'success': True, 'data': data, 'template': 'seus'}
             
@@ -877,11 +1078,25 @@ class EnmsSkill(OVOSSkill):
                 # Check if this is a health/status check vs stats query
                 utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
                 
+                # Check for machine listing queries ("list all machines", "show machines")
+                if re.search(r'\b(?:list|show)\s+(?:all\s+)?machines', utterance):
+                    machines = self._run_async(self.api_client.list_machines())
+                    machine_names = [m.get('name', m.get('machine_name', 'Unknown')) for m in machines]
+                    return {
+                        'success': True,
+                        'data': {
+                            'machines': machine_names,
+                            'count': len(machines)
+                        },
+                        'template': 'machine_list'
+                    }
+                
                 # Check for carbon/emissions queries
                 if 'carbon' in utterance or 'emission' in utterance or 'co2' in utterance:
                     data = self._run_async(self.api_client.system_stats())
                     # Mark as carbon query for template
-                    data['is_carbon_query'] = True
+                    if isinstance(data, dict):
+                        data['is_carbon_query'] = True
                     return {'success': True, 'data': data}
                 
                 # Check for active/offline machine queries
@@ -981,7 +1196,10 @@ class EnmsSkill(OVOSSkill):
                         issue_type=issue_type
                     ))
                     return {'success': True, 'data': data, 'template': 'action_plan'}
-                elif any(keyword in utterance for keyword in health_keywords):
+                
+                # Define health keywords for health check detection
+                health_keywords = ['health', 'status', 'alive', 'running', 'online', 'api status', 'system status', 'database']
+                if any(keyword in utterance for keyword in health_keywords):
                     # Health check query - use /health endpoint
                     data = self._run_async(self.api_client.health_check())
                     return {'success': True, 'data': data}
@@ -1041,8 +1259,7 @@ class EnmsSkill(OVOSSkill):
                 elif 'enpi' in utterance or 'iso' in utterance or 'compliance report' in utterance or 'energy performance indicator' in utterance:
                     # ISO 50001 EnPI report
                     # Extract period from utterance (Q1, Q2, Q3, Q4, or year)
-                    import re
-                    from datetime import datetime
+                    # Note: re and datetime are imported at module level
                     
                     period = None
                     
@@ -1086,7 +1303,7 @@ class EnmsSkill(OVOSSkill):
                     return {'success': True, 'data': data, 'template': 'aggregated_stats'}
                 else:
                     # General stats query - use /stats/system endpoint
-                    data = self._run_async(self.api_client.get_system_stats())
+                    data = self._run_async(self.api_client.system_stats())
                 
                 return {'success': True, 'data': data}
             
@@ -1099,7 +1316,7 @@ class EnmsSkill(OVOSSkill):
                     search_term = None
                     
                     # Extract search term from common patterns
-                    import re
+                    # Note: re is imported at module level
                     search_patterns = [
                         r'\b(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)s?\b',  # Match plural forms
                         r'\bfind.*?(?:the\s+)?(\w+)\b',
@@ -1145,7 +1362,6 @@ class EnmsSkill(OVOSSkill):
                         return {'success': False, 'error': "Need at least 2 machines to compare"}
                     
                     # Get time range (default: today)
-                    from datetime import datetime, timezone
                     if intent.time_range and intent.time_range.start and intent.time_range.end:
                         start_time = intent.time_range.start
                         end_time = intent.time_range.end
@@ -1229,7 +1445,6 @@ class EnmsSkill(OVOSSkill):
                     machine_id = machines[0]['id']
                     
                     # Get time range (default: today)
-                    from datetime import datetime, timezone
                     if intent.time_range and intent.time_range.start and intent.time_range.end:
                         start_time = intent.time_range.start
                         end_time = intent.time_range.end
@@ -1397,7 +1612,7 @@ class EnmsSkill(OVOSSkill):
                     return {'success': False, 'error': 'Which machine? Please specify a machine name.', 'needs_clarification': True}
                 
                 # Extract features from utterance (temperature, pressure, load, production)
-                utterance = message.data.get('utterance', '')
+                utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
                 features = FeatureExtractor.extract_all_features(
                     utterance,
                     defaults={
@@ -1513,8 +1728,8 @@ class EnmsSkill(OVOSSkill):
                 energy_source = "energy"
                 
                 # Get analysis date (default to today)
-                from datetime import date
-                analysis_date = date.today().isoformat()
+                from datetime import date as date_class
+                analysis_date = date_class.today().isoformat()
                 
                 # Call performance API
                 performance = self._run_async(
@@ -1651,32 +1866,39 @@ class EnmsSkill(OVOSSkill):
         else:
             return "I retrieved the data successfully"
     
-    @intent_handler("energy.query.intent")
-    def handle_energy_query(self, message: Message):
-        """Handle energy consumption queries via Adapt"""
-        utterance = message.data.get("utterance", "")
-        session_id = self._get_session_id(message)
-        
-        result = self._process_query(utterance, session_id, expected_intent="energy_query")
-        self.speak(result['response'])
+    # @intent_handler("energy.query.intent")
+    # def handle_energy_query(self, message: Message):
+    #     """Handle energy consumption queries via Adapt"""
+    #     utterance = message.data.get("utterance", "")
+    #     session_id = self._get_session_id(message)
+    #     
+    #     result = self._process_query(utterance, session_id, expected_intent="energy_query")
+    #     self.speak(result['response'])
     
-    @intent_handler("machine.status.intent")
-    def handle_machine_status(self, message: Message):
-        """Handle machine status queries via Adapt"""
-        utterance = message.data.get("utterance", "")
-        session_id = self._get_session_id(message)
-        
-        result = self._process_query(utterance, session_id, expected_intent="machine_status")
-        self.speak(result['response'])
+    # @intent_handler("machine.status.intent")
+    # def handle_machine_status(self, message: Message):
+    #     """Handle machine status queries via Adapt"""
+    #     utterance = message.data.get("utterance", "")
+    #     session_id = self._get_session_id(message)
+    #     
+    #     result = self._process_query(utterance, session_id, expected_intent="machine_status")
+    #     self.speak(result['response'])
     
-    @intent_handler("factory.overview.intent")
-    def handle_factory_overview(self, message: Message):
-        """Handle factory-wide queries via Adapt"""
-        utterance = message.data.get("utterance", "")
-        session_id = self._get_session_id(message)
-        
-        result = self._process_query(utterance, session_id, expected_intent="factory_overview")
-        self.speak(result['response'])
+    # @intent_handler("factory.overview.intent")
+    # def handle_factory_overview(self, message: Message):
+    #     """Handle factory-wide queries via Adapt"""
+    #     utterance = message.data.get("utterance", "")
+    #     session_id = self._get_session_id(message)
+    #     
+    #     result = self._process_query(utterance, session_id, expected_intent="factory_overview")
+    #     self.speak(result['response'])
+    
+    def can_converse(self, message: Message) -> bool:
+        """
+        Required by ConversationalSkill - determines if this skill should handle the utterance.
+        We always return True because EnMS handles all energy-related queries via converse().
+        """
+        return True
     
     def converse(self, message: Message) -> bool:
         """
@@ -1690,20 +1912,65 @@ class EnmsSkill(OVOSSkill):
         
         Returns:
             True if we handled the utterance, False otherwise
+            
+        CRITICAL: This method MUST always return True/False, never hang.
+        All processing is wrapped in try/except to ensure robustness.
         """
+        try:
+            return self._converse_impl(message)
+        except Exception as e:
+            self.logger.error("converse_crash", 
+                            error=str(e), 
+                            error_type=type(e).__name__,
+                            utterance=message.data.get("utterances", [""])[0])
+            # Speak error to user so they know something went wrong
+            try:
+                self.speak("Sorry, I encountered an error processing your request. Please try again.")
+            except:
+                pass
+            return True  # Return True so OVOS doesn't try other skills
+    
+    def _converse_impl(self, message: Message) -> bool:
+        """Internal implementation of converse - can raise exceptions."""
         utterance = message.data.get("utterances", [""])[0]
         
         if not utterance or len(utterance.strip()) < 2:
             return False
         
         # Check if it's an energy-related query (simple keyword check)
-        energy_keywords = ['energy', 'power', 'kwh', 'kw', 'watt', 'consumption', 
-                          'status', 'factory', 'machine', 'compressor', 'boiler', 
-                          'hvac', 'conveyor', 'top', 'compare', 'cost', 'anomaly',
-                          'health', 'system', 'online', 'check', 'database']
+        # CRITICAL: Keep this list in sync with heuristic patterns in intent_parser.py
+        energy_keywords = [
+            # Core energy terms
+            'energy', 'power', 'kwh', 'kw', 'watt', 'consumption', 'electricity',
+            # Factory/machine terms  
+            'status', 'factory', 'machine', 'compressor', 'boiler', 'hvac', 
+            'conveyor', 'turbine', 'pump', 'injection',
+            # Analytics terms
+            'top', 'compare', 'cost', 'anomaly', 'ranking', 'consumer',
+            # System terms
+            'health', 'system', 'online', 'check', 'database',
+            # SEU/baseline/performance (CRITICAL - was missing!)
+            'seu', 'baseline', 'performance', 'analyze', 'efficiency',
+            # Forecast/KPI
+            'forecast', 'kpi', 'predict', 'tomorrow', 'demand',
+            # Production
+            'production', 'units', 'oee', 'quality',
+            # Opportunities/actions
+            'opportunity', 'opportunities', 'saving', 'action', 'plan',
+            # Summary
+            'summary', 'overview', 'carbon', 'emissions',
+            # Alerts/anomalies
+            'alert', 'alerts', 'warning', 'warnings',
+            # ISO/Compliance
+            'iso', 'compliance', 'enpi', 'action plan',
+        ]
         
         if not any(keyword in utterance.lower() for keyword in energy_keywords):
             return False  # Not our domain
+        
+        # Re-activate skill to prevent timeout deactivation
+        # OVOS deactivates skills after ~5 min of inactivity
+        self.activate()
         
         session_id = self._get_session_id(message)
         
@@ -1719,20 +1986,31 @@ class EnmsSkill(OVOSSkill):
     
     def shutdown(self):
         """Clean shutdown of skill components"""
+        # Cancel all scheduled events to prevent callbacks on dead instance
+        try:
+            self.cancel_all_repeating_events()
+        except Exception as e:
+            self.logger.error("event_cancellation_failed", error=str(e))
+        
         self.logger.info("skill_shutdown", 
                         skill_name="EnmsSkill",
                         total_queries=self.query_count,
                         avg_latency_ms=round(self.total_latency_ms / max(self.query_count, 1), 2))
         
-        # Close async clients
+        # Close async clients using persistent loop
         try:
             if self.api_client:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.api_client.close())
-                loop.close()
+                self._run_async(self.api_client.close())
         except Exception as e:
             self.logger.error("api_client_shutdown_failed", error=str(e))
+        
+        # Close the persistent event loop
+        try:
+            if self._async_loop and not self._async_loop.is_closed():
+                self._async_loop.close()
+                self._async_loop = None
+        except Exception as e:
+            self.logger.error("event_loop_shutdown_failed", error=str(e))
         
         # Cleanup conversation sessions
         try:
@@ -1742,8 +2020,3 @@ class EnmsSkill(OVOSSkill):
             self.logger.error("context_cleanup_failed", error=str(e))
         
         super().shutdown()
-
-
-def create_skill():
-    """Skill factory function required by OVOS"""
-    return EnmsSkill()

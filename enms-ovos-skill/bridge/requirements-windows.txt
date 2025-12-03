@@ -1,0 +1,13 @@
+# Windows STT Bridge - Requirements
+# Install these on Windows with: pip install -r requirements-windows.txt
+
+# Wake word detection (Porcupine - purpose-built for wake words)
+pvporcupine
+
+# Command transcription (accurate)
+openai-whisper
+
+# Audio & networking
+sounddevice>=0.4.6
+numpy>=1.24.0
+websockets>=12.0

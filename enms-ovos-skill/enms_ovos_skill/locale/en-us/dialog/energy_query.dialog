@@ -32,7 +32,7 @@ Period {{ loop.index }}, {{ period.start_time|voice_time }} to {{ period.end_tim
 {{ machine }} consumed {{ energy_kwh|round(2) }} kWh {{ time_range|default('today') }}.
 {% elif total_energy is defined %}
 {# Factory-wide energy query #}
-The factory has consumed {{ total_energy|round(0) }} kilowatt hours total. Current rate is {{ energy_per_hour|round(0) }} kilowatt hours per hour.
+The factory has consumed {{ total_energy|round(0) }} kilowatt hours total. Current rate is {{ energy_per_hour|round(0) }} kilowatt hours per hour.{% if estimated_cost is defined %} Estimated cost is ${{ estimated_cost|round(2) }}.{% endif %}{% if carbon_footprint is defined %} Carbon footprint is {{ carbon_footprint|round(0) }} kilograms.{% endif %}
 {% else %}
 {# Fallback #}
 Energy data retrieved{{ " for " + machine if machine else "" }}.

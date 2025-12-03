@@ -14,8 +14,8 @@ import structlog
 from adapt.intent import IntentBuilder
 from adapt.engine import IntentDeterminationEngine
 
-from lib.models import IntentType
-from lib.observability import query_latency, tier_routing, queries_total
+from .models import IntentType
+from .observability import query_latency, tier_routing, queries_total
 
 logger = structlog.get_logger()
 
@@ -57,11 +57,21 @@ class AdaptParser:
             "Boiler-1", "Compressor-1", "Compressor-EU-1", "Conveyor-A",
             "HVAC-EU-North", "HVAC-Main", "Injection-Molding-1", "Turbine-1"
         ]
+        
+        # Number word mappings for spoken forms
+        digit_to_word = {'1': 'one', '2': 'two', '3': 'three', '4': 'four', '5': 'five'}
+        
         for machine in machines:
             self.engine.register_entity(machine, "machine")
-            # Also register short forms
-            if "-" in machine:
-                self.engine.register_entity(machine.split("-")[0], "machine")
+            # Also register spoken forms (e.g., "compressor 1" → "Compressor-1")
+            spoken_form = machine.replace("-", " ")
+            if spoken_form != machine:
+                self.engine.register_entity(spoken_form, "machine")
+            # Also register number word variants (e.g., "compressor one")
+            for digit, word in digit_to_word.items():
+                if digit in machine:
+                    word_form = machine.replace("-", " ").replace(digit, word)
+                    self.engine.register_entity(word_form, "machine")
         
         # Energy keywords
         energy_keywords = ["energy", "kwh", "kilowatt", "consumption", "used", "consumed"]
@@ -82,6 +92,11 @@ class AdaptParser:
         cost_keywords = ["cost", "price", "expense", "spend", "spent"]
         for keyword in cost_keywords:
             self.engine.register_entity(keyword, "cost_metric")
+        
+        # KPI keywords (efficiency, SEC, load factor)
+        kpi_keywords = ["kpi", "kpis", "efficiency", "sec", "specific energy consumption", "load factor", "peak demand"]
+        for keyword in kpi_keywords:
+            self.engine.register_entity(keyword, "kpi_metric")
         
         # Ranking keywords
         ranking_keywords = ["top", "highest", "biggest", "consumers", "machines"]
@@ -132,6 +147,12 @@ class AdaptParser:
             .require("cost_metric") \
             .build()
         self.engine.register_intent_parser(cost_intent)
+        
+        # KPI query intent (efficiency, SEC, load factor, peak demand)
+        kpi_intent = IntentBuilder("kpi") \
+            .require("kpi_metric") \
+            .build()
+        self.engine.register_intent_parser(kpi_intent)
         
         # Ranking intent
         ranking_intent = IntentBuilder("ranking") \
@@ -191,6 +212,8 @@ class AdaptParser:
             entities['metric'] = 'energy'
         elif 'cost_metric' in best_intent:
             entities['metric'] = 'cost'
+        elif 'kpi_metric' in best_intent:
+            entities['metric'] = 'kpi'
         
         # Extract time range
         if 'time_range' in best_intent:
@@ -210,6 +233,7 @@ class AdaptParser:
             'energyquery': IntentType.ENERGY_QUERY,
             'machinestatus': IntentType.MACHINE_STATUS,
             'costanalysis': IntentType.COST_ANALYSIS,
+            'kpi': IntentType.KPI,
             'ranking': IntentType.RANKING,
             'factoryoverview': IntentType.FACTORY_OVERVIEW,
             'comparison': IntentType.COMPARISON,
