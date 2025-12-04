@@ -65,5 +65,9 @@ tmp/
 temp/
 *.tmp
 
-# Decision log (keep tracked)
-!Decision_Log.md
+# Ignore all markdown files by default
+*.md
+
+# EXCEPT these essential ones
+!README.md
+!documentation/TECHNICAL_DOCUMENTATION.md

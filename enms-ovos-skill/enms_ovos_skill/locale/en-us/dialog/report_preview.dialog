@@ -1,0 +1,8 @@
+{% if data %}
+Preview of {{ report_type | replace('_', ' ') }} for {{ month_name }} {{ year }}:
+{% if data.total_consumption is defined %}Total consumption: {{ data.total_consumption | round(1) }} kWh. {% endif %}
+{% if data.enpi is defined %}EnPI value: {{ data.enpi | round(3) }}. {% endif %}
+{% if data.baseline_comparison is defined %}{{ data.baseline_comparison | round(1) }} percent compared to baseline. {% endif %}
+{% else %}
+No preview data available for this report period.
+{% endif %}

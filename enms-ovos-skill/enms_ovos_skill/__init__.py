@@ -587,7 +587,7 @@ class EnmsSkill(ConversationalSkill):
                            intent=intent.intent,
                            avg_latency_ms=round(self.total_latency_ms / self.query_count, 2))
             
-            return {
+            result = {
                 'success': True,
                 'response': response_text,
                 'latency_ms': round(total_latency_ms, 2),
@@ -601,6 +601,15 @@ class EnmsSkill(ConversationalSkill):
                     'format_ms': round(format_latency_ms, 2)
                 }
             }
+            
+            # For report generation, include pdf_base64 for browser download
+            if intent.intent == IntentType.REPORT and api_data.get('action') == 'generate':
+                data = api_data.get('data', {})
+                if data.get('pdf_base64'):
+                    result['pdf_base64'] = data['pdf_base64']
+                    result['pdf_filename'] = data.get('filename', 'report.pdf')
+            
+            return result
             
         except asyncio.TimeoutError as e:
             self.logger.error("query_timeout",
@@ -1797,6 +1806,44 @@ class EnmsSkill(ConversationalSkill):
                 
                 return {'success': True, 'data': data}
             
+            elif intent.intent == IntentType.REPORT:
+                # Report generation - generate/preview/list reports
+                # Handle both 'action' and 'report_action' keys (heuristic parser uses 'report_action')
+                action = intent.params.get('action') or intent.params.get('report_action', 'generate') if intent.params else 'generate'
+                report_type = intent.params.get('report_type', 'monthly_enpi') if intent.params else 'monthly_enpi'
+                year = intent.params.get('year') if intent.params else None
+                month = intent.params.get('month') if intent.params else None
+                
+                self.logger.info("report_query", action=action, report_type=report_type, year=year, month=month)
+                
+                if action == 'list_types':
+                    # List available report types
+                    data = self._run_async(self.api_client.get_report_types())
+                    return {'success': True, 'data': data, 'action': 'list_types'}
+                    
+                elif action == 'preview':
+                    # Preview report data
+                    data = self._run_async(
+                        self.api_client.preview_report(
+                            report_type=report_type,
+                            year=year,
+                            month=month
+                        )
+                    )
+                    return {'success': True, 'data': data, 'action': 'preview'}
+                    
+                else:  # generate
+                    # Generate and download PDF report
+                    data = self._run_async(
+                        self.api_client.generate_report(
+                            report_type=report_type,
+                            year=year,
+                            month=month
+                        )
+                    )
+                    self.logger.info("report_generate_returned", data=data, data_type=type(data).__name__)
+                    return {'success': True, 'data': data, 'action': 'generate'}
+            
             else:
                 self.logger.warning("unsupported_intent_api_call", intent=intent.intent)
                 return {
@@ -1836,6 +1883,51 @@ class EnmsSkill(ConversationalSkill):
                 # Manually render health_check template
                 template = self.response_formatter.env.get_template('health_check.dialog')
                 return template.render(**template_data).strip()
+            
+            # Special handling for REPORT intent - choose template based on action
+            if intent.intent == IntentType.REPORT:
+                action = api_data.get('action', 'generate')
+                self.logger.info("report_formatting", action=action, api_data_keys=list(api_data.keys()))
+                month_names = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+                              'July', 'August', 'September', 'October', 'November', 'December']
+                
+                if action == 'list_types':
+                    template = self.response_formatter.env.get_template('report_types.dialog')
+                    return template.render(**api_data.get('data', {})).strip()
+                elif action == 'preview':
+                    template = self.response_formatter.env.get_template('report_preview.dialog')
+                    data = api_data.get('data', {})
+                    month = intent.params.get('month', 1) if intent.params else 1
+                    year = intent.params.get('year', 2024) if intent.params else 2024
+                    return template.render(
+                        data=data,
+                        report_type=intent.params.get('report_type', 'monthly_enpi') if intent.params else 'monthly_enpi',
+                        month_name=month_names[month] if month and 1 <= month <= 12 else 'this month',
+                        year=year
+                    ).strip()
+                else:  # generate
+                    template = self.response_formatter.env.get_template('report_generated.dialog')
+                    # Data is directly in api_data (not nested in 'data' key)
+                    data = api_data.get('data', api_data)  # Try nested first, fallback to flat
+                    month = data.get('month', 1)
+                    year = data.get('year', 2024)
+                    
+                    # Debug logging
+                    self.logger.info("report_template_data", 
+                                    success=data.get('success'),
+                                    file_path=data.get('file_path'),
+                                    month=month,
+                                    year=year,
+                                    data_keys=list(data.keys()) if data else [])
+                    
+                    return template.render(
+                        success=data.get('success', False),
+                        file_path=data.get('file_path', ''),
+                        report_type=data.get('report_type', 'monthly_enpi'),
+                        month_name=month_names[month] if month and 1 <= month <= 12 else 'this month',
+                        year=year,
+                        error=data.get('error')
+                    ).strip()
             
             return self.response_formatter.format_response(
                 intent_type=intent.intent.value,
@@ -1963,6 +2055,8 @@ class EnmsSkill(ConversationalSkill):
             'alert', 'alerts', 'warning', 'warnings',
             # ISO/Compliance
             'iso', 'compliance', 'enpi', 'action plan',
+            # Reports (CRITICAL - was missing!)
+            'report', 'generate', 'download', 'pdf', 'create', 'preview',
         ]
         
         if not any(keyword in utterance.lower() for keyword in energy_keywords):
@@ -1980,6 +2074,19 @@ class EnmsSkill(ConversationalSkill):
         
         if result['success'] or 'error' in result:
             self.speak(result['response'])
+            
+            # For report generation, emit custom event with PDF data for browser download
+            if result.get('pdf_base64'):
+                self.bus.emit(Message(
+                    "enms.report.generated",
+                    {
+                        "pdf_base64": result['pdf_base64'],
+                        "filename": result.get('pdf_filename', 'report.pdf')
+                    },
+                    {"session_id": session_id}
+                ))
+                self.logger.info("emitted_pdf_event", filename=result.get('pdf_filename'))
+            
             return True
         
         return False

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>EnMS Voice Assistant - PDF Download Example</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        .result { margin-top: 20px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        #response { white-space: pre-wrap; background: #f5f5f5; padding: 10px; }
+    </style>
+</head>
+<body>
+    <h1>EnMS Voice Assistant</h1>
+    <p>Test report generation with PDF download:</p>
+    
+    <input type="text" id="query" value="Generate the December report" style="width: 400px; padding: 10px;">
+    <button onclick="sendQuery()">Send Query</button>
+    
+    <div class="result">
+        <h3>Response:</h3>
+        <div id="response">-</div>
+    </div>
+    
+    <script>
+        async function sendQuery() {
+            const query = document.getElementById('query').value;
+            const responseDiv = document.getElementById('response');
+            
+            responseDiv.textContent = 'Processing...';
+            
+            try {
+                const response = await fetch('http://localhost:5000/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ utterance: query })
+                });
+                
+                const data = await response.json();
+                
+                // Display the voice response
+                responseDiv.textContent = data.response || data.error || 'No response';
+                
+                // If PDF data is present, trigger download
+                if (data.pdf_base64 && data.pdf_filename) {
+                    downloadPDF(data.pdf_base64, data.pdf_filename);
+                    responseDiv.textContent += '\n\n✅ PDF download triggered!';
+                }
+                
+            } catch (error) {
+                responseDiv.textContent = 'Error: ' + error.message;
+            }
+        }
+        
+        /**
+         * Decode base64 PDF and trigger browser download
+         * @param {string} base64Data - Base64 encoded PDF content
+         * @param {string} filename - Suggested filename for download
+         */
+        function downloadPDF(base64Data, filename) {
+            // Decode base64 to binary
+            const binaryString = atob(base64Data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            
+            // Create blob and download link
+            const blob = new Blob([bytes], { type: 'application/pdf' });
+            const url = URL.createObjectURL(blob);
+            
+            // Create and click hidden download link
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            
+            // Cleanup
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            console.log('PDF download triggered:', filename);
+        }
+    </script>
+</body>
+</html>

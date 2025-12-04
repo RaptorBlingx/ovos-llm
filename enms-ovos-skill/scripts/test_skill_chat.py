@@ -16,7 +16,7 @@ import asyncio
 import re
 from pathlib import Path
 
-skill_dir = Path(__file__).parent.parent
+skill_dir = Path(__file__).parent.parent / "enms_ovos_skill"
 sys.path.insert(0, str(skill_dir))
 
 # Import components directly (not the skill class)
@@ -176,6 +176,15 @@ class SkillChatTester:
             
             print(f"\n{'─'*80}")
             print(f"Skill: {response}")
+            
+            # For report generation, show PDF info
+            if intent.intent == IntentType.REPORT and api_data.get('action') == 'generate':
+                data = api_data.get('data', {})
+                if data.get('pdf_base64'):
+                    print(f"[PDF] 📄 Base64 PDF ready ({len(data['pdf_base64'])} chars)")
+                    print(f"[PDF] 📎 Filename: {data.get('filename', 'report.pdf')}")
+                    print(f"[PDF] ℹ️  In browser, this would trigger automatic download")
+            
             print(f"{'─'*80}\n")
             
         except Exception as e:
@@ -1173,6 +1182,38 @@ class SkillChatTester:
             
             return data
         
+        elif intent.intent == IntentType.REPORT:
+            # Report generation - generate/preview/list reports
+            action = intent.params.get('action', 'generate') if intent.params else 'generate'
+            report_type = intent.params.get('report_type', 'monthly_enpi') if intent.params else 'monthly_enpi'
+            year = intent.params.get('year') if intent.params else None
+            month = intent.params.get('month') if intent.params else None
+            
+            print(f"[API] Report action: {action}, type: {report_type}, year: {year}, month: {month}")
+            
+            if action == 'list_types':
+                print("[API] Calling GET /reports/types")
+                data = await self.api_client.get_report_types()
+                return {'data': data, 'action': 'list_types'}
+                
+            elif action == 'preview':
+                print("[API] Calling GET /reports/preview")
+                data = await self.api_client.preview_report(
+                    report_type=report_type,
+                    year=year,
+                    month=month
+                )
+                return {'data': data, 'action': 'preview', 'month': month, 'year': year, 'report_type': report_type}
+                
+            else:  # generate
+                print("[API] Calling POST /reports/generate")
+                data = await self.api_client.generate_report(
+                    report_type=report_type,
+                    year=year,
+                    month=month
+                )
+                return {'data': data, 'action': 'generate'}
+        
         else:
             print(f"[API] ⚠️  Intent '{intent.intent.value}' not yet implemented")
             return None
@@ -1198,6 +1239,43 @@ class SkillChatTester:
                 }
                 template = self.formatter.env.get_template('health_check.dialog')
                 return template.render(**template_data).strip()
+            
+            # Special handling for REPORT intent
+            if intent.intent == IntentType.REPORT:
+                action = api_data.get('action', 'generate')
+                month_names = ['', 'January', 'February', 'March', 'April', 'May', 'June',
+                              'July', 'August', 'September', 'October', 'November', 'December']
+                
+                if action == 'list_types':
+                    print(f"[Format] Using report_types.dialog")
+                    template = self.formatter.env.get_template('report_types.dialog')
+                    return template.render(**api_data.get('data', {})).strip()
+                elif action == 'preview':
+                    print(f"[Format] Using report_preview.dialog")
+                    template = self.formatter.env.get_template('report_preview.dialog')
+                    data = api_data.get('data', {})
+                    month = api_data.get('month', 1)
+                    year = api_data.get('year', 2024)
+                    return template.render(
+                        data=data,
+                        report_type=api_data.get('report_type', 'monthly_enpi'),
+                        month_name=month_names[month] if month and 1 <= month <= 12 else 'this month',
+                        year=year
+                    ).strip()
+                else:  # generate
+                    print(f"[Format] Using report_generated.dialog")
+                    template = self.formatter.env.get_template('report_generated.dialog')
+                    data = api_data.get('data', {})
+                    month = data.get('month', 1)
+                    year = data.get('year', 2024)
+                    return template.render(
+                        success=data.get('success', False),
+                        file_path=data.get('file_path', ''),
+                        report_type=data.get('report_type', 'monthly_enpi'),
+                        month_name=month_names[month] if month and 1 <= month <= 12 else 'this month',
+                        year=year,
+                        error=data.get('error')
+                    ).strip()
             
             print(f"[Format] Using {intent.intent.value}.dialog")
             return self.formatter.format_response(

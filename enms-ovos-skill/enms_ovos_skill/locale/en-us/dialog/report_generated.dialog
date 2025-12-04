@@ -1,0 +1,5 @@
+{% if success %}
+Your {{ report_type | replace('_', ' ') }} report for {{ month_name }} {{ year }} is ready. The download should start automatically in your browser.
+{% else %}
+Sorry, I couldn't generate the report. {{ error | default('Please try again.') }}
+{% endif %}
