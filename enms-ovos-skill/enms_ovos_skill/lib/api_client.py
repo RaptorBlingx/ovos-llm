@@ -751,6 +751,140 @@ class ENMSClient:
         if priority:
             params["priority"] = priority
         return await self._request("GET", "/iso50001/action-plans", params=params)
+    
+    # Report Generation
+    
+    async def get_report_types(self) -> Dict[str, Any]:
+        """
+        Get list of available report types
+        
+        Returns:
+            List of report types with parameters
+        """
+        return await self._request("GET", "/reports/types")
+    
+    async def preview_report(
+        self,
+        report_type: str = "monthly_enpi",
+        year: int = None,
+        month: int = None,
+        factory_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Preview report data in JSON format
+        
+        Args:
+            report_type: Report type identifier (default: monthly_enpi)
+            year: Report year
+            month: Report month (1-12)
+            factory_id: Optional factory UUID
+            
+        Returns:
+            Report data in JSON format
+        """
+        params = {
+            "report_type": report_type,
+            "year": year,
+            "month": month
+        }
+        if factory_id:
+            params["factory_id"] = factory_id
+        return await self._request("GET", "/reports/preview", params=params)
+    
+    async def generate_report(
+        self,
+        report_type: str = "monthly_enpi",
+        year: int = None,
+        month: int = None,
+        factory_id: Optional[str] = None,
+        download_dir: Optional[str] = None,
+        return_base64: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Generate PDF report and return metadata + optional base64 content
+        
+        Args:
+            report_type: Report type identifier (default: monthly_enpi)
+            year: Report year
+            month: Report month (1-12)
+            factory_id: Optional factory UUID
+            download_dir: Directory to save PDF (None = don't save locally)
+            return_base64: Include PDF as base64 in response (for web delivery)
+            
+        Returns:
+            Dict with success, filename, pdf_base64 (for browser download), etc.
+        """
+        import base64
+        from datetime import datetime
+        from pathlib import Path
+        
+        # Default to current month/year if not specified
+        if year is None:
+            year = datetime.now().year
+        if month is None:
+            month = datetime.now().month
+        
+        params = {
+            "report_type": report_type,
+            "year": year,
+            "month": month
+        }
+        if factory_id:
+            params["factory_id"] = factory_id
+        
+        # Build URL with query params
+        url = f"{self.base_url}/reports/generate"
+        
+        logger.info("report_generate_request", params=params)
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(url, params=params)
+                response.raise_for_status()
+                
+                pdf_content = response.content
+                
+                logger.info("report_generate_success", 
+                           content_type=response.headers.get('content-type'),
+                           content_length=len(pdf_content))
+                
+                # Generate filename
+                filename = f"EnPI_Report_{year}_{month:02d}.pdf"
+                
+                result = {
+                    'success': True,
+                    'filename': filename,
+                    'report_type': report_type,
+                    'year': year,
+                    'month': month,
+                    'size_bytes': len(pdf_content)
+                }
+                
+                # Include base64 for web delivery (browser download)
+                if return_base64:
+                    result['pdf_base64'] = base64.b64encode(pdf_content).decode('utf-8')
+                
+                # Optionally save to local disk
+                if download_dir:
+                    save_dir = Path(download_dir)
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    file_path = save_dir / filename
+                    with open(file_path, 'wb') as f:
+                        f.write(pdf_content)
+                    result['file_path'] = str(file_path)
+                    logger.info("report_saved", file_path=str(file_path), size_bytes=len(pdf_content))
+                
+                return result
+                
+        except Exception as e:
+            logger.error("report_generate_error", error=str(e))
+            return {
+                'success': False,
+                'error': str(e),
+                'report_type': report_type,
+                'year': year,
+                'month': month
+            }
 
 
 # Context manager support

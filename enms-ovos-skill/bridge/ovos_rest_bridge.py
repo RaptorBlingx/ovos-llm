@@ -81,11 +81,13 @@ class QueryResponse(BaseModel):
     timestamp: str
 
 class VoiceQueryResponse(BaseModel):
-    """Response with audio data"""
+    """Response with audio data and optional PDF for report downloads"""
     success: bool
     response: Optional[str] = None
     audio_base64: Optional[str] = None  # Base64 encoded WAV audio
     audio_format: str = "wav"
+    pdf_base64: Optional[str] = None  # Base64 encoded PDF for report downloads
+    pdf_filename: Optional[str] = None  # Suggested filename for PDF download
     error: Optional[str] = None
     session_id: str
     latency_ms: int
@@ -289,6 +291,7 @@ class OVOSBridge:
             
             # Subscribe to responses
             self.bus.on("speak", self._handle_speak)
+            self.bus.on("enms.report.generated", self._handle_report_generated)
             
             self.connected = True
             logger.info("✅ Connected to OVOS messagebus")
@@ -309,6 +312,20 @@ class OVOSBridge:
             self.pending_responses[session_id]["response"] = utterance
             self.pending_responses[session_id]["event"].set()
     
+    def _handle_report_generated(self, message: Message):
+        """Handle PDF report generated events from EnMS skill"""
+        session_id = message.context.get("session_id") if message.context else None
+        pdf_base64 = message.data.get("pdf_base64", "")
+        filename = message.data.get("filename", "report.pdf")
+        
+        logger.info(f"📄 Report PDF received - session: {session_id[:8] if session_id else 'None'}..., filename: {filename}")
+        
+        if session_id and session_id in self.pending_responses:
+            # Store PDF data alongside text response (speak event may already have set response)
+            self.pending_responses[session_id]["pdf_base64"] = pdf_base64
+            self.pending_responses[session_id]["pdf_filename"] = filename
+            logger.info(f"📎 PDF attached to session {session_id[:8]}...")
+    
     async def query(self, utterance: str, session_id: Optional[str] = None, timeout: float = 90.0) -> Dict:
         """Send query to OVOS and wait for response"""
         if not self.connected:
@@ -324,6 +341,8 @@ class OVOSBridge:
         event = asyncio.Event()
         self.pending_responses[session_id] = {
             "response": None,
+            "pdf_base64": None,
+            "pdf_filename": None,
             "event": event
         }
         
@@ -341,9 +360,24 @@ class OVOSBridge:
         # Wait for response
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
-            response = self.pending_responses[session_id]["response"]
+            response_data = self.pending_responses[session_id]
+            response = response_data["response"]
             logger.info(f"✅ Response received: '{response[:50]}...'")
-            return {"success": True, "response": response}
+            
+            # For report queries, wait briefly for PDF event to arrive
+            # (PDF event fires shortly after speak event)
+            if 'report' in utterance.lower() or 'pdf' in utterance.lower():
+                await asyncio.sleep(0.5)  # Allow PDF event to be processed
+            
+            result = {"success": True, "response": response}
+            
+            # Include PDF data if present (for report generation)
+            if response_data.get("pdf_base64"):
+                result["pdf_base64"] = response_data["pdf_base64"]
+                result["pdf_filename"] = response_data.get("pdf_filename", "report.pdf")
+                logger.info(f"📎 Including PDF in response: {result['pdf_filename']}")
+            
+            return result
             
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ Timeout after {timeout}s (session: {session_id[:8]}...)")
@@ -530,6 +564,8 @@ async def query_ovos_with_voice(request: QueryRequest):
         response=response_text,
         audio_base64=audio_base64,
         audio_format=audio_format,
+        pdf_base64=result.get("pdf_base64"),
+        pdf_filename=result.get("pdf_filename"),
         error=None,
         session_id=session_id,
         latency_ms=total_latency_ms,

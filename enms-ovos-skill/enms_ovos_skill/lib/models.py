@@ -26,6 +26,7 @@ class IntentType(str, Enum):
     KPI = "kpi"
     PERFORMANCE = "performance"
     PRODUCTION = "production"
+    REPORT = "report"  # PDF report generation
     HELP = "help"
     UNKNOWN = "unknown"
 
@@ -68,6 +69,9 @@ class Intent(BaseModel):
     # NEW: Metadata requests
     include_metadata: bool = False
     include_breakdown: bool = False
+    
+    # NEW: Extra parameters for special intents (report, etc.)
+    params: Optional[Dict[str, Any]] = None
     
     # Raw utterance
     utterance: str

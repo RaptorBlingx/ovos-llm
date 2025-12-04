@@ -1,0 +1,5 @@
+{% if data %}
+Available report types are: {% for rt in data %}{{ rt.name }}{% if not loop.last %}, {% endif %}{% endfor %}. You can ask me to generate any of these reports.
+{% else %}
+I couldn't retrieve the list of available reports.
+{% endif %}

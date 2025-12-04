@@ -1,125 +1,334 @@
-# OVOS-EnMS Integration
+# 🎤 OVOS-EnMS Voice Assistant
 
-**Open Voice OS for Industrial Energy Management System**
+**Voice-Enabled Energy Management for ISO 50001 Compliance**
 
-> A state-of-the-art voice assistant integrating OVOS with the WASABI EU Energy Management System (EnMS), achieving 95%+ query coverage, <200ms P50 latency, and 99.5%+ accuracy with zero hallucination tolerance.
+[![OVOS](https://img.shields.io/badge/OVOS-Compatible-green)](https://openvoiceos.org/)
+[![ISO 50001](https://img.shields.io/badge/ISO-50001-orange)](https://www.iso.org/iso-50001-energy-management.html)
 
----
 
-## 📋 Project Overview
-
-This project delivers an **external OVOS skill** (`ovos-skill-enms`) that enables natural language voice queries for industrial energy management:
-
-- "How much energy did Compressor-1 use in the last 24 hours?"
-- "Compare energy consumption between Boiler-1 and HVAC-Main this week"
-- "Forecast energy consumption for tomorrow"
-- "Show me the top 3 energy consumers today"
-
-**Key Features:**
-- ✅ LLM-first architecture with grammar-constrained intent parsing
-- ✅ Zero-trust validation (99.5%+ hallucination prevention)
-- ✅ Multi-tier adaptive routing (fast-path + LLM fallback)
-- ✅ 100% offline operation (no cloud, no GPU required)
-- ✅ Industrial-grade reliability with circuit breakers and graceful degradation
+> **HumanEnerDIA** - Democratizing Industrial Analytics through Voice  
+> Part of the WASABI EU Technology Platform for Industrial Energy Management
 
 ---
 
-## 🗂️ Documentation
+## 🎯 Project Overview
 
-All project documentation is in the [`docs/`](./docs) folder:
+This project delivers a **production-ready voice assistant** that integrates [Open Voice OS (OVOS)](https://openvoiceos.org/) with an ISO 50001-compliant Energy Management System (EnMS). It enables factory operators to interact with complex energy data through natural language, making industrial analytics accessible without specialized training.
 
-- **[Master Plan](./docs/OVOS-ENMS-ULTIMATE-IMPLEMENTATION.md)** - Complete 6-week implementation roadmap with phases, milestones, and agent workflow
-- **[EnMS API Documentation](./docs/ENMS-API-DOCUMENTATION-FOR-OVOS.md)** - Complete API reference for all 90+ EnMS endpoints
-- **[Test Questions](./docs/test-questions.md)** - 118+ test queries covering all use cases
+### WASABI Deliverable Compliance
+
+As committed in the WASABI 1st Open Call proposal, this project implements **3 DIA (Digital Industrial Assistant) modules**:
+
+| Module | Description | Status |
+|--------|-------------|--------|
+| **🖥️ Monitoring** | Real-time machine status, energy consumption, alerts | ✅ Implemented |
+| **📊 Analyses** | Performance analysis, predictions, anomaly detection, forecasting | ✅ Implemented |
+| **📈 Reporting** | KPIs, ISO 50001 reports, action plans, compliance tracking | ✅ Implemented |
+
+---
+
+## ✨ Key Features
+
+### Voice-Enabled Energy Management
+- **Natural Language Queries**: Ask questions in plain English
+- **Multi-Machine Support**: Query individual machines or aggregate factory-wide data
+- **Real-Time Responses**: Sub-second latency for heuristic queries (<100ms)
+- **Audio Feedback**: Text-to-Speech responses via Edge-TTS
+
+### Industrial-Grade Architecture
+- **Multi-Tier Intent Parsing**: Heuristic (<5ms) → Adapt (<10ms) → LLM (300-500ms)
+- **Zero-Trust Validation**: All API calls validated against whitelists
+- **44 EnMS API Endpoints**: Full coverage of energy management operations
+- **ISO 50001 Compliance**: EnPI reports, action plans, baseline tracking
+
+### Example Voice Commands
+
+```
+📊 MONITORING
+"What's the status of Compressor-1?"
+"How much energy are we using today?"
+"What's our carbon footprint?"
+"List all machines"
+
+📈 ANALYSES  
+"Analyze performance of Compressor-1"
+"What's tomorrow's energy forecast?"
+"Show top 3 energy consumers"
+"Explain the baseline model for Compressor-1"
+
+📋 REPORTING
+"What are the KPIs for Compressor-1 today?"
+"Show energy performance indicators report"
+"Create an action plan for Compressor-1 efficiency improvement"
+"List all ISO action plans"
+```
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-User (Voice/Text)
-    ↓
-OVOS Core (STT, TTS, Wake Word)
-    ↓
-ovos-skill-enms (This Project)
-    ├─ Tier 1: Qwen3-1.7B LLM Parser (grammar-constrained JSON)
-    ├─ Tier 2: Zero-Trust Validator (Pydantic + whitelists)
-    ├─ Tier 3: API Executor (httpx async + circuit breakers)
-    ├─ Tier 4: Response Generator (Jinja2 templates)
-    └─ Tier 5: Fast-Path NLU (Adapt/Padatious - future optimization)
-    ↓
-EnMS API (90+ REST endpoints)
+┌─────────────────────────────────────────────────────────────────┐
+│                        USER INTERFACE                           │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐ │
+│  │ Voice Input │    │  Text Chat  │    │   EnMS Web Widget   │ │
+│  │  (Windows)  │    │   (Debug)   │    │   (Production UI)   │ │
+│  └──────┬──────┘    └──────┬──────┘    └──────────┬──────────┘ │
+└─────────┼──────────────────┼─────────────────────┼─────────────┘
+          │                  │                     │
+          ▼                  ▼                     ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      REST BRIDGE (Port 5000)                    │
+│  • HTTP/JSON API for external clients                           │
+│  • WebSocket connection to OVOS MessageBus                      │
+│  • Edge-TTS audio synthesis (en-US-GuyNeural)                   │
+│  • 90-second query timeout                                      │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    OVOS CORE (WSL2 / Linux)                     │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐ │
+│  │ MessageBus  │    │  ovos-core  │    │    ovos-audio       │ │
+│  │  (8181)     │    │  (Skills)   │    │    (TTS/Playback)   │ │
+│  └──────┬──────┘    └──────┬──────┘    └─────────────────────┘ │
+└─────────┼──────────────────┼────────────────────────────────────┘
+          │                  │
+          ▼                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     ENMS-OVOS-SKILL                             │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │ INTENT PARSING (Multi-Tier Adaptive Routing)               │ │
+│  │  • Tier 1: Heuristic Router (regex patterns) ──────► <5ms  │ │
+│  │  • Tier 2: Adapt Parser (vocabulary matching) ─────► <10ms │ │
+│  │  • Tier 3: Qwen3 LLM Parser (complex queries) ─► 300-500ms │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │ VALIDATION & API EXECUTION                                 │ │
+│  │  • Machine name fuzzy matching (Compressor-1, compressor)  │ │
+│  │  • Time range parsing (today, yesterday, this week)        │ │
+│  │  • Feature extraction (temperature, pressure, load)        │ │
+│  │  • Async HTTP client with retry logic                      │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │ RESPONSE FORMATTING                                        │ │
+│  │  • 35+ Jinja2 dialog templates                             │ │
+│  │  • Voice-optimized output (numbers, units, natural speech) │ │
+│  │  • Context-aware responses                                 │ │
+│  └────────────────────────────────────────────────────────────┘ │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    EnMS API (Ubuntu Server)                     │
+│  • 44 REST endpoints for energy management                      │
+│  • ISO 50001 compliant data model                               │
+│  • Real-time sensor data from 8 industrial machines             │
+│  • ML-powered baseline models and anomaly detection             │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 📊 Test Results
+
+### Current Coverage: **60%** (29/48 queries passing)
+
+| Category | Total | Passed | Failed | Pending |
+|----------|-------|--------|--------|---------|
+| Monitoring | 15 | 10 | 0 | 5 |
+| Analyses | 15 | 7 | 1 | 7 |
+| AI/ML Insights | 8 | 4 | 1 | 3 |
+| Reporting | 10 | 8 | 0 | 2 |
+
+### Performance Metrics
+
+| Metric | Target | Achieved |
+|--------|--------|----------|
+| Heuristic Query Latency | <100ms | ✅ ~5ms |
+| Adapt Query Latency | <50ms | ✅ ~10ms |
+| LLM Query Latency | <30s | ✅ 300-500ms |
+| API Response Time | <2s | ✅ ~200ms |
+| TTS Generation | <3s | ✅ ~1.8s (Edge-TTS) |
+
+See [ovos-evaluation.md](./enms-ovos-skill/docs/ovos-evaluation.md) for detailed test results.
 
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Python 3.12+
-- OVOS Core v2.1.1
-- Access to EnMS API
-- 8GB RAM, 4+ CPU cores
+- **Windows 10/11** with WSL2
+- **Ubuntu 22.04** in WSL2
+- **Python 3.10+**
+- **EnMS API** access (http://your-server:8001)
 
-### Development Setup
+### Installation
 
 ```bash
-# Clone the repository
-git clone git@github.com:RaptorBlingx/ovos-llm.git
+# 1. Clone the repository
+git clone https://github.com/RaptorBlingx/ovos-llm.git
 cd ovos-llm
 
-# Install dependencies (coming in Phase 1)
-python3.12 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+# 2. Set up WSL2 environment
+wsl -d Ubuntu
 
-# Configure EnMS API endpoint
-# (Instructions coming in Phase 1)
+# 3. Create Python virtual environment
+python3 -m venv ~/ovos-env
+source ~/ovos-env/bin/activate
+
+# 4. Install OVOS Core
+pip install ovos-core ovos-audio ovos-messagebus
+
+# 5. Install the EnMS skill
+cd enms-ovos-skill
+pip install -e .
+
+# 6. Configure EnMS API endpoint
+export ENMS_API_URL="http://your-server:8001/api/v1"
+
+# 7. Start OVOS services (see docs/WSL2_WORKFLOW_GUIDE.md)
+```
+
+### Starting the Voice Assistant
+
+```bash
+# Terminal 1: OVOS MessageBus
+ovos-messagebus
+
+# Terminal 2: OVOS Core
+ovos-core
+
+# Terminal 3: OVOS Audio
+ovos-audio
+
+# Terminal 4: REST Bridge (for web integration)
+cd enms-ovos-skill/bridge
+python ovos_rest_bridge.py
+
+# Terminal 5: Test queries
+cd enms-ovos-skill/scripts
+python test_skill_chat.py "What's the status of Compressor-1?"
 ```
 
 ---
 
-## 📅 Implementation Status
+## 📁 Project Structure
 
-**Current Phase:** Phase 1 – LLM Core & EnMS Integration  
-**Current Milestone:** Week 1 – Skill Scaffold + LLM Parser + Validator  
-**Overall Progress:** 0% (0/4 phases completed)
-
-See the [Master Plan](./docs/OVOS-ENMS-ULTIMATE-IMPLEMENTATION.md) for detailed timeline and task tracking.
+```
+ovos-llm/
+├── README.md                          # This file
+├── docs/
+│   ├── ENMS-API-DOCUMENTATION-FOR-OVOS.md  # Complete API reference
+│   └── test-questions.md              # Test query collection
+│
+└── enms-ovos-skill/                   # Main OVOS skill package
+    ├── enms_ovos_skill/
+    │   ├── __init__.py                # Skill entry point (1952 lines)
+    │   ├── lib/
+    │   │   ├── intent_parser.py       # Multi-tier intent routing
+    │   │   ├── api_client.py          # Async EnMS API client
+    │   │   ├── validator.py           # Input validation & fuzzy matching
+    │   │   ├── qwen3_parser.py        # LLM-based intent parsing
+    │   │   ├── adapt_parser.py        # Vocabulary-based parsing
+    │   │   └── time_parser.py         # Natural language time parsing
+    │   └── locale/en-us/dialog/       # 35+ response templates
+    │
+    ├── bridge/
+    │   ├── ovos_rest_bridge.py        # HTTP REST API wrapper
+    │   └── requirements-rest-bridge.txt
+    │
+    ├── scripts/
+    │   └── test_skill_chat.py         # Interactive testing tool
+    │
+    └── docs/
+        ├── ovos-evaluation.md         # Test results & progress
+        └── WSL2_WORKFLOW_GUIDE.md     # Development setup guide
+```
 
 ---
 
-## 🎯 Success Metrics
+## 🔗 Integration with EnMS
 
-| Metric | Target | Status |
-|--------|--------|--------|
-| Query Coverage | 95%+ | 🔲 Not started |
-| P50 Latency | <200ms | 🔲 Not started |
-| P90 Latency | <800ms | 🔲 Not started |
-| Accuracy | 99%+ | 🔲 Not started |
-| Hallucination Rate | <0.5% | 🔲 Not started |
-| Test Coverage | 90%+ | 🔲 Not started |
+The skill integrates with **44 EnMS API endpoints** covering:
+
+### Monitoring Endpoints
+- `GET /health` - System health check
+- `GET /stats/system` - Factory-wide statistics
+- `GET /machines` - List all machines
+- `GET /machines/status/{name}` - Machine status by name
+- `GET /anomaly/active` - Active alerts
+
+### Analysis Endpoints
+- `POST /performance/analyze` - Performance analysis
+- `POST /baseline/predict` - Energy prediction
+- `GET /baseline/models` - Baseline model info
+- `GET /forecast/short-term` - Energy forecasting
+- `GET /forecast/demand` - ARIMA demand forecast
+
+### Reporting Endpoints
+- `GET /kpi/all` - Key Performance Indicators
+- `GET /factory/summary` - Factory summary report
+- `GET /analytics/top-consumers` - Top energy consumers
+- `GET /iso50001/enpi-report` - ISO 50001 EnPI report
+- `POST /performance/action-plan` - Create action plans
+
+See [ENMS-API-DOCUMENTATION-FOR-OVOS.md](./docs/ENMS-API-DOCUMENTATION-FOR-OVOS.md) for complete API reference.
 
 ---
 
-## 🤝 Contributing
+## 🏆 WASABI EU Deliverables
 
-This project follows a structured 6-week implementation plan managed by AI agents. See the [Agent Workflow](./docs/OVOS-ENMS-ULTIMATE-IMPLEMENTATION.md#-agent-workflow-for-ai-implementation-agents) section in the master plan.
+This project fulfills the WASABI 1st Open Call commitment:
+
+> *"Successful integration of Intel50001 into the WASABI technology platform with DIA implementation of at least 3 different modules including monitoring, analyses and documentation."*
+
+### Delivered Capabilities
+
+1. **Monitoring Module** ✅
+   - Real-time machine status queries
+   - Energy consumption tracking
+   - Carbon footprint monitoring
+   - Alert and anomaly detection
+
+2. **Analyses Module** ✅
+   - Performance analysis vs baselines
+   - Energy prediction with ML models
+   - Demand forecasting (ARIMA)
+   - Energy saving opportunities
+
+3. **Documentation/Reporting Module** ✅
+   - ISO 50001 EnPI reports
+   - KPI dashboards via voice
+   - Action plan generation
+   - Compliance tracking
 
 ---
 
 ## 📄 License
 
-[To be determined]
+MIT License - See [LICENSE](./LICENSE) for details.
 
 ---
 
 ## 🔗 Links
 
-- [OVOS Documentation](https://openvoiceos.github.io/ovos-technical-manual/)
-- [WASABI EU Project](https://wasabiproject.eu/)
-- [Master Implementation Plan](./docs/OVOS-ENMS-ULTIMATE-IMPLEMENTATION.md)
+- **WASABI EU Project**: [wasabiproject.eu](https://wasabiproject.eu/)
+- **Open Voice OS**: [openvoiceos.org](https://openvoiceos.org/)
+- **ISO 50001 Standard**: [iso.org/iso-50001](https://www.iso.org/iso-50001-energy-management.html)
+- **EnMS Platform**: [Intel50001 Energy Management]
 
 ---
 
-**Built with ❤️ for industrial energy optimization**
+## 👥 Team
+
+- **OVOS Integration**: Burak (Voice Assistant Development)
+- **EnMS Backend**: Mohamad (API & Analytics Engine)
+- **Project**: HumanEnerDIA - WASABI EU 1st Open Call
+
+---
+
+<p align="center">
+  <strong>Built with ❤️ for Industrial Energy Optimization</strong><br>
+  <em>WASABI EU - Democratizing Industrial Analytics</em>
+</p>

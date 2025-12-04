@@ -150,7 +150,8 @@ class ENMSValidator:
                 metric=llm_output.get("metric") or entities.get("metric"),
                 time_range=time_range_obj,
                 aggregation=llm_output.get("aggregation") or entities.get("aggregation"),
-                limit=llm_output.get("limit") or entities.get("limit")
+                limit=llm_output.get("limit") or entities.get("limit"),
+                params=self._extract_intent_params(llm_output)
             )
         except (ValidationError, ValueError) as e:
             errors.append(f"Schema validation failed: {str(e)}")
@@ -170,7 +171,16 @@ class ENMSValidator:
         
         # Layer 4: Machine name validation
         # Skip machine validation for factory-wide intents
-        factory_wide_intents = [IntentType.FACTORY_OVERVIEW, IntentType.RANKING, IntentType.COST_ANALYSIS]
+        factory_wide_intents = [
+            IntentType.FACTORY_OVERVIEW, 
+            IntentType.RANKING, 
+            IntentType.COST_ANALYSIS, 
+            IntentType.REPORT, 
+            IntentType.KPI,
+            IntentType.SEUS,
+            IntentType.HELP,
+            IntentType.FORECAST  # Can be factory-wide or machine-specific
+        ]
         
         if intent.machine and intent.intent not in factory_wide_intents:
             # Special handling for COMPARISON: detect group/plural terms
@@ -584,3 +594,27 @@ class ENMSValidator:
         """Update machine whitelist from EnMS API"""
         self.machine_whitelist = machines
         logger.info("whitelist_updated", count=len(machines))
+    
+    def _extract_intent_params(self, llm_output: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Extract intent-specific parameters
+        
+        Args:
+            llm_output: Raw LLM output with potential extra params
+            
+        Returns:
+            Dict of intent-specific params or None
+        """
+        params = {}
+        
+        # Report-specific params
+        if llm_output.get('report_action'):
+            params['action'] = llm_output['report_action']
+        if llm_output.get('report_type'):
+            params['report_type'] = llm_output['report_type']
+        if llm_output.get('month'):
+            params['month'] = llm_output['month']
+        if llm_output.get('year'):
+            params['year'] = llm_output['year']
+        
+        return params if params else None

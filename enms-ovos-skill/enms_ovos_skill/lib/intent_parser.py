@@ -302,6 +302,63 @@ class HeuristicRouter:
             # NEW: General comparison without specific machine names
             re.compile(r'\bcompare\s+(?:the\s+)?(.+?)\s+(?:and|vs|versus)\s+(.+?)(?:\s+performance)?$', re.IGNORECASE),
         ],
+        
+        # Report generation (PDF reports) - comprehensive patterns
+        'report': [
+            # === GENERATE/CREATE patterns ===
+            re.compile(r'\b(?:generate|create|make|produce|build|prepare)\s+(?:a\s+)?(?:the\s+)?(?:monthly\s+)?(?:energy\s+)?(?:enpi\s+)?report', re.IGNORECASE),
+            re.compile(r'\b(?:generate|create|make|produce)\s+(?:a\s+)?(?:the\s+)?(?:enpi\s+)?pdf', re.IGNORECASE),
+            re.compile(r'\breport\s+(?:generation|creation)', re.IGNORECASE),
+            
+            # === MONTH-SPECIFIC patterns ===
+            re.compile(r'\breport\s+(?:for|of)\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)', re.IGNORECASE),
+            re.compile(r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:\d{4}\s+)?report', re.IGNORECASE),
+            re.compile(r'\b(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\'?s)?\s+(?:energy\s+)?(?:enpi\s+)?report', re.IGNORECASE),
+            re.compile(r'\breport\s+for\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}', re.IGNORECASE),
+            
+            # === RELATIVE TIME patterns ===
+            re.compile(r'\b(?:last|this|previous|current)\s+month(?:\'?s)?\s+report', re.IGNORECASE),
+            re.compile(r'\breport\s+for\s+(?:last|this|previous)\s+month', re.IGNORECASE),
+            re.compile(r'\bmonthly\s+(?:energy\s+)?(?:performance\s+)?report', re.IGNORECASE),
+            re.compile(r'\bmonth(?:\'?s)?\s+energy\s+report', re.IGNORECASE),
+            
+            # === ENPI-SPECIFIC patterns ===
+            re.compile(r'\benpi\s+(?:pdf\s+)?report', re.IGNORECASE),
+            re.compile(r'\benergy\s+performance\s+(?:indicator\s+)?report', re.IGNORECASE),
+            re.compile(r'\biso\s*50001\s+report', re.IGNORECASE),
+            re.compile(r'\bperformance\s+report\s+pdf', re.IGNORECASE),
+            
+            # === DOWNLOAD/GET patterns ===
+            re.compile(r'\bdownload\s+(?:the\s+)?(?:monthly\s+)?(?:enpi\s+)?report', re.IGNORECASE),
+            re.compile(r'\bdownload\s+(?:the\s+)?pdf', re.IGNORECASE),
+            re.compile(r'\bget\s+(?:me\s+)?(?:a\s+)?(?:the\s+)?(?:monthly\s+)?(?:enpi\s+)?report', re.IGNORECASE),
+            re.compile(r'\bgive\s+me\s+(?:a\s+)?(?:the\s+)?(?:energy\s+)?(?:enpi\s+)?report', re.IGNORECASE),
+            re.compile(r'\bi\s+(?:need|want)\s+(?:a\s+)?(?:the\s+)?(?:monthly\s+)?report', re.IGNORECASE),
+            re.compile(r'\bcan\s+(?:you\s+)?(?:generate|create|get|give)\s+(?:me\s+)?(?:a\s+)?report', re.IGNORECASE),
+            re.compile(r'\bpull\s+(?:the\s+)?(?:monthly\s+)?report', re.IGNORECASE),
+            re.compile(r'\bexport\s+(?:the\s+)?(?:energy\s+)?report', re.IGNORECASE),
+            re.compile(r'\bsend\s+(?:me\s+)?(?:the\s+)?report', re.IGNORECASE),
+            
+            # === LIST/AVAILABLE patterns ===
+            re.compile(r'\b(?:what|which)\s+reports?\s+(?:can|are|do|types?)', re.IGNORECASE),
+            re.compile(r'\blist\s+(?:all\s+)?(?:available\s+)?reports?', re.IGNORECASE),
+            re.compile(r'\bavailable\s+reports?', re.IGNORECASE),
+            re.compile(r'\breport\s+types?', re.IGNORECASE),
+            re.compile(r'\bwhat\s+(?:kind|type)\s+of\s+reports?', re.IGNORECASE),
+            re.compile(r'\bshow\s+(?:me\s+)?(?:available\s+)?reports?', re.IGNORECASE),
+            
+            # === PREVIEW patterns ===
+            re.compile(r'\bpreview\s+(?:the\s+)?(?:monthly\s+)?report', re.IGNORECASE),
+            re.compile(r'\bshow\s+(?:me\s+)?report\s+(?:data|preview|summary)', re.IGNORECASE),
+            re.compile(r'\breport\s+preview', re.IGNORECASE),
+            
+            # === SIMPLE/SHORT patterns ===
+            re.compile(r'^(?:the\s+)?report(?:\s+please)?$', re.IGNORECASE),
+            re.compile(r'^pdf\s+report$', re.IGNORECASE),
+            re.compile(r'^energy\s+report$', re.IGNORECASE),
+            re.compile(r'^monthly\s+report$', re.IGNORECASE),
+            re.compile(r'^enpi\s+report$', re.IGNORECASE),
+        ],
     }
     
     def __init__(self):
@@ -743,6 +800,66 @@ class HeuristicRouter:
                     'intent': 'anomaly_detection',
                     'confidence': 0.95,
                     'machine': machine
+                }
+            
+            elif intent_type == 'report':
+                # Report generation - extract month/year and action type
+                utterance_lower = utterance.lower()
+                
+                # Determine report action: generate, list, or preview
+                report_action = 'generate'  # default
+                if any(word in utterance_lower for word in ['what', 'which', 'list', 'available', 'types']):
+                    report_action = 'list_types'
+                elif 'preview' in utterance_lower:
+                    report_action = 'preview'
+                
+                # Extract month from utterance
+                month_names = {
+                    'january': 1, 'jan': 1, 'february': 2, 'feb': 2,
+                    'march': 3, 'mar': 3, 'april': 4, 'apr': 4,
+                    'may': 5, 'june': 6, 'jun': 6, 'july': 7, 'jul': 7,
+                    'august': 8, 'aug': 8, 'september': 9, 'sep': 9, 'sept': 9,
+                    'october': 10, 'oct': 10, 'november': 11, 'nov': 11,
+                    'december': 12, 'dec': 12
+                }
+                
+                month = None
+                year = None
+                
+                # Check for month names
+                for month_name, month_num in month_names.items():
+                    if month_name in utterance_lower:
+                        month = month_num
+                        break
+                
+                # Handle relative months
+                from datetime import datetime
+                now = datetime.now()
+                if 'last month' in utterance_lower or 'previous month' in utterance_lower:
+                    if now.month == 1:
+                        month = 12
+                        year = now.year - 1
+                    else:
+                        month = now.month - 1
+                        year = now.year
+                elif 'this month' in utterance_lower:
+                    month = now.month
+                    year = now.year
+                
+                # Default to current month if no month specified and generating
+                if month is None and report_action == 'generate':
+                    month = now.month
+                
+                # Default year to current year
+                if year is None:
+                    year = now.year
+                
+                return {
+                    'intent': 'report',
+                    'confidence': 0.95,
+                    'report_action': report_action,
+                    'month': month,
+                    'year': year
                 }
             
             return None
