@@ -1,0 +1,634 @@
+#!/usr/bin/env python3
+"""
+OVOS Headless Bridge - REST API for EnMS Integration
+=====================================================
+Runs skill logic directly WITHOUT OVOS messagebus dependency.
+Perfect for Docker deployment where we don't need wake words or audio hardware.
+
+Endpoints:
+    POST /query          - Text input → JSON response
+    POST /query/voice    - Text input → JSON + TTS audio response
+    GET  /health         - Health check
+    GET  /machines       - List available machines
+
+Usage:
+    python bridge/ovos_headless_bridge.py
+
+Environment Variables:
+    ENMS_API_URL         - EnMS API base URL (default: http://localhost:8001/api/v1)
+    OVOS_BRIDGE_PORT     - Port to listen on (default: 5000)
+    OVOS_TTS_ENABLED     - Enable TTS audio (default: true)
+    OVOS_TTS_ENGINE      - TTS engine: edge-tts, espeak (default: edge-tts)
+    LOG_LEVEL            - Logging level (default: INFO)
+"""
+import asyncio
+import base64
+import logging
+import os
+import sys
+import subprocess
+import shutil
+import tempfile
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from pydantic import BaseModel
+import uvicorn
+
+# Add skill library to path
+skill_dir = Path(__file__).parent.parent / "enms_ovos_skill"
+sys.path.insert(0, str(skill_dir))
+
+# Import skill components directly (no OVOS dependency)
+from lib.intent_parser import HybridParser, RoutingTier
+from lib.validator import ENMSValidator
+from lib.api_client import ENMSClient
+from lib.response_formatter import ResponseFormatter
+from lib.feature_extractor import FeatureExtractor
+from lib.conversation_context import ConversationContextManager
+from lib.models import IntentType, Intent
+
+# ============================================================================
+# Configuration
+# ============================================================================
+
+ENMS_API_URL = os.getenv("ENMS_API_URL", "http://localhost:8001/api/v1")
+BRIDGE_PORT = int(os.getenv("OVOS_BRIDGE_PORT", "5000"))
+TTS_ENABLED = os.getenv("OVOS_TTS_ENABLED", "true").lower() == "true"
+TTS_ENGINE = os.getenv("OVOS_TTS_ENGINE", "edge-tts")
+TTS_VOICE = os.getenv("OVOS_TTS_VOICE", "en-US-GuyNeural")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# ============================================================================
+# Logging
+# ============================================================================
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("OVOS-Headless")
+
+# ============================================================================
+# Request/Response Models
+# ============================================================================
+
+class QueryRequest(BaseModel):
+    text: str
+    session_id: Optional[str] = None
+
+class QueryResponse(BaseModel):
+    success: bool
+    response: Optional[str] = None
+    intent: Optional[str] = None
+    confidence: Optional[float] = None
+    error: Optional[str] = None
+    session_id: str
+    latency_ms: int
+    timestamp: str
+
+class VoiceQueryResponse(QueryResponse):
+    audio_base64: Optional[str] = None
+    audio_format: str = "mp3"
+    tts_latency_ms: int = 0
+
+class HealthResponse(BaseModel):
+    status: str
+    enms_connected: bool
+    tts_available: bool
+    machine_count: int
+    enms_api_url: str
+
+# ============================================================================
+# TTS Engine (Edge-TTS or espeak fallback)
+# ============================================================================
+
+class TTSEngine:
+    """Text-to-speech engine for voice responses"""
+    
+    def __init__(self):
+        self.engine = TTS_ENGINE
+        self.voice = TTS_VOICE
+        self.available = self._check_availability()
+        
+    def _check_availability(self) -> bool:
+        """Check if TTS engine is available"""
+        if self.engine == "edge-tts":
+            try:
+                import edge_tts
+                return True
+            except ImportError:
+                logger.warning("edge-tts not installed, trying espeak")
+                self.engine = "espeak"
+        
+        if self.engine == "espeak":
+            return shutil.which("espeak") is not None or shutil.which("espeak-ng") is not None
+        
+        return False
+    
+    async def synthesize(self, text: str) -> Optional[bytes]:
+        """Convert text to speech audio bytes"""
+        if not self.available:
+            return None
+            
+        try:
+            if self.engine == "edge-tts":
+                return await self._edge_tts(text)
+            elif self.engine == "espeak":
+                return self._espeak(text)
+        except Exception as e:
+            logger.error(f"TTS synthesis error: {e}")
+            return None
+    
+    async def _edge_tts(self, text: str) -> Optional[bytes]:
+        """Use Edge TTS (Microsoft cloud, high quality)"""
+        import edge_tts
+        
+        communicate = edge_tts.Communicate(text, self.voice)
+        
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            temp_path = f.name
+        
+        try:
+            await communicate.save(temp_path)
+            with open(temp_path, "rb") as f:
+                return f.read()
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+    
+    def _espeak(self, text: str) -> Optional[bytes]:
+        """Use espeak (local, fallback)"""
+        espeak_cmd = shutil.which("espeak-ng") or shutil.which("espeak")
+        if not espeak_cmd:
+            return None
+        
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            temp_path = f.name
+        
+        try:
+            result = subprocess.run(
+                [espeak_cmd, "-w", temp_path, text],
+                capture_output=True
+            )
+            if result.returncode == 0:
+                with open(temp_path, "rb") as f:
+                    return f.read()
+        finally:
+            Path(temp_path).unlink(missing_ok=True)
+        
+        return None
+
+# ============================================================================
+# Skill Engine (Direct component usage)
+# ============================================================================
+
+class SkillEngine:
+    """
+    Direct skill component engine - processes queries without OVOS messagebus.
+    Mirrors the exact logic from EnmsSkill.__init__.py handle_enms_query()
+    """
+    
+    def __init__(self, enms_api_url: str):
+        self.enms_api_url = enms_api_url
+        self.parser: Optional[HybridParser] = None
+        self.validator: Optional[ENMSValidator] = None
+        self.api_client: Optional[ENMSClient] = None
+        self.formatter: Optional[ResponseFormatter] = None
+        self.context_manager: Optional[ConversationContextManager] = None
+        self.feature_extractor: Optional[FeatureExtractor] = None
+        
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self.initialized = False
+        self.machine_count = 0
+        
+    async def initialize(self):
+        """Initialize all skill components"""
+        logger.info(f"Initializing skill engine with EnMS API: {self.enms_api_url}")
+        
+        try:
+            # Initialize parser (Tier 1-3)
+            self.parser = HybridParser()
+            logger.info("✅ HybridParser initialized")
+            
+            # Initialize validator (Tier 4)
+            self.validator = ENMSValidator()
+            logger.info("✅ Validator initialized")
+            
+            # Initialize API client (Tier 5)
+            self.api_client = ENMSClient(base_url=self.enms_api_url)
+            logger.info("✅ API client initialized")
+            
+            # Initialize formatter (Tier 6)
+            self.formatter = ResponseFormatter()
+            logger.info("✅ Response formatter initialized")
+            
+            # Initialize context manager (Tier 7)
+            self.context_manager = ConversationContextManager()
+            logger.info("✅ Context manager initialized")
+            
+            # Initialize feature extractor
+            self.feature_extractor = FeatureExtractor()
+            logger.info("✅ Feature extractor initialized")
+            
+            # Refresh machine whitelist from API
+            try:
+                machines = await self.api_client.list_machines(is_active=True)
+                machine_names = [m["name"] for m in machines]
+                self.validator.update_machine_whitelist(machine_names)
+                self.machine_count = len(machine_names)
+                logger.info(f"✅ Machine whitelist loaded: {self.machine_count} machines")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not load machine whitelist: {e}")
+                self.machine_count = 0
+            
+            self.initialized = True
+            logger.info("✅ Skill engine fully initialized")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize skill engine: {e}")
+            raise
+    
+    async def process_query(self, utterance: str, session_id: str) -> Dict[str, Any]:
+        """
+        Process a query through the full skill pipeline.
+        Mirrors EnmsSkill.handle_enms_query() logic exactly.
+        """
+        if not self.initialized:
+            return {
+                "success": False,
+                "error": "Skill engine not initialized",
+                "response": None,
+                "intent": None,
+                "confidence": None
+            }
+        
+        start_time = datetime.now()
+        
+        try:
+            # Get or create session
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Step 1: Parse intent
+            parse_result = self.parser.parse(utterance)
+            parse_result['utterance'] = utterance
+            
+            # Parser returns 'intent' as string, convert to IntentType enum
+            intent_str = parse_result.get('intent', 'unknown')
+            try:
+                intent_type = IntentType(intent_str)
+            except ValueError:
+                intent_type = IntentType.UNKNOWN
+            parse_result['intent_type'] = intent_type
+            
+            confidence = parse_result.get('confidence', 0.0)
+            tier = parse_result.get('tier', RoutingTier.HEURISTIC)
+            
+            logger.info(f"Parsed: intent={intent_type.value}, confidence={confidence:.2f}, tier={tier.value}")
+            
+            # Handle unknown intent
+            if intent_type == IntentType.UNKNOWN or confidence < 0.5:
+                return {
+                    "success": True,
+                    "response": "I'm sorry, I didn't understand that query. Could you rephrase it? You can ask about energy consumption, machines, predictions, or reports.",
+                    "intent": "unknown",
+                    "confidence": confidence,
+                    "error": None
+                }
+            
+            # Step 2: Validate
+            validation = self.validator.validate(parse_result)
+            
+            if not validation.valid:
+                # Need clarification
+                session.pending_clarification = parse_result
+                return {
+                    "success": True,
+                    "response": ", ".join(validation.errors) if validation.errors else "Could you clarify your request?",
+                    "intent": intent_type.value,
+                    "confidence": confidence,
+                    "error": None
+                }
+            
+            # Clear pending clarification
+            session.pending_clarification = None
+            
+            # Step 3: Execute API call
+            api_response = await self._execute_api_call(parse_result, validation)
+            
+            if api_response is None:
+                return {
+                    "success": False,
+                    "response": "I'm having trouble connecting to the energy management system. Please try again.",
+                    "intent": intent_type.value,
+                    "confidence": confidence,
+                    "error": "API call failed"
+                }
+            
+            # Step 4: Format response
+            response_text = self.formatter.format_response(intent_type.value, api_response, parse_result)
+            
+            # Update context (simple - just track last query)
+            session.last_intent = intent_type
+            session.last_machine = parse_result.get('machine')
+            
+            return {
+                "success": True,
+                "response": response_text,
+                "intent": intent_type.value,
+                "confidence": confidence,
+                "error": None
+            }
+            
+        except Exception as e:
+            logger.exception(f"Error processing query: {e}")
+            return {
+                "success": False,
+                "response": "An error occurred while processing your query.",
+                "intent": None,
+                "confidence": None,
+                "error": str(e)
+            }
+    
+    async def _execute_api_call(self, parse_result: Dict, validation) -> Optional[Dict]:
+        """Execute the appropriate EnMS API call based on intent"""
+        intent_type = parse_result.get('intent_type', IntentType.UNKNOWN)
+        machine_name = parse_result.get('machine')
+        
+        try:
+            if intent_type == IntentType.FACTORY_OVERVIEW:
+                data = await self.api_client.factory_summary()
+                # Transform to match template variables
+                return {
+                    'total_machines': data.get('machines', {}).get('total', 0),
+                    'active_machines': data.get('machines', {}).get('active', 0),
+                    'total_power_kw': data.get('energy', {}).get('current_power_kw', 0),
+                    'total_energy_kwh': data.get('energy', {}).get('total_kwh_today', 0),
+                    'total_energy': data.get('energy', {}).get('total_kwh_today', 0),
+                    'energy_per_hour': data.get('energy', {}).get('avg_power_kw', 0),
+                    'estimated_cost': data.get('costs', {}).get('total_usd_today', 0),
+                    'carbon_footprint': data.get('energy', {}).get('total_kwh_today', 0) * 0.4,  # Rough estimate
+                }
+            
+            elif intent_type == IntentType.MACHINE_STATUS:
+                if machine_name:
+                    return await self.api_client.get_machine_status(machine_name)
+                machines = await self.api_client.list_machines(is_active=True)
+                return {"machines": machines}
+            
+            elif intent_type in (IntentType.ENERGY_QUERY, IntentType.ENERGY_CONSUMPTION):
+                if machine_name:
+                    # Get machine ID first
+                    machines = await self.api_client.list_machines(search=machine_name)
+                    if machines:
+                        machine_id = machines[0]['id']
+                        data = await self.api_client.get_energy_timeseries(
+                            machine_id=machine_id,
+                            hours=24
+                        )
+                        return {"machine": machines[0], "energy": data}
+                # Factory-wide
+                return await self.api_client.system_stats()
+            
+            elif intent_type == IntentType.POWER_QUERY:
+                if machine_name:
+                    machines = await self.api_client.list_machines(search=machine_name)
+                    if machines:
+                        machine_id = machines[0]['id']
+                        data = await self.api_client.get_power_timeseries(
+                            machine_id=machine_id,
+                            hours=24
+                        )
+                        return {"machine": machines[0], "power": data}
+                return await self.api_client.system_stats()
+            
+            elif intent_type in (IntentType.ANOMALY, IntentType.ANOMALY_DETECTION):
+                return await self.api_client.get_recent_anomalies(hours=24)
+            
+            elif intent_type == IntentType.BASELINE:
+                if machine_name:
+                    machines = await self.api_client.list_machines(search=machine_name)
+                    if machines:
+                        # Return machine info for baseline prediction context
+                        return {"machine": machines[0], "baseline": "prediction"}
+                return await self.api_client.list_baseline_models()
+            
+            elif intent_type == IntentType.BASELINE_MODELS:
+                return await self.api_client.list_baseline_models()
+            
+            elif intent_type == IntentType.SEUS:
+                return await self.api_client.list_seus()
+            
+            elif intent_type == IntentType.KPI:
+                return await self.api_client.system_stats()
+            
+            elif intent_type == IntentType.PERFORMANCE:
+                return await self.api_client.get_performance_health()
+            
+            elif intent_type == IntentType.HELP:
+                return {"help": True}
+            
+            else:
+                logger.warning(f"Unhandled intent type: {intent_type}")
+                # Fallback to factory summary
+                return await self.api_client.factory_summary()
+                
+        except Exception as e:
+            logger.exception(f"API call failed for {intent_type}: {e}")
+            return None
+    
+    async def check_enms_connection(self) -> bool:
+        """Check if EnMS API is reachable"""
+        try:
+            await self.api_client.list_machines(is_active=True)
+            return True
+        except:
+            return False
+
+# ============================================================================
+# FastAPI Application
+# ============================================================================
+
+app = FastAPI(
+    title="OVOS EnMS Headless Bridge",
+    description="REST API for Energy Management Voice Assistant - No hardware dependencies",
+    version="2.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Global instances
+skill_engine: Optional[SkillEngine] = None
+tts_engine: Optional[TTSEngine] = None
+
+@app.on_event("startup")
+async def startup():
+    """Initialize components on startup"""
+    global skill_engine, tts_engine
+    
+    logger.info("=" * 60)
+    logger.info("OVOS EnMS Headless Bridge - Starting")
+    logger.info("=" * 60)
+    logger.info(f"EnMS API: {ENMS_API_URL}")
+    logger.info(f"Port: {BRIDGE_PORT}")
+    logger.info(f"TTS: {TTS_ENGINE} ({'enabled' if TTS_ENABLED else 'disabled'})")
+    logger.info("=" * 60)
+    
+    # Initialize skill engine
+    skill_engine = SkillEngine(enms_api_url=ENMS_API_URL)
+    await skill_engine.initialize()
+    
+    # Initialize TTS
+    if TTS_ENABLED:
+        tts_engine = TTSEngine()
+        logger.info(f"TTS available: {tts_engine.available}")
+    
+    logger.info("✅ Headless bridge ready")
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Cleanup on shutdown"""
+    if skill_engine and skill_engine.api_client:
+        await skill_engine.api_client.close()
+
+@app.post("/query", response_model=QueryResponse)
+async def query(request: QueryRequest):
+    """
+    Process text query and return response.
+    
+    Example:
+        POST /query
+        {"text": "factory overview"}
+    """
+    start_time = datetime.now()
+    session_id = request.session_id or str(uuid.uuid4())
+    
+    result = await skill_engine.process_query(request.text, session_id)
+    
+    latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+    
+    return QueryResponse(
+        success=result["success"],
+        response=result.get("response"),
+        intent=result.get("intent"),
+        confidence=result.get("confidence"),
+        error=result.get("error"),
+        session_id=session_id,
+        latency_ms=latency_ms,
+        timestamp=datetime.now().isoformat()
+    )
+
+@app.post("/query/voice", response_model=VoiceQueryResponse)
+async def query_voice(request: QueryRequest):
+    """
+    Process text query and return response WITH TTS audio.
+    
+    Example:
+        POST /query/voice
+        {"text": "factory overview"}
+    """
+    start_time = datetime.now()
+    session_id = request.session_id or str(uuid.uuid4())
+    
+    # Get text response
+    result = await skill_engine.process_query(request.text, session_id)
+    query_latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+    
+    # Generate TTS if enabled and response exists
+    audio_base64 = None
+    audio_format = "mp3"
+    tts_latency_ms = 0
+    
+    if TTS_ENABLED and tts_engine and tts_engine.available and result.get("response"):
+        tts_start = datetime.now()
+        audio_bytes = await tts_engine.synthesize(result["response"])
+        tts_latency_ms = int((datetime.now() - tts_start).total_seconds() * 1000)
+        
+        if audio_bytes:
+            audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+            # Detect format
+            if audio_bytes[:3] == b'ID3' or (len(audio_bytes) > 1 and audio_bytes[:2] == b'\xff\xfb'):
+                audio_format = "mp3"
+            else:
+                audio_format = "wav"
+            logger.info(f"TTS: {len(audio_bytes)} bytes in {tts_latency_ms}ms")
+    
+    total_latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+    
+    return VoiceQueryResponse(
+        success=result["success"],
+        response=result.get("response"),
+        intent=result.get("intent"),
+        confidence=result.get("confidence"),
+        error=result.get("error"),
+        session_id=session_id,
+        latency_ms=total_latency_ms,
+        audio_base64=audio_base64,
+        audio_format=audio_format,
+        tts_latency_ms=tts_latency_ms,
+        timestamp=datetime.now().isoformat()
+    )
+
+@app.get("/health", response_model=HealthResponse)
+async def health():
+    """Health check endpoint"""
+    enms_connected = False
+    if skill_engine:
+        enms_connected = await skill_engine.check_enms_connection()
+    
+    return HealthResponse(
+        status="ok" if enms_connected else "degraded",
+        enms_connected=enms_connected,
+        tts_available=tts_engine.available if tts_engine else False,
+        machine_count=skill_engine.machine_count if skill_engine else 0,
+        enms_api_url=ENMS_API_URL
+    )
+
+@app.get("/machines")
+async def list_machines():
+    """List all available machines"""
+    if not skill_engine or not skill_engine.initialized:
+        raise HTTPException(503, "Skill engine not initialized")
+    
+    machines = await skill_engine.api_client.list_machines(is_active=True)
+    return {"machines": machines, "count": len(machines)}
+
+@app.get("/")
+async def root():
+    """API info"""
+    return {
+        "service": "OVOS EnMS Headless Bridge",
+        "version": "2.0.0",
+        "mode": "headless (no OVOS messagebus)",
+        "endpoints": {
+            "POST /query": "Text query → JSON response",
+            "POST /query/voice": "Text query → JSON + TTS audio",
+            "GET /health": "Health check",
+            "GET /machines": "List machines"
+        },
+        "enms_api": ENMS_API_URL,
+        "tts_enabled": TTS_ENABLED,
+        "status": "ready" if (skill_engine and skill_engine.initialized) else "initializing"
+    }
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+if __name__ == "__main__":
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=BRIDGE_PORT,
+        log_level=LOG_LEVEL.lower()
+    )

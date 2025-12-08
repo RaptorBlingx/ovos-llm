@@ -1,0 +1,7 @@
+{
+  "enms_api_base_url": "http://localhost:8001/api/v1",
+  "llm_model_path": "/models/Qwen_Qwen3-1.7B-Q4_K_M.gguf",
+  "confidence_threshold": 0.85,
+  "enable_progress_feedback": true,
+  "progress_threshold_ms": 500
+}
