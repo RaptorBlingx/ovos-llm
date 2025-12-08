@@ -1,0 +1,32 @@
+# OVOS EnMS Headless Bridge - Production Dependencies
+# For Docker deployment without OVOS messagebus
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn>=0.27.0
+
+# HTTP Client
+httpx>=0.27.0
+tenacity>=8.2.0
+
+# Data Validation
+pydantic>=2.5.0
+
+# Text-to-Speech
+edge-tts>=6.1.0
+
+# Intent Parsing (Adapt - lightweight)
+adapt-parser>=1.0.0
+
+# Logging
+structlog>=24.1.0
+prometheus-client>=0.20.0
+
+# LLM (optional - for complex queries)
+llama-cpp-python>=0.2.50
+
+# Date/Time parsing
+python-dateutil>=2.8.0
+
+# Jinja2 for response templates
+jinja2>=3.1.0

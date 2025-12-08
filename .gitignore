@@ -55,6 +55,10 @@ mycroft.conf
 # Environment variables
 .env
 .env.local
+!.env.example
+
+# Docker
+.docker/
 
 # Voice models (large files - download separately)
 *.onnx
