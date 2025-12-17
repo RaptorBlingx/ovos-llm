@@ -1,12 +1,13 @@
-# OVOS EnMS Skill - Headless Docker Image
-# Production deployment for Energy Management Voice Assistant
-# No audio hardware dependencies - REST API only
+# OVOS EnMS Skill - Full OVOS Integration
+# Production deployment with OVOS messagebus and skill framework
+# Headless mode (no wake word/audio hardware required)
 
 FROM python:3.10-slim-bookworm
 
-LABEL maintainer="EnMS Team"
-LABEL description="OVOS Voice Assistant for Energy Management System - Headless Mode"
+LABEL maintainer="A Plus Engineering"
+LABEL description="OVOS Energy Management Skill - ISO 50001 Voice Assistant"
 LABEL version="1.0.0"
+LABEL license="GPL-3.0"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,47 +17,74 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (minimal - no audio packages)
+# Install system dependencies (including swig and libfann for Padatious neural networks)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     git \
     curl \
+    supervisor \
+    swig \
+    libfann-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Create directories with proper structure
+RUN mkdir -p /opt/ovos/skills \
+             /var/log/ovos \
+             /var/log/supervisor \
+             /config \
+             /models \
+             /tmp/mycroft
 
 # Create non-root user for security
 RUN useradd -m -u 1000 ovos && \
-    mkdir -p /app /models /config && \
-    chown -R ovos:ovos /app /models /config
+    chown -R ovos:ovos /opt/ovos /var/log/ovos /var/log/supervisor /app /config /models /tmp/mycroft
 
 # Copy requirements first for better layer caching
 COPY requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy application code
-COPY enms-ovos-skill/ /app/
+# Copy OVOS configuration
+COPY ovos.conf /config/ovos.conf
+ENV XDG_CONFIG_HOME=/config
+
+# Copy skill source (for installation)
+COPY enms-ovos-skill/ /tmp/enms-ovos-skill/
+
+# Install the skill as a Python package
+RUN cd /tmp/enms-ovos-skill && \
+    pip install --no-cache-dir -e . && \
+    mkdir -p /opt/ovos/skills && \
+    ln -s /tmp/enms-ovos-skill /opt/ovos/skills/enms-ovos-skill
+
+# Copy bridge code (REST API gateway to messagebus)
+COPY enms-ovos-skill/bridge/ /app/bridge/
+
+# Copy supervisor configuration
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+# Set ownership
+RUN chown -R ovos:ovos /opt/ovos /app /config /var/log/ovos /var/log/supervisor /tmp/mycroft /tmp/enms-ovos-skill
 
 # Switch to non-root user
 USER ovos
 
 # Environment variables with defaults
-ENV ENMS_API_URL=http://localhost:8001/api/v1
+ENV ENMS_API_URL=http://host.docker.internal:8001/api/v1
 ENV OVOS_BRIDGE_PORT=5000
 ENV OVOS_TTS_ENABLED=true
-ENV OVOS_TTS_ENGINE=edge-tts
-ENV OVOS_TTS_VOICE=en-US-GuyNeural
 ENV LOG_LEVEL=INFO
-ENV LLM_MODEL_PATH=/models/Qwen_Qwen3-1.7B-Q4_K_M.gguf
+ENV OVOS_CONFIG_PATH=/config/ovos.conf
 
-# Expose REST API port
-EXPOSE 5000
+# Expose ports
+EXPOSE 5000 8181
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
+# Health check - check both bridge and messagebus
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost:5000/health && curl -f http://localhost:8181/core || exit 1
 
-# Default command - run the headless REST bridge
-CMD ["python", "bridge/ovos_headless_bridge.py"]
+# Default command - run supervisor to manage all services
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

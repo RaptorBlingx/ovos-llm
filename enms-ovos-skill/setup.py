@@ -5,12 +5,12 @@ from os import walk, path
 
 # Package information
 SKILL_CLAZZ = "create_skill"  # Factory function name
-VERSION = "0.0.1"
-URL = "https://github.com/YourName/enms-ovos-skill"
-AUTHOR = "YourName"
-EMAIL = ""
-LICENSE = "Apache2.0"
-DESCRIPTION = "OVOS skill for Energy Management System (EnMS) integration"
+VERSION = "1.0.0"
+URL = "https://github.com/aplusengineering/enms-ovos-skill"
+AUTHOR = "A Plus Engineering"
+EMAIL = "info@aplusengineering.com"
+LICENSE = "GPL-3.0"
+DESCRIPTION = "OVOS skill for industrial energy management (ISO 50001) - Voice assistant for manufacturing SMEs"
 
 PYPI_NAME = "enms-ovos-skill"
 
@@ -63,6 +63,16 @@ setup(
     package_data={SKILL_PKG: find_resource_files()},
     include_package_data=True,
     install_requires=get_requirements("requirements.txt"),
-    keywords='ovos skill plugin energy management',
-    entry_points={'ovos.plugin.skill': PLUGIN_ENTRY_POINT}
+    keywords='ovos skill plugin energy management manufacturing iso50001 sme industry',
+    entry_points={'ovos.plugin.skill': PLUGIN_ENTRY_POINT},
+    classifiers=[
+        'Development Status :: 5 - Production/Stable',
+        'Intended Audience :: Manufacturing',
+        'Intended Audience :: Developers',
+        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
+        'Programming Language :: Python :: 3.10',
+        'Topic :: Scientific/Engineering :: Energy Management',
+        'Topic :: Office/Business :: Manufacturing',
+    ],
+    python_requires='>=3.10',
 )

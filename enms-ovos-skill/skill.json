@@ -1,11 +1,11 @@
 {
   "name": "EnMS Energy Management Skill",
   "skill_id": "enms-ovos-skill",
-  "version": "0.1.0",
-  "author": "OVOS EnMS Team",
-  "description": "Industrial voice assistant for Energy Management System (EnMS) integration. Provides real-time energy monitoring, machine status, anomaly detection, and forecasting through natural language queries.",
-  "license": "Apache-2.0",
-  "url": "https://github.com/wasabi-eu/enms-ovos-skill",
+  "version": "1.0.0",
+  "author": "A Plus Engineering",
+  "description": "Human-centric voice assistant for industrial energy management (ISO 50001). Provides real-time monitoring, anomaly detection, forecasting, and decision support for manufacturing SMEs. Part of WASABI H2020 HumanEnerDIA project.",
+  "license": "GPL-3.0",
+  "url": "https://github.com/aplusengineering/enms-ovos-skill",
   "category": "Productivity",
   "tags": [
     "energy",

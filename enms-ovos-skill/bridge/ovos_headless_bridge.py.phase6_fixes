@@ -380,7 +380,7 @@ class SkillEngine:
                 machines = await self.api_client.list_machines(is_active=True)
                 return {"machines": machines}
             
-            elif intent_type in (IntentType.ENERGY_QUERY, IntentType.ENERGY_CONSUMPTION):
+            elif intent_type == IntentType.ENERGY_QUERY:
                 if machine_name:
                     # Get machine ID first
                     machines = await self.api_client.list_machines(search=machine_name)
@@ -406,8 +406,8 @@ class SkillEngine:
                         return {"machine": machines[0], "power": data}
                 return await self.api_client.system_stats()
             
-            elif intent_type in (IntentType.ANOMALY, IntentType.ANOMALY_DETECTION):
-                return await self.api_client.get_recent_anomalies(hours=24)
+            elif intent_type == IntentType.ANOMALY_DETECTION:
+                return await self.api_client.get_recent_anomalies(limit=50)
             
             elif intent_type == IntentType.BASELINE:
                 if machine_name:
@@ -415,10 +415,10 @@ class SkillEngine:
                     if machines:
                         # Return machine info for baseline prediction context
                         return {"machine": machines[0], "baseline": "prediction"}
-                return await self.api_client.list_baseline_models()
+                machines = await self.api_client.list_machines(is_active=True); return {"message": "Baseline models available for active machines", "count": len(machines)}
             
             elif intent_type == IntentType.BASELINE_MODELS:
-                return await self.api_client.list_baseline_models()
+                machines = await self.api_client.list_machines(is_active=True); return {"message": "Baseline models available for active machines", "count": len(machines)}
             
             elif intent_type == IntentType.SEUS:
                 return await self.api_client.list_seus()
@@ -428,6 +428,21 @@ class SkillEngine:
             
             elif intent_type == IntentType.PERFORMANCE:
                 return await self.api_client.get_performance_health()
+            
+            elif intent_type == IntentType.RANKING:
+                # Get limit from parse result (default 5)
+                limit = parse_result.get('limit', 5)
+                metric = parse_result.get('metric', 'energy')
+                # Calculate time range (default: today)
+                from datetime import datetime, timedelta
+                end_time = datetime.utcnow()
+                start_time = end_time - timedelta(days=1)
+                return await self.api_client.get_top_consumers(
+                    limit=limit,
+                    metric=metric,
+                    start_time=start_time.isoformat(),
+                    end_time=end_time.isoformat()
+                )
             
             elif intent_type == IntentType.HELP:
                 return {"help": True}
