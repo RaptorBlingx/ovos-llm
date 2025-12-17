@@ -1996,7 +1996,7 @@ class EnmsSkill(OVOSSkill):
             
             # Speak result
             if result['success']:
-                response = self.response_formatter.format('energy', result['data'])
+                response = self.response_formatter.format_response('energy', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2025,7 +2025,7 @@ class EnmsSkill(OVOSSkill):
             
             # Speak result
             if result['success']:
-                response = self.response_formatter.format('machine_status', result['data'])
+                response = self.response_formatter.format_response('machine_status', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2052,7 +2052,7 @@ class EnmsSkill(OVOSSkill):
             
             # Speak result
             if result['success']:
-                response = self.response_formatter.format('factory_overview', result['data'])
+                response = self.response_formatter.format_response('factory_overview', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2077,7 +2077,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('anomaly', result['data'])
+                response = self.response_formatter.format_response('anomaly', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2108,7 +2108,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('ranking', result['data'])
+                response = self.response_formatter.format_response('ranking', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2133,7 +2133,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('comparison', result['data'])
+                response = self.response_formatter.format_response('comparison', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2158,7 +2158,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('cost', result['data'])
+                response = self.response_formatter.format_response('cost', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2183,7 +2183,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('forecast', result['data'])
+                response = self.response_formatter.format_response('forecast', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2208,7 +2208,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('baseline', result['data'])
+                response = self.response_formatter.format_response('baseline', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2233,7 +2233,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('baseline_models', result['data'])
+                response = self.response_formatter.format_response('baseline_models', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2258,7 +2258,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('baseline_explanation', result['data'])
+                response = self.response_formatter.format_response('baseline_explanation', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2281,7 +2281,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('seus', result['data'])
+                response = self.response_formatter.format_response('seus', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2306,7 +2306,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('kpi', result['data'])
+                response = self.response_formatter.format_response('kpi', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2331,7 +2331,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('performance', result['data'])
+                response = self.response_formatter.format_response('performance', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2356,7 +2356,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('production', result['data'])
+                response = self.response_formatter.format_response('production', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2381,7 +2381,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('power', result['data'])
+                response = self.response_formatter.format_response('power', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2408,7 +2408,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('report', result['data'])
+                response = self.response_formatter.format_response('report', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2431,7 +2431,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format('help', result['data'])
+                response = self.response_formatter.format_response('help', result['data'])
                 self.speak(response)
             else:
                 self.speak("I can help you with energy monitoring, machine status, anomaly detection, KPIs, forecasting, and more. Try asking about a specific machine or factory overview.")
