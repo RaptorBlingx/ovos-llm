@@ -13,7 +13,6 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import structlog
-from difflib import SequenceMatcher
 
 from .models import Intent, IntentType
 
@@ -343,79 +342,6 @@ class ConversationContextManager:
         # Generic fallback
         return "I didn't quite understand that. Could you try rephrasing?"
     
-    def fuzzy_match_machines(self, query: str, 
-                            available_machines: List[str],
-                            threshold: float = 0.7) -> List[Dict[str, Any]]:
-        """
-        Find machines with similar names using fuzzy matching
-        
-        Handles variations like:
-        - "compressor one" → "Compressor-1"
-        - "hvac main" → "HVAC-Main"
-        - "boiler 1" → "Boiler-1"
-        - Typos and phonetic similarities
-        
-        Args:
-            query: User's query text
-            available_machines: List of valid machine names
-            threshold: Similarity threshold (0.0-1.0), default 0.7
-            
-        Returns:
-            List of matches sorted by similarity score:
-            [
-                {"name": "Compressor-1", "similarity": 0.95},
-                {"name": "Compressor-EU-1", "similarity": 0.85}
-            ]
-        """
-        query_lower = query.lower()
-        matches = []
-        
-        # Number words to digits for spoken queries
-        number_words = {
-            'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
-            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10'
-        }
-        
-        # Normalize query: convert number words to digits, remove punctuation
-        query_normalized = query_lower
-        for word, digit in number_words.items():
-            query_normalized = re.sub(rf'{word}', digit, query_normalized)
-        
-        for machine in available_machines:
-            # Normalize machine name for comparison
-            machine_norm = machine.lower().replace('-', ' ')
-            query_norm = query_normalized.replace('-', ' ')
-            
-            # Calculate similarity ratio
-            ratio = SequenceMatcher(None, machine_norm, query_norm).ratio()
-            
-            # Also check if query is substring of machine name (boost score)
-            if query_norm in machine_norm or machine_norm in query_norm:
-                ratio = max(ratio, 0.8)  # Boost substring matches
-            
-            # Check word-level matching (for multi-word machines)
-            machine_words = set(machine_norm.split())
-            query_words = set(query_norm.split())
-            word_overlap = len(machine_words & query_words) / max(len(machine_words), len(query_words))
-            ratio = max(ratio, word_overlap)  # Use best score
-            
-            if ratio >= threshold:
-                matches.append({
-                    "name": machine,
-                    "similarity": round(ratio, 2)
-                })
-        
-        # Sort by similarity score (descending)
-        matches.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        logger.info("fuzzy_matching_completed",
-                   query=query,
-                   matches_count=len(matches),
-                   top_match=matches[0]['name'] if matches else None)
-        
-        return matches
-
-
     def cleanup_expired_sessions(self):
         """Remove expired sessions to free memory"""
         expired = [sid for sid, session in self.sessions.items() 

@@ -73,18 +73,32 @@ class AdaptParser:
                     word_form = machine.replace("-", " ").replace(digit, word)
                     self.engine.register_entity(word_form, "machine")
         
-        # Energy keywords
-        energy_keywords = ["energy", "kwh", "kilowatt", "consumption", "used", "consumed"]
+        # Energy keywords - EXPANDED with domain synonyms
+        energy_keywords = [
+            "energy", "kwh", "kilowatt", "kilowatt hour", "kilowatt-hour",
+            "consumption", "used", "consumed", "usage", "draw", "load",
+            "demand", "requirement", "utilization", "electricity"
+        ]
         for keyword in energy_keywords:
             self.engine.register_entity(keyword, "energy_metric")
         
-        # Power keywords
-        power_keywords = ["power", "watts", "kw", "kilowatts"]
+        # Power keywords - EXPANDED with electrical terms
+        power_keywords = [
+            "power", "watts", "watt", "kw", "kilowatts", "kilowatt",
+            "wattage", "electrical load", "current draw", "instantaneous power",
+            "real power", "active power"
+        ]
         for keyword in power_keywords:
             self.engine.register_entity(keyword, "power_metric")
         
-        # Status keywords
-        status_keywords = ["status", "running", "online", "offline", "availability"]
+        # Status keywords - EXPANDED with operational states
+        status_keywords = [
+            "status", "running", "online", "offline", "availability",
+            "state", "condition", "operation mode", "running status",
+            "idle", "standby", "waiting", "not running", "stopped",
+            "full load", "maximum capacity", "peak load", "full power",
+            "partial load", "reduced capacity", "part load", "ramping"
+        ]
         for keyword in status_keywords:
             self.engine.register_entity(keyword, "status_check")
         
@@ -93,8 +107,16 @@ class AdaptParser:
         for keyword in cost_keywords:
             self.engine.register_entity(keyword, "cost_metric")
         
-        # KPI keywords (efficiency, SEC, load factor)
-        kpi_keywords = ["kpi", "kpis", "efficiency", "sec", "specific energy consumption", "load factor", "peak demand"]
+        # KPI keywords - EXPANDED with ISO 50001 terms
+        kpi_keywords = [
+            "kpi", "kpis", "efficiency", "sec", "specific energy consumption",
+            "load factor", "peak demand", "performance",
+            "efficiency ratio", "energy intensity",
+            # ISO 50001 terms
+            "seu", "significant energy use", "significant energy user",
+            "enpi", "energy performance indicator", "performance metric",
+            "baseline", "energy baseline", "baseline model", "reference consumption"
+        ]
         for keyword in kpi_keywords:
             self.engine.register_entity(keyword, "kpi_metric")
         
@@ -103,8 +125,13 @@ class AdaptParser:
         for keyword in ranking_keywords:
             self.engine.register_entity(keyword, "ranking")
         
-        # Factory keywords
-        factory_keywords = ["factory", "facility", "plant", "total", "overview", "summary"]
+        # Factory keywords - EXPANDED with industrial terms
+        factory_keywords = [
+            "factory", "facility", "plant", "site", "total", "overview", "summary",
+            "all machines", "all equipment", "entire facility", "whole plant",
+            # Equipment synonyms
+            "equipment", "machine", "machines", "asset", "assets", "unit", "units", "device", "devices"
+        ]
         for keyword in factory_keywords:
             self.engine.register_entity(keyword, "factory")
         
@@ -113,11 +140,97 @@ class AdaptParser:
         for keyword in comparison_keywords:
             self.engine.register_entity(keyword, "comparison")
         
-        # Time range keywords
-        time_keywords = ["today", "yesterday", "week", "month", "hour", "day"]
+        # Time range keywords - EXPANDED with natural expressions
+        time_keywords = [
+            # Absolute
+            "today", "yesterday", "week", "month", "hour", "day", "year",
+            # Relative/Natural
+            "right now", "at the moment", "currently", "as of now",
+            "in the past hour", "during last shift", "overnight",
+            "last week", "past month", "previous quarter",
+            # Industrial terms
+            "shift", "batch", "cycle", "production run", "operation period"
+        ]
         for keyword in time_keywords:
             self.engine.register_entity(keyword, "time_range")
     
+        
+        # Forecast/Prediction keywords - NEW
+        forecast_keywords = [
+            "forecast", "forecasting", "predict", "prediction", "predicted",
+            "expected", "estimate", "projection", "future",
+            "will use", "will consume", "going to", "next hour", "next day",
+            "tomorrow", "next week", "upcoming", "anticipated"
+        ]
+        for keyword in forecast_keywords:
+            self.engine.register_entity(keyword, "forecast")
+        
+        # Anomaly keywords - NEW
+        anomaly_keywords = [
+            "anomaly", "anomalies", "alert", "alerts", "warning", "warnings",
+            "issue", "issues", "problem", "problems", "unusual", "abnormal",
+            "outlier", "outliers", "deviation", "deviations", "spike", "spikes",
+            "drop", "irregular", "unexpected"
+        ]
+        for keyword in anomaly_keywords:
+            self.engine.register_entity(keyword, "anomaly")
+        
+        # Help keywords - NEW
+        help_keywords = [
+            "help", "assist", "assistance", "guide", "how to", "tutorial",
+            "show me", "tell me", "explain", "what can you do", "capabilities"
+        ]
+        for keyword in help_keywords:
+            self.engine.register_entity(keyword, "help_query")
+        
+        # Report keywords - NEW
+        report_keywords = [
+            "report", "reports", "pdf", "document", "generate", "create",
+            "summary", "export", "download", "monthly report", "energy report"
+        ]
+        for keyword in report_keywords:
+            self.engine.register_entity(keyword, "report_query")
+        
+        # Production keywords - NEW
+        production_keywords = [
+            "production", "units", "output", "manufactured", "produced",
+            "oee", "overall equipment effectiveness", "quality", "yield",
+            "throughput", "batch", "produced units"
+        ]
+        for keyword in production_keywords:
+            self.engine.register_entity(keyword, "production_query")
+        
+        # SEU keywords - NEW
+        seu_keywords = [
+            "seu", "seus", "significant energy use", "significant energy user",
+            "significant energy uses", "energy consumer", "major consumer"
+        ]
+        for keyword in seu_keywords:
+            self.engine.register_entity(keyword, "seu_query")
+        
+        # Performance keywords - NEW
+        performance_keywords = [
+            "performance", "efficiency score", "operating efficiency",
+            "performance rating", "performance index"
+        ]
+        for keyword in performance_keywords:
+            self.engine.register_entity(keyword, "performance_query")
+        
+        # Model keywords - NEW
+        model_keywords = [
+            "model", "models", "available", "list", "show models",
+            "baseline model", "trained model"
+        ]
+        for keyword in model_keywords:
+            self.engine.register_entity(keyword, "model_query")
+        
+        # Explain keywords - NEW
+        explain_keywords = [
+            "explain", "why", "reason", "explanation", "because",
+            "how does it work", "tell me why"
+        ]
+        for keyword in explain_keywords:
+            self.engine.register_entity(keyword, "explain_query")
     def _register_intents(self):
         """Register Adapt intent patterns"""
         
@@ -171,7 +284,74 @@ class AdaptParser:
             .require("comparison") \
             .require("machine") \
             .build()
+        
+        # Forecast intent - NEW
+        forecast_intent = IntentBuilder("baseline_prediction") \
+            .require("forecast") \
+            .build()
+        self.engine.register_intent_parser(forecast_intent)
+        
+        # Anomaly detection intent - NEW
+        anomaly_intent = IntentBuilder("anomaly_detection") \
+            .require("anomaly") \
+            .build()
+        self.engine.register_intent_parser(anomaly_intent)
         self.engine.register_intent_parser(comparison_intent)
+        
+        # Baseline intent (not forecast, actual baseline query)
+        baseline_intent = IntentBuilder("baseline") \
+            .require("kpi_metric") \
+            .require("machine") \
+            .build()
+        self.engine.register_intent_parser(baseline_intent)
+        
+        # Baseline models intent
+        baseline_models_intent = IntentBuilder("baseline_models") \
+            .require("kpi_metric") \
+            .require("machine") \
+            .require("model_query") \
+            .build()
+        self.engine.register_intent_parser(baseline_models_intent)
+        
+        # Baseline explanation intent
+        baseline_explanation_intent = IntentBuilder("baseline_explanation") \
+            .require("kpi_metric") \
+            .require("machine") \
+            .require("explain_query") \
+            .build()
+        self.engine.register_intent_parser(baseline_explanation_intent)
+        
+        # SEUs intent
+        seus_intent = IntentBuilder("seus") \
+            .require("seu_query") \
+            .build()
+        self.engine.register_intent_parser(seus_intent)
+        
+        # Performance intent
+        performance_intent = IntentBuilder("performance") \
+            .require("performance_query") \
+            .require("machine") \
+            .build()
+        self.engine.register_intent_parser(performance_intent)
+        
+        # Production intent
+        production_intent = IntentBuilder("production") \
+            .require("production_query") \
+            .require("machine") \
+            .build()
+        self.engine.register_intent_parser(production_intent)
+        
+        # Report intent
+        report_intent = IntentBuilder("report") \
+            .require("report_query") \
+            .build()
+        self.engine.register_intent_parser(report_intent)
+        
+        # Help intent
+        help_intent = IntentBuilder("help") \
+            .require("help_query") \
+            .build()
+        self.engine.register_intent_parser(help_intent)
     
     def parse(self, utterance: str) -> Optional[Dict]:
         """
@@ -237,6 +417,16 @@ class AdaptParser:
             'ranking': IntentType.RANKING,
             'factoryoverview': IntentType.FACTORY_OVERVIEW,
             'comparison': IntentType.COMPARISON,
+            'baselineprediction': IntentType.FORECAST,
+            'anomalydetection': IntentType.ANOMALY_DETECTION,
+            'baseline': IntentType.BASELINE,
+            'baselinemodels': IntentType.BASELINE_MODELS,
+            'baselineexplanation': IntentType.BASELINE_EXPLANATION,
+            'seus': IntentType.SEUS,
+            'performance': IntentType.PERFORMANCE,
+            'production': IntentType.PRODUCTION,
+            'report': IntentType.REPORT,
+            'help': IntentType.HELP,
         }
         
         mapped_intent = intent_mapping.get(intent_name.lower())

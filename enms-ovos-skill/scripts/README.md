@@ -19,9 +19,10 @@ python scripts/chat_gui.py
 
 **Features:**
 - Full conversational interface
-- Debug panel (shows LLM parsing, validation, API calls)
-- Example queries
+- Debug panel (shows intent parsing, fuzzy matching, validation, API calls)
+- Example queries with time-only support
 - Real-time EnMS API integration
+- Context-aware clarification
 
 **Example queries:**
 - "What's the power of Compressor-1?"
@@ -42,10 +43,11 @@ python scripts/quick_test.py
 ```
 
 **Tests:**
-- [Tier 1] LLM parsing (Qwen3-1.7B)
-- [Tier 2] Validation (fuzzy matching, confidence)
-- [Tier 3] API call (real EnMS data)
-- [Tier 4] Response formatting (Jinja2 templates)
+- [Tier 1] Heuristic Router (600+ regex patterns)
+- [Tier 2] Adapt Parser (250+ vocabulary terms)
+- [Tier 3] Validation (fuzzy matching, confidence)
+- [Tier 4] API call (real EnMS data)
+- [Tier 5] Response formatting (Jinja2 templates)
 
 **Output:**
 ```

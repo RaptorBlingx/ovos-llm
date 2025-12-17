@@ -1,32 +1,53 @@
-# OVOS EnMS Headless Bridge - Production Dependencies
-# For Docker deployment without OVOS messagebus
+# OVOS EnMS Skill - Production Dependencies
+# Full OVOS integration with messagebus and skill framework
 
-# Web Framework
+# ===== OVOS Core Components =====
+ovos-messagebus>=0.0.4
+ovos-core>=0.0.8
+ovos-bus-client>=0.0.7
+ovos-workshop>=0.0.15
+ovos-utils>=0.0.38
+ovos-config>=0.0.12
+ovos-plugin-manager>=0.0.26
+
+# ===== OVOS Pipeline Plugins (REQUIRED for @intent_handler decorators) =====
+ovos-adapt-parser>=1.0.6
+ovos_padatious>=1.4.2
+
+# ===== OVOS TTS Plugin =====
+ovos-tts-plugin-server>=0.0.3
+# Edge TTS for production (good quality, no API key)
+# Uncomment if using edge-tts instead of ovos TTS server
+# edge-tts>=6.1.0
+
+# ===== OVOS Audio (optional - disable for headless) =====
+# ovos-audio>=0.0.2
+
+# ===== Web Framework (for REST bridge) =====
 fastapi>=0.109.0
 uvicorn>=0.27.0
 
-# HTTP Client
+# ===== HTTP Client =====
 httpx>=0.27.0
 tenacity>=8.2.0
 
-# Data Validation
+# ===== Data Validation =====
 pydantic>=2.5.0
 
-# Text-to-Speech
-edge-tts>=6.1.0
-
-# Intent Parsing (Adapt - lightweight)
+# ===== Intent Parsing =====
 adapt-parser>=1.0.0
 
-# Logging
+# ===== Logging =====
 structlog>=24.1.0
 prometheus-client>=0.20.0
 
-# LLM (optional - for complex queries)
-llama-cpp-python>=0.2.50
+# ===== Process Management =====
+supervisor>=4.2.5
 
-# Date/Time parsing
+# ===== Utilities =====
 python-dateutil>=2.8.0
-
-# Jinja2 for response templates
 jinja2>=3.1.0
+pyyaml>=6.0.1
+
+# ===== LLM (optional - for complex queries) =====
+# llama-cpp-python>=0.2.50

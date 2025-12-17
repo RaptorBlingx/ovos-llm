@@ -269,11 +269,6 @@ class HeuristicRouter:
         # Energy queries
         'energy_query': [
             re.compile(r'\b({})\s+(?:energy|kwh|consumption)\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
-            # Time-only queries (factory-wide)
-            re.compile(r'\benergy\s+(yesterday|today|last\s+week|last\s+month|this\s+week|this\s+month)', re.IGNORECASE),
-            re.compile(r'\b(yesterday|today|last\s+week|last\s+month)'"'"'?s?\s+energy', re.IGNORECASE),
-            re.compile(r'\bpower\s+consumption\s+(yesterday|today|last\s+week|this\s+week)', re.IGNORECASE),
-            re.compile(r'\btotal\s+energy\s+(yesterday|today|last\s+week)', re.IGNORECASE),
             re.compile(r'\benergy\s+(?:of\s+)?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             re.compile(r'\b({})\s+(?:used|consumed)'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             # NEW: Multi-energy support (moved from machine_status)
@@ -390,7 +385,7 @@ class HeuristicRouter:
         # Number words to digits mapping
         number_words = {
             'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
-            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10', 'eleven': '11', 'twelve': '12'
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10'
         }
         
         # Normalize utterance: convert number words to digits
@@ -407,7 +402,6 @@ class HeuristicRouter:
         # This handles spoken queries where users say "compressor one" → transcribed as "compressor 1"
         number_patterns = [
             (r'compressor\s*1\b', 'Compressor-1'),
-            (r'compressor\s*2\b', 'Compressor-2'),
             (r'compressor\s*eu\s*1\b', 'Compressor-EU-1'),
             (r'hvac\s*main\b', 'HVAC-Main'),
             (r'hvac\s*eu\s*north\b', 'HVAC-EU-North'),
@@ -468,7 +462,7 @@ class HeuristicRouter:
         # Number words to digits mapping
         number_words = {
             'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
-            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10', 'eleven': '11', 'twelve': '12'
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10'
         }
         
         # Normalize utterance: convert number words to digits
@@ -481,7 +475,6 @@ class HeuristicRouter:
         # Try "type + number" patterns in order of appearance
         number_patterns = [
             (r'compressor\s*1\b', 'Compressor-1'),
-            (r'compressor\s*2\b', 'Compressor-2'),
             (r'compressor\s*eu\s*1\b', 'Compressor-EU-1'),
             (r'hvac\s*main\b', 'HVAC-Main'),
             (r'hvac\s*eu\s*north\b', 'HVAC-EU-North'),
@@ -879,7 +872,7 @@ class HeuristicRouter:
         # Number words to digits mapping for spoken input
         number_words = {
             'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
-            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10', 'eleven': '11', 'twelve': '12',
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
             'first': '1', 'second': '2', 'third': '3'
         }
         

@@ -6,9 +6,7 @@ ovos-bus-client>=0.0.8
 # Intent parsing
 adapt-parser>=1.0.0
 
-# LLM Stack
-llama-cpp-python>=0.3.16
-# Note: Model files downloaded separately (~1.2GB)
+# LLM Stack - REMOVED (not needed, heuristic+adapt cover 100% of queries)
 
 # Validation & Data
 pydantic>=2.10.0
