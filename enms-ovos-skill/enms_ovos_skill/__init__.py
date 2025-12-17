@@ -2237,7 +2237,7 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Forecast handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('Baseline').require('kpi_metric').require('machine').build())
+    @intent_handler(IntentBuilder('Baseline').require('baseline').require('machine').build())
     def handle_baseline(self, message: Message):
         """Handle baseline prediction queries - OVOS interface layer"""
         try:
@@ -2262,7 +2262,7 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Baseline handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('BaselineModels').require('kpi_metric').require('machine').require('model_query').build())
+    @intent_handler(IntentBuilder('BaselineModels').require('baseline').require('machine').require('model_query').build())
     def handle_baseline_models(self, message: Message):
         """Handle baseline models listing - OVOS interface layer"""
         try:
