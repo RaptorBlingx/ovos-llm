@@ -28,6 +28,7 @@ import concurrent.futures
 from datetime import datetime, timezone
 import structlog
 from ovos_workshop.decorators import intent_handler
+from ovos_workshop.intents import IntentBuilder
 from ovos_workshop.skills.converse import ConversationalSkill
 from ovos_bus_client.message import Message
 
@@ -1975,7 +1976,7 @@ class EnmsSkill(ConversationalSkill):
         else:
             return "I retrieved the data successfully"
     
-    @intent_handler("energy.query.intent")
+    @intent_handler(IntentBuilder('EnergyQuery').require('energy_metric').require('machine').build())
     def handle_energy_query(self, message: Message):
         """Handle energy consumption queries - OVOS interface layer"""
         try:
@@ -2004,7 +2005,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Energy query handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("machine.status.intent")
+    @intent_handler(IntentBuilder('MachineStatus').require('status_check').require('machine').build())
     def handle_machine_status(self, message: Message):
         """Handle machine status queries - OVOS interface layer"""
         try:
@@ -2033,7 +2034,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Machine status handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("factory.overview.intent")
+    @intent_handler(IntentBuilder('FactoryOverview').require('factory').build())
     def handle_factory_overview(self, message: Message):
         """Handle factory-wide queries - OVOS interface layer"""
         try:
@@ -2060,7 +2061,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Factory overview handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("anomaly.detection.intent")
+    @intent_handler(IntentBuilder('AnomalyDetection').require('anomaly').optionally('machine').build())
     def handle_anomaly_detection(self, message: Message):
         """Handle anomaly detection queries - OVOS interface layer"""
         try:
@@ -2085,7 +2086,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Anomaly detection handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("ranking.intent")
+    @intent_handler(IntentBuilder('Ranking').require('ranking').build())
     def handle_ranking(self, message: Message):
         """Handle ranking/top consumers queries - OVOS interface layer"""
         try:
@@ -2116,7 +2117,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Ranking handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("comparison.intent")
+    @intent_handler(IntentBuilder('Comparison').require('comparison').require('machine').build())
     def handle_comparison(self, message: Message):
         """Handle machine comparison queries - OVOS interface layer"""
         try:
@@ -2141,7 +2142,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Comparison handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("cost.analysis.intent")
+    @intent_handler(IntentBuilder('CostAnalysis').require('cost_metric').optionally('machine').build())
     def handle_cost_analysis(self, message: Message):
         """Handle cost analysis queries - OVOS interface layer"""
         try:
@@ -2166,7 +2167,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Cost analysis handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("forecast.intent")
+    @intent_handler(IntentBuilder('Forecast').require('forecast').optionally('machine').build())
     def handle_forecast(self, message: Message):
         """Handle energy forecast queries - OVOS interface layer"""
         try:
@@ -2191,7 +2192,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Forecast handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("baseline.intent")
+    @intent_handler(IntentBuilder('Baseline').require('kpi_metric').require('machine').build())
     def handle_baseline(self, message: Message):
         """Handle baseline prediction queries - OVOS interface layer"""
         try:
@@ -2216,7 +2217,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Baseline handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("baseline.models.intent")
+    @intent_handler(IntentBuilder('BaselineModels').require('kpi_metric').require('machine').require('model_query').build())
     def handle_baseline_models(self, message: Message):
         """Handle baseline models listing - OVOS interface layer"""
         try:
@@ -2241,7 +2242,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Baseline models handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("baseline.explanation.intent")
+    @intent_handler(IntentBuilder('BaselineExplanation').require('kpi_metric').require('machine').require('explain_query').build())
     def handle_baseline_explanation(self, message: Message):
         """Handle baseline explanation queries - OVOS interface layer"""
         try:
@@ -2266,7 +2267,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Baseline explanation handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("seus.intent")
+    @intent_handler(IntentBuilder('SEUs').require('seu_query').build())
     def handle_seus(self, message: Message):
         """Handle SEU (Significant Energy Uses) queries - OVOS interface layer"""
         try:
@@ -2289,7 +2290,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"SEUs handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("kpi.intent")
+    @intent_handler(IntentBuilder('KPI').require('kpi_metric').optionally('machine').build())
     def handle_kpi(self, message: Message):
         """Handle KPI queries - OVOS interface layer"""
         try:
@@ -2314,7 +2315,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"KPI handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("performance.intent")
+    @intent_handler(IntentBuilder('Performance').require('performance_query').require('machine').build())
     def handle_performance(self, message: Message):
         """Handle performance analysis queries - OVOS interface layer"""
         try:
@@ -2339,7 +2340,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Performance handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("production.intent")
+    @intent_handler(IntentBuilder('Production').require('production_query').require('machine').build())
     def handle_production(self, message: Message):
         """Handle production data queries - OVOS interface layer"""
         try:
@@ -2364,7 +2365,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Production handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("power.query.intent")
+    @intent_handler(IntentBuilder('PowerQuery').require('power_metric').require('machine').build())
     def handle_power_query(self, message: Message):
         """Handle power consumption queries - OVOS interface layer"""
         try:
@@ -2389,7 +2390,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Power query handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("report.intent")
+    @intent_handler(IntentBuilder('Report').require('report_query').build())
     def handle_report(self, message: Message):
         """Handle report generation queries - OVOS interface layer"""
         try:
@@ -2416,7 +2417,7 @@ class EnmsSkill(ConversationalSkill):
             self.log.error(f"Report handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler("help.intent")
+    @intent_handler(IntentBuilder('Help').require('help_query').build())
     def handle_help(self, message: Message):
         """Handle help queries - OVOS interface layer"""
         try:
@@ -2481,7 +2482,10 @@ class EnmsSkill(ConversationalSkill):
             
             # Check if we have active context
             session_id = self._get_session_id(message)
-            has_context = self.context_manager and self.context_manager.get_context(session_id) is not None
+            has_context = False
+            if self.context_manager:
+                session = self.context_manager.get_or_create_session(session_id)
+                has_context = len(session.history) > 0
             
             # Only handle if it's clearly a follow-up AND we have context
             # Otherwise, let intent handlers try first
