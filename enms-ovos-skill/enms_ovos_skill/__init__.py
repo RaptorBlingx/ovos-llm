@@ -1996,7 +1996,7 @@ class EnmsSkill(OVOSSkill):
             
             # Speak result
             if result['success']:
-                response = self.response_formatter.format_response('energy', result['data'])
+                response = self.response_formatter.format_response('energy_query', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2077,7 +2077,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format_response('anomaly', result['data'])
+                response = self.response_formatter.format_response('anomaly_detection', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2158,7 +2158,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format_response('cost', result['data'])
+                response = self.response_formatter.format_response('cost_analysis', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2381,7 +2381,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format_response('power', result['data'])
+                response = self.response_formatter.format_response('power_query', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2408,7 +2408,7 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format_response('report', result['data'])
+                response = self.response_formatter.format_response('enpi_report', result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
