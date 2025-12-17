@@ -59,7 +59,7 @@ class OVOSRestBridge:
     def __init__(self):
         self.bus: Optional[MessageBusClient] = None
         self.responses: Dict[str, Dict[str, Any]] = {}
-        self.response_timeout = 30  # seconds
+        self.response_timeout = 90  # seconds (increased for ML baseline operations)
         
     def connect_to_messagebus(self):
         """Connect to OVOS messagebus"""
