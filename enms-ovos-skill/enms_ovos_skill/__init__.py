@@ -1861,6 +1861,52 @@ class EnmsSkill(OVOSSkill):
                     self.logger.info("report_generate_returned", data=data, data_type=type(data).__name__)
                     return {'success': True, 'data': data, 'action': 'generate'}
             
+            elif intent.intent == IntentType.COMPARISON:
+                # Machine comparison query - extract all machines from utterance
+                machines = []
+                if intent.machine:
+                    machines.append(intent.machine)
+                
+                # Try to find additional machines in utterance
+                all_machine_names = self.validator.machine_whitelist
+                for machine in all_machine_names:
+                    if machine.lower() in intent.utterance.lower() and machine.lower() != intent.machine:
+                        machines.append(machine)
+                
+                # If only one machine found, get top consumers for comparison
+                if len(machines) < 2:
+                    top_consumers = self._run_async(self.api_client.get_top_consumers(limit=3))
+                    if top_consumers and 'top_consumers' in top_consumers:
+                        machines = [c['seu_name'] for c in top_consumers['top_consumers'][:2]]
+                
+                # Get status for each machine
+                comparison_data = []
+                for machine_name in machines[:5]:  # Limit to 5 machines
+                    try:
+                        status = self._run_async(self.api_client.get_machine_status(machine_name))
+                        comparison_data.append(status)
+                    except Exception as e:
+                        self.logger.warning("comparison_machine_failed", machine=machine_name, error=str(e))
+                
+                return {
+                    'success': True,
+                    'data': {
+                        'machines': comparison_data,
+                        'count': len(comparison_data)
+                    }
+                }
+            
+            elif intent.intent == IntentType.KPI:
+                # KPI query - get factory-wide or machine-specific KPIs
+                if intent.machine:
+                    # Machine-specific KPIs
+                    data = self._run_async(self.api_client.get_machine_status(intent.machine))
+                    return {'success': True, 'data': data}
+                else:
+                    # Factory-wide KPIs - use summary endpoint
+                    data = self._run_async(self.api_client.get_factory_summary())
+                    return {'success': True, 'data': data}
+            
             else:
                 self.logger.warning("unsupported_intent_api_call", intent=intent.intent)
                 return {
