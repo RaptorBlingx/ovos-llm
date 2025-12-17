@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 import structlog
 from ovos_workshop.decorators import intent_handler
 from ovos_workshop.intents import IntentBuilder
-from ovos_workshop.skills.converse import ConversationalSkill
+from ovos_workshop.skills.ovos import OVOSSkill
 from ovos_bus_client.message import Message
 
 # Import all core modules
@@ -52,18 +52,22 @@ from .lib.observability import (
 logger = structlog.get_logger(__name__)
 
 
-class EnmsSkill(ConversationalSkill):
+class EnmsSkill(OVOSSkill):
     """
     PRODUCTION-READY OVOS Skill for Energy Management System
     
     Features:
     - Multi-tier adaptive routing (heuristic → adapt → LLM)
     - Zero-trust validation (99.5%+ accuracy)
-    - Multi-turn conversation support
+    - Multi-turn conversation support (via converse method when needed)
     - Natural voice feedback
     - Prometheus metrics & observability
     - Graceful degradation
     - <200ms P50 latency
+    
+    NOTE: Changed from ConversationalSkill to OVOSSkill to prevent converse() from
+    blocking Adapt intent handlers. ConversationalSkill intercepts ALL utterances before
+    intent matchers run, causing timeouts even when converse() returns False.
     """
 
     def __init__(self, bus=None, skill_id="", **kwargs):
@@ -152,9 +156,8 @@ class EnmsSkill(ConversationalSkill):
                         confidence_threshold=self.confidence_threshold,
                         converse_mode=True)
         
-        # Activate skill for converse() handling
-        # This makes OVOS route utterances to this skill's converse() method
-        self.activate()
+        # Note: Removed self.activate() - OVOSSkill doesn't have this method
+        # (activate() is ConversationalSkill-specific)
     
     def on_ready_status(self):
         """Called when skill is fully ready - safe to schedule events here."""
@@ -201,13 +204,9 @@ class EnmsSkill(ConversationalSkill):
         """Periodic health check to detect if skill is stuck.
         
         If this stops logging, the skill is hung.
-        Also re-activates skill to prevent timeout deactivation.
         """
-        # Keep skill active (OVOS deactivates after ~5 min)
-        try:
-            self.activate()
-        except:
-            pass
+        # Note: Removed self.activate() - OVOSSkill doesn't have this method
+        # (activate() is ConversationalSkill-specific)
         
         # NOTE: LLM support removed from HybridParser (now uses only Heuristic + Adapt)
         
@@ -2493,7 +2492,6 @@ class EnmsSkill(ConversationalSkill):
                 return False
             
             # Process as follow-up query with context
-            self.activate()
             result = self._process_query(utterance, session_id)
             
             if result['success'] or 'error' in result:
