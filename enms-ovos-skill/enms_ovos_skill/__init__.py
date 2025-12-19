@@ -42,6 +42,7 @@ from .lib.voice_feedback import VoiceFeedbackManager, FeedbackType
 from .lib.feature_extractor import FeatureExtractor
 from .lib.time_parser import TimeRangeParser
 from .lib.models import IntentType, Intent, TimeRange
+from .lib.machine_registry import DynamicMachineRegistry
 from .lib.observability import (
     queries_total,
     query_latency,
@@ -138,6 +139,13 @@ class EnmsSkill(OVOSSkill):
             max_retries=self.settings.get("api_max_retries", 3)
         )
         
+        # Initialize Tier 5.5: Dynamic Machine Registry (Priority 4)
+        logger.info("initializing_machine_registry")
+        self.machine_registry = DynamicMachineRegistry(
+            api_client=self.api_client,
+            refresh_interval=timedelta(hours=1)
+        )
+        
         # Initialize Tier 6: Response Formatter
         logger.info("initializing_response_formatter")
         self.response_formatter = ResponseFormatter()
@@ -151,8 +159,8 @@ class EnmsSkill(OVOSSkill):
         self.voice_feedback = VoiceFeedbackManager()
         
         logger.info("skill_initialized_successfully", 
-                        components=["HybridParser", "Validator", "APIClient", "ResponseFormatter", 
-                                  "ConversationContext", "VoiceFeedback"],
+                        components=["HybridParser", "Validator", "APIClient", "MachineRegistry", 
+                                  "ResponseFormatter", "ConversationContext", "VoiceFeedback"],
                         enms_api=self.enms_api_base_url,
                         confidence_threshold=self.confidence_threshold,
                         converse_mode=True)
@@ -237,28 +245,35 @@ class EnmsSkill(OVOSSkill):
             self.logger.error("llm_preload_failed", error=str(e), error_type=type(e).__name__)
     
     def _refresh_machine_whitelist(self, message=None):
-        """Refresh machine whitelist from EnMS API"""
+        """Refresh machine whitelist from EnMS API (Priority 4: Dynamic Discovery)"""
         try:
-            self.logger.info("refreshing_machine_whitelist")
+            self.logger.info("refreshing_machine_whitelist_via_registry")
             
-            # Create temporary client for this request
-            temp_client = ENMSClient(
-                base_url=self.enms_api_base_url,
-                timeout=30,
-                max_retries=3
-            )
-            machines = self._run_async(temp_client.list_machines(is_active=True))
-            self._run_async(temp_client.close())
+            # Use DynamicMachineRegistry to fetch machines/SEUs
+            success = self._run_async(self.machine_registry.refresh())
             
-            machine_names = [m["name"] for m in machines]
+            # Get refreshed machine list
+            machine_names = self.machine_registry.get_machines()
+            seu_names = self.machine_registry.get_seu_names()
+            
+            # Update validator whitelist
             self.validator.update_machine_whitelist(machine_names)
-            self.hybrid_parser.heuristic.MACHINES = machine_names  # Update heuristic patterns
+            
+            # Update heuristic parser patterns
+            if hasattr(self.hybrid_parser, 'heuristic') and hasattr(self.hybrid_parser.heuristic, 'MACHINES'):
+                self.hybrid_parser.heuristic.MACHINES = machine_names
+            
+            # Log statistics
+            stats = self.machine_registry.get_stats()
             self.logger.info("machine_whitelist_refreshed", 
-                           count=len(machine_names),
-                           machines=machine_names)
+                           machines_count=len(machine_names),
+                           seus_count=len(seu_names),
+                           from_api=success,
+                           using_fallback=not success,
+                           stats=stats)
         except Exception as e:
             self.logger.error("whitelist_refresh_failed", error=str(e), error_type=type(e).__name__)
-            # Don't fail skill initialization - use hardcoded defaults
+            # Don't fail skill initialization - registry uses fallback defaults
     
     def _cleanup_conversations(self, message=None):
         """Cleanup expired conversation sessions"""

@@ -9,18 +9,17 @@ import re
 import structlog
 from pydantic import BaseModel, ValidationError
 
+from .models import Intent, IntentType, TimeRange, ValidationResult
+
+logger = structlog.get_logger(__name__)
+
 # Fuzzy string matching library
 try:
     from thefuzz import fuzz
     FUZZY_AVAILABLE = True
 except ImportError:
     FUZZY_AVAILABLE = False
-    logger.warning("thefuzz not installed - fuzzy matching will use simple Levenshtein")
-
-from .models import Intent, IntentType, TimeRange, ValidationResult
-
-logger = structlog.get_logger(__name__)
-
+    logger.warning("thefuzz_not_installed", message="Fuzzy matching will use simple Levenshtein")
 
 # Entity Whitelists (will be refreshed from EnMS API)
 VALID_MACHINES = [
