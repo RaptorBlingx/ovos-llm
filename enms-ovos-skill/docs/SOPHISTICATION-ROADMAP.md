@@ -19,6 +19,8 @@
 8. ✅ **Priority 3: Implicit Factory-Wide Queries** - "energy consumption" → Factory-wide totals (19456.8 kWh)
 9. ✅ **Priority 4: Dynamic Machine/SEU Discovery** - Machines fetched from API, 1-hour cache, fallback support
 10. ✅ **Priority 5: Portability Layer (WASABI)** - Adapter pattern, config.yaml, setup script, 100% portable
+11. ✅ **Phase 2.1: Multi-Machine Extraction** - Group patterns ("all compressors"), question format ("which HVAC")
+12. ✅ **Phase 2.3: Metric Intelligence** - Auto-infer metrics (cost/power/energy/efficiency) from context
 
 ### In Progress (⏳):
 - ⏳ **Phase 1 Vocabulary (Complete)** - 12 more .voc files to enhance
@@ -660,14 +662,14 @@ exceeds
 
 ---
 
-### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ⚠️ IN PROGRESS (60% Complete)
+### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ✅ COMPLETE (100%)
 **Goal:** Extract complex parameters from natural language + implicit queries + defaults
 **Status:**
+- ✅ Phase 2.1 Multi-Machine: COMPLETE (Dec 19, 2025)
 - ✅ Phase 2.2 Time Parsing: COMPLETE (Priority 1)
-- ✅ Phase 2.5 Name Normalization: COMPLETE (Priority 2)
+- ✅ Phase 2.3 Metric Intelligence: COMPLETE (Dec 19, 2025)
 - ✅ Phase 2.4 Factory-Wide Scope: COMPLETE (Priority 3)
-- ⏳ Phase 2.1 Multi-Machine: PENDING
-- ⏳ Phase 2.3 Metric Intelligence: PENDING
+- ✅ Phase 2.5 Name Normalization: COMPLETE (Priority 2)
 
 #### 2.1 Multi-Machine Extraction
 **Current:** Only extracts ONE machine per query  
