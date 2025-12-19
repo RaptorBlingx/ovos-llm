@@ -1,8 +1,31 @@
 # 🎯 OVOS EnMS Skill Sophistication Roadmap
 
-**Date:** December 17, 2025  
-**Current Status:** 15/18 intents working (83%), ~60-70 use cases covered  
-**Goal:** Super sophisticated skill covering 90%+ of documented use cases  
+**Date:** December 17, 2025 (Updated: December 19, 2025)
+**Current Status:** 17/18 intents working (94%), ~75-80 use cases covered  
+**Goal:** Super sophisticated skill covering 90%+ of documented use cases
+
+---
+
+## 📊 Progress Summary (Updated: Dec 19, 2025)
+
+### Completed (✅):
+1. ✅ **Template Name Fixes** - 4 intents (energy_query, power_query, anomaly_detection, cost_analysis)
+2. ✅ **Baseline Vocabulary Fix** - Created baseline.voc, fixed 3 intent timeouts
+3. ✅ **Timeout Increases** - 30s → 90s for ML operations
+4. ✅ **Comparison & KPI API** - Multi-machine extraction, factory-wide KPI support
+5. ✅ **Phase 1 Vocabulary (Partial)** - 5 files enhanced (+45 synonyms), 2 new files created
+6. ✅ **Priority 1: Time Range Parsing** - "yesterday", "today", "last week" all working with smart defaults
+
+### In Progress (⏳):
+- ⏳ **Priority 2: Machine Name Normalization** - Voice variation handling (compressor one → Compressor-1)
+- ⏳ **Phase 1 Vocabulary (Complete)** - 12 more .voc files to enhance
+
+### Pending (⏸️):
+- ⏸️ **Priority 3:** Implicit factory-wide queries
+- ⏸️ **Priority 4:** Dynamic machine/SEU discovery
+- ⏸️ **Priority 5:** Portability layer (WASABI alignment)
+- ⏸️ **Phase 3:** Contextual intelligence
+- ⏸️ **Phase 4:** Dynamic response generation  
 
 ---
 
@@ -483,9 +506,13 @@ See [API_REQUIREMENTS.md](API_REQUIREMENTS.md) for details.
 
 ## 🚀 Sophistication Strategy: 4-Phase Approach
 
-### **Phase 1: Vocabulary Expansion** (2-3 hours) ✅ PARTIALLY DONE
+### **Phase 1: Vocabulary Expansion** (2-3 hours) ✅ PARTIALLY DONE (60% Complete)
 **Goal:** Cover 90% of documented query variations
-**Status:** 5 .voc files enhanced (+45 synonyms), 2 new files created, 3/5 test queries working
+**Status:** 
+- ✅ 5 .voc files enhanced (+45 synonyms): energy_metric, power_metric, status_check
+- ✅ 2 new files created: time_range.voc (26 expressions), comparison_words.voc (9 keywords)
+- ✅ Test results: 3/5 new queries working (60% success rate)
+- ⏳ Remaining: 12 .voc files to enhance, 25 queries to test
 
 #### 1.1 Enhance Existing .voc Files
 Add synonyms and natural language variations:
@@ -612,9 +639,14 @@ exceeds
 
 ---
 
-### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ⚠️ SCOPE EXPANDED
+### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ⚠️ IN PROGRESS (25% Complete)
 **Goal:** Extract complex parameters from natural language + implicit queries + defaults
-**New Requirements:** Factory-wide defaults, time parsing, case normalization
+**Status:**
+- ✅ Phase 2.2 Time Parsing: COMPLETE (Priority 1)
+- ⏳ Phase 2.5 Name Normalization: NEXT (Priority 2)
+- ⏳ Phase 2.4 Factory-Wide Scope: PENDING (Priority 3)
+- ⏳ Phase 2.1 Multi-Machine: PENDING
+- ⏳ Phase 2.3 Metric Intelligence: PENDING
 
 #### 2.1 Multi-Machine Extraction
 **Current:** Only extracts ONE machine per query  
@@ -1073,7 +1105,7 @@ def format_list_response(self, items: List[Dict], max_items: int = 3) -> str:
 
 ## 📈 Implementation Priority & Timeline
 
-### **Week 0: Portability Foundation (3-4 hours)** ⚡ NEW PRIORITY
+### **Week 0: Portability Foundation (3-4 hours)** ⚡ NEW PRIORITY - NOT STARTED
 **Day 0:** Phase 0 - WASABI Alignment
 - [ ] Create `config.yaml` template for generic EnMS installations
 - [ ] Implement `DynamicMachineRegistry` (API discovery)
@@ -1082,28 +1114,29 @@ def format_list_response(self, items: List[Dict], max_items: int = 3) -> str:
 - [ ] Write `INSTALLATION_GUIDE.md` for portable deployments
 - **Deliverable:** Skill works with ANY EnMS via configuration
 
-### **Week 1: Foundation (18-22 hours)** ⚠️ EXTENDED
+### **Week 1: Foundation (18-22 hours)** ⚠️ IN PROGRESS
 **Days 1-2:** Phase 1 - Vocabulary Expansion ✅ PARTIALLY DONE
-- [x] Enhance energy_metric.voc (+16 synonyms)
-- [x] Enhance power_metric.voc (+13 synonyms)
-- [x] Enhance status_check.voc (+16 action verbs)
-- [x] Create time_range.voc (26 time expressions)
-- [x] Create comparison_words.voc (9 keywords)
+- [x] ✅ Enhance energy_metric.voc (+16 synonyms) - DONE
+- [x] ✅ Enhance power_metric.voc (+13 synonyms) - DONE
+- [x] ✅ Enhance status_check.voc (+16 action verbs) - DONE
+- [x] ✅ Create time_range.voc (26 time expressions) - DONE
+- [x] ✅ Create comparison_words.voc (9 keywords) - DONE
 - [ ] Enhance 12 remaining .voc files with synonyms
 - [ ] Test with 30+ new query variations
-- **Deliverable:** 90% vocabulary coverage
+- **Deliverable:** 90% vocabulary coverage (Partial: 5/25 files done, 60% coverage estimated)
 
-**Days 3-4:** Phase 2.2 & 2.5 - Time Parsing & Normalization ⚡ CRITICAL
-- [ ] Implement time range extraction with defaults (lib/hybrid_parser.py)
-- [ ] Implement machine name normalization (lib/validators.py)
+**Days 3-4:** Phase 2.2 & 2.5 - Time Parsing & Normalization ⚡ IN PROGRESS
+- [x] ✅ Implement time range extraction with defaults (__init__.py) - DONE (Priority 1)
+- [x] ✅ Test "energy consumption yesterday" → ✅ WORKS (1115.75 kWh Dec 18)
+- [x] ✅ Test "Compressor-1 energy today" → ✅ WORKS
+- [ ] ⏳ Implement machine name normalization (lib/validators.py) - NEXT (Priority 2)
 - [ ] Add fuzzy matching dependency (thefuzz)
-- [ ] Test "energy consumption yesterday" → MUST WORK
 - [ ] Test "compressor one" variations → MUST WORK
-- **Deliverable:** Voice-friendly queries work
+- **Deliverable:** Voice-friendly queries work (Time parsing: ✅ DONE, Normalization: ⏳ NEXT)
 
-**Day 5:** Phase 2.1 & 2.4 - Multi-Machine & Implicit Scope
+**Day 5:** Phase 2.1 & 2.4 - Multi-Machine & Implicit Scope - NOT STARTED
 - [ ] Implement multi-machine extraction in HybridParser
-- [ ] Implement implicit factory-wide logic
+- [ ] Implement implicit factory-wide logic (Priority 3)
 - [ ] Test "what's the current draw?" → Factory total
 - [ ] Test "compare X and Y since 9am"
 - **Deliverable:** Complex queries work, factory-wide defaults
