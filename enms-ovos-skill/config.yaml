@@ -1,0 +1,63 @@
+# config.yaml - Active configuration (Humanergy deployment)
+# Generated from config.yaml.template
+
+adapter_type: humanergy
+api_base_url: http://10.33.10.109:8001/api/v1
+api_timeout: 90.0
+max_retries: 3
+
+auto_discover_machines: true
+auto_discover_seus: true
+refresh_interval_hours: 1
+
+fallback_machines:
+  - Compressor-1
+  - Boiler-1
+  - HVAC-Main
+  - Conveyor-A
+  - Injection-Molding-1
+  - Pump-1
+
+factory_name: Humanergy Factory
+factory_id: humanergy_001
+timezone: Europe/Berlin
+
+terminology:
+  energy_unit: kWh
+  power_unit: kW
+  machine_term: machine
+  seu_term: significant energy use
+  cost_currency: EUR
+  cost_per_kwh: 0.15
+
+voice:
+  use_factory_name: true
+  verbosity: medium
+  round_numbers: true
+  decimal_places: 1
+
+defaults:
+  time_range: today
+  scope: factory_wide
+  interval: 1hour
+
+features:
+  machine_status: true
+  energy_queries: true
+  comparisons: true
+  baseline_predictions: true
+  anomaly_detection: true
+  report_generation: true
+  iso50001_compliance: true
+  performance_opportunities: true
+
+logging:
+  level: INFO
+  format: json
+
+advanced:
+  cache_ttl: 300
+  fuzzy_match_threshold: 80
+  zero_trust_validation: true
+  max_comparison_machines: 5
+  max_historical_days: 365

@@ -36,6 +36,7 @@ from ovos_bus_client.message import Message
 from .lib.intent_parser import HybridParser, RoutingTier
 from .lib.validator import ENMSValidator
 from .lib.api_client import ENMSClient
+from .adapters import AdapterFactory
 from .lib.response_formatter import ResponseFormatter
 from .lib.conversation_context import ConversationContextManager
 from .lib.voice_feedback import VoiceFeedbackManager, FeedbackType
@@ -86,7 +87,9 @@ class EnmsSkill(OVOSSkill):
         # Core components (initialized in initialize())
         self.hybrid_parser: Optional[HybridParser] = None
         self.validator: Optional[ENMSValidator] = None
-        self.api_client: Optional[ENMSClient] = None
+        self.api_client: Optional[ENMSClient] = None  # Legacy - will use adapter
+        self.adapter = None  # Priority 5: EnMS adapter for portability
+        self.config: Optional[Dict[str, Any]] = None  # Configuration dict
         self.response_formatter: Optional[ResponseFormatter] = None
         self.context_manager: Optional[ConversationContextManager] = None
         self.voice_feedback: Optional[VoiceFeedbackManager] = None
@@ -111,10 +114,36 @@ class EnmsSkill(OVOSSkill):
                         version="1.0.0",
                         architecture="multi-tier-adaptive")
         
-        # Get settings from environment variables (Docker) or settingsmeta.yaml (local)
+        # Priority 5: Load configuration from config.yaml (WASABI portability)
         import os
-        self.enms_api_base_url = os.getenv("ENMS_API_URL", 
-                                          self.settings.get("enms_api_base_url", "http://172.18.0.1:8001/api/v1"))
+        import yaml
+        from pathlib import Path
+        
+        # Try to load config.yaml from skill directory
+        config_path = Path(__file__).parent.parent / "config.yaml"
+        if config_path.exists():
+            logger.info("loading_config_yaml", path=str(config_path))
+            with open(config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
+        else:
+            # Fallback to legacy environment variables and settings
+            logger.warning("config_yaml_not_found", path=str(config_path), using_fallback=True)
+            self.config = {
+                "adapter_type": "humanergy",
+                "api_base_url": os.getenv("ENMS_API_URL", 
+                                          self.settings.get("enms_api_base_url", "http://172.18.0.1:8001/api/v1")),
+                "timeout": self.settings.get("api_timeout_seconds", 90),
+                "max_retries": self.settings.get("api_max_retries", 3),
+                "factory_name": "Factory",
+                "auto_discover_machines": True,
+                "refresh_interval_hours": 1,
+                "terminology": {},
+                "voice": {},
+                "features": {}
+            }
+        
+        # Extract commonly used settings
+        self.enms_api_base_url = self.config.get("api_base_url", "http://172.18.0.1:8001/api/v1")
         self.llm_model_path = self.settings.get("llm_model_path", "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf")
         self.confidence_threshold = self.settings.get("confidence_threshold", 0.85)
         self.enable_progress_feedback = self.settings.get("enable_progress_feedback", True)
@@ -131,12 +160,28 @@ class EnmsSkill(OVOSSkill):
             enable_fuzzy_matching=self.settings.get("enable_fuzzy_matching", True)
         )
         
-        # Initialize Tier 5: API Client
+        # Initialize Tier 5: EnMS Adapter (Priority 5 - WASABI Portability)
+        logger.info("initializing_enms_adapter", 
+                   adapter_type=self.config.get("adapter_type", "humanergy"),
+                   base_url=self.enms_api_base_url)
+        
+        try:
+            self.adapter = AdapterFactory.create(self.config)
+            logger.info("adapter_created_successfully", 
+                       adapter_class=self.adapter.__class__.__name__)
+        except Exception as e:
+            logger.error("adapter_creation_failed", error=str(e))
+            # Fallback to legacy ENMSClient for backward compatibility
+            logger.warning("falling_back_to_legacy_client")
+            self.adapter = None
+        
+        # Legacy API client (for machine_registry backward compatibility)
+        # TODO: Update machine_registry to use adapter instead of api_client
         logger.info("initializing_api_client", base_url=self.enms_api_base_url)
         self.api_client = ENMSClient(
             base_url=self.enms_api_base_url,
-            timeout=self.settings.get("api_timeout_seconds", 30),
-            max_retries=self.settings.get("api_max_retries", 3)
+            timeout=self.config.get("timeout", 90),
+            max_retries=self.config.get("max_retries", 3)
         )
         
         # Initialize Tier 5.5: Dynamic Machine Registry (Priority 4)
