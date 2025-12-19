@@ -731,18 +731,32 @@ class EnmsSkill(OVOSSkill):
                 self.logger.info("cleared_pending_clarification", machine=intent.machine)
                 session.pending_clarification = None
             
-            # Step 6: Check if clarification needed
-            clarification = self.context_manager.needs_clarification(intent)
+            # Step 6: Check for ambiguous machines (Phase 3.2)
+            ambiguous_machines = None
+            if intent.machine and not intent.machines:
+                # Check if machine name is ambiguous (matches multiple machines)
+                all_matches = self.validator.find_all_matching_machines(intent.machine)
+                if len(all_matches) > 1:
+                    # Ambiguous! Store options for clarification
+                    ambiguous_machines = all_matches
+                    self.logger.info("ambiguous_machine_detected",
+                                   query_term=intent.machine,
+                                   matches=all_matches,
+                                   count=len(all_matches))
+            
+            # Step 7: Check if clarification needed
+            clarification = self.context_manager.needs_clarification(intent, ambiguous_machines)
             if clarification:
                 # Store pending clarification in session
                 session.pending_clarification = {
                     'intent': intent.intent,
                     'metric': intent.metric,
                     'time_range': intent.time_range,
+                    'options': clarification.get('options'),  # Machine options for ambiguous queries
                     'timestamp': time.time()
                 }
                 clarification_response = self.context_manager.generate_clarification_response(
-                    intent, session, validation.suggestions
+                    intent, session, validation.suggestions, ambiguous_machines
                 )
                 
                 total_latency_ms = (time.time() - start_time) * 1000
@@ -757,12 +771,12 @@ class EnmsSkill(OVOSSkill):
                     'clarification_needed': clarification
                 }
             
-            # Step 7: Call EnMS API
-            self.logger.info("⚙️ step7_calling_api", intent=intent.intent.value, elapsed_ms=int((time.time()-start_time)*1000))
+            # Step 8: Call EnMS API
+            self.logger.info("⚙️ step8_calling_api", intent=intent.intent.value, elapsed_ms=int((time.time()-start_time)*1000))
             api_start = time.time()
             api_data = self._call_enms_api(intent)
             api_latency_ms = (time.time() - api_start) * 1000
-            self.logger.info("⚙️ step7_api_returned", success=api_data.get('success'), api_ms=int(api_latency_ms), elapsed_ms=int((time.time()-start_time)*1000))
+            self.logger.info("⚙️ step8_api_returned", success=api_data.get('success'), api_ms=int(api_latency_ms), elapsed_ms=int((time.time()-start_time)*1000))
             
             if not api_data.get('success', False):
                 errors_total.labels(error_type='api', component='api_client').inc()
@@ -781,13 +795,13 @@ class EnmsSkill(OVOSSkill):
                     'error': api_data.get('error')
                 }
             
-            # Step 8: Format response with templates
+            # Step 9: Format response with templates
             format_start = time.time()
             custom_template = api_data.get('custom_template')
             response_text = self._format_response(intent, api_data['data'], custom_template=custom_template)
             format_latency_ms = (time.time() - format_start) * 1000
             
-            # Step 9: Update conversation context
+            # Step 10: Update conversation context
             session.add_turn(
                 query=utterance,
                 intent=intent,
@@ -795,7 +809,7 @@ class EnmsSkill(OVOSSkill):
                 api_data=api_data['data']
             )
             
-            # Step 10: Track metrics
+            # Step 11: Track metrics
             total_latency_ms = (time.time() - start_time) * 1000
             query_latency.labels(intent_type=str(intent.intent.value), tier=str(tier)).observe(total_latency_ms / 1000)
             queries_total.labels(intent_type=str(intent.intent.value), tier=str(tier), status='success').inc()
