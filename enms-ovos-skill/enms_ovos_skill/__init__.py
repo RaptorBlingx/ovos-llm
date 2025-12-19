@@ -975,7 +975,7 @@ class EnmsSkill(OVOSSkill):
                     
                     # Call /factory/summary endpoint for aggregated data
                     try:
-                        summary_data = self._run_async(self.api_client.get('/factory/summary'))
+                        summary_data = self._run_async(self.api_client.get_factory_summary())
                         
                         if summary_data and 'energy' in summary_data:
                             # Extract power data from factory summary
@@ -1229,7 +1229,7 @@ class EnmsSkill(OVOSSkill):
                     
                     # Call /factory/summary endpoint for aggregated data
                     try:
-                        summary_data = self._run_async(self.api_client.get('/factory/summary'))
+                        summary_data = self._run_async(self.api_client.get_factory_summary())
                         
                         if summary_data and 'energy' in summary_data:
                             # Extract energy data from factory summary
@@ -2267,10 +2267,13 @@ class EnmsSkill(OVOSSkill):
             
             # Speak result
             if result['success']:
-                # Use appropriate template
-                template = result.get('template', 'factory_energy' if not machine else 'energy_query')
-                response = self.response_formatter.format_response(template, result['data'])
-                self.speak(response)
+                if not machine:
+                    # Factory-wide: use speak_dialog with data
+                    self.speak_dialog("factory_energy", result['data'])
+                else:
+                    # Machine-specific: use formatter
+                    response = self.response_formatter.format_response('energy_query', result['data'])
+                    self.speak(response)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2711,10 +2714,13 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                # Use appropriate template
-                template = result.get('template', 'factory_power' if not machine else 'power_query')
-                response = self.response_formatter.format_response(template, result['data'])
-                self.speak(response)
+                if not machine:
+                    # Factory-wide: use speak_dialog with data
+                    self.speak_dialog("factory_power", result['data'])
+                else:
+                    # Machine-specific: use formatter
+                    response = self.response_formatter.format_response('power_query', result['data'])
+                    self.speak(response)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
