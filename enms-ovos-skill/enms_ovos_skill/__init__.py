@@ -731,6 +731,9 @@ class EnmsSkill(OVOSSkill):
                 self.logger.info("cleared_pending_clarification", machine=intent.machine)
                 session.pending_clarification = None
             
+            # Step 5.5: Apply smart defaults (Phase 3.3)
+            intent = self.context_manager.apply_smart_defaults(intent, session)
+            
             # Step 6: Check for ambiguous machines (Phase 3.2)
             ambiguous_machines = None
             if intent.machine and not intent.machines:
