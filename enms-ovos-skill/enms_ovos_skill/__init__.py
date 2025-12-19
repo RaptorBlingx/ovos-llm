@@ -2269,15 +2269,24 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 if not machine:
                     # Factory-wide: use speak_dialog with data
-                    self.speak_dialog("factory_energy", result['data'])
+                    self.logger.info("factory_energy_speaking", data=result['data'])
+                    try:
+                        self.speak_dialog("factory_energy", result['data'])
+                    except Exception as dialog_error:
+                        self.logger.error("factory_energy_dialog_failed", error=str(dialog_error), data=result['data'])
+                        # Fallback to simple response
+                        self.speak(f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today")
                 else:
                     # Machine-specific: use formatter
                     response = self.response_formatter.format_response('energy_query', result['data'])
                     self.speak(response)
             else:
+                self.logger.error("factory_energy_api_failed", result=result)
                 self.speak_dialog("error.general")
         except Exception as e:
             self.log.error(f"Energy query handler failed: {e}")
+            import traceback
+            self.logger.error("factory_energy_traceback", traceback=traceback.format_exc())
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('MachineStatus').require('status_check').require('machine').build())
