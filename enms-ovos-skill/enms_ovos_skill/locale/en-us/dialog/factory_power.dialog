@@ -1,0 +1,4 @@
+The factory is currently drawing {{current_power_kw|round(1)}} kilowatts with {{machines_active}} machines active.
+Current factory-wide power consumption is {{current_power_kw|round(1)}} kilowatts. Average power today: {{avg_power_kw|round(1)}} kilowatts.
+All machines combined are using {{current_power_kw|round(1)}} kilowatts right now. {{machines_active}} of {{machines_total}} machines are running.
+The entire facility is drawing {{current_power_kw|round(1)}} kilowatts of power at the moment.
