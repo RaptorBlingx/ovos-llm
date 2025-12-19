@@ -2,7 +2,7 @@
 # Generated from config.yaml.template
 
 adapter_type: humanergy
-api_base_url: http://10.33.10.109:8001/api/v1
+api_base_url: http://10.33.10.104:8001/api/v1
 api_timeout: 90.0
 max_retries: 3
 

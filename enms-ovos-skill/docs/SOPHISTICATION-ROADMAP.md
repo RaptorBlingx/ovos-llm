@@ -24,11 +24,9 @@
 - ⏳ **Phase 1 Vocabulary (Complete)** - 12 more .voc files to enhance
 
 ### Pending (⏸️):
-- ⏸️ **Priority 3:** Implicit factory-wide queries
-- ⏸️ **Priority 4:** Dynamic machine/SEU discovery
-- ⏸️ **Priority 5:** Portability layer (WASABI alignment)
-- ⏸️ **Phase 3:** Contextual intelligence
-- ⏸️ **Phase 4:** Dynamic response generation  
+- ⏸️ **Phase 3:** Multi-machine extraction, contextual intelligence
+- ⏸️ **Phase 4:** Dynamic response generation
+- ⏸️ **Phase 5:** Performance optimization  
 
 ---
 
