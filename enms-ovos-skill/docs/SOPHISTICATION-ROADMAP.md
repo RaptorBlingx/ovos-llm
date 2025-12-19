@@ -671,33 +671,25 @@ exceeds
 - ✅ Phase 2.4 Factory-Wide Scope: COMPLETE (Priority 3)
 - ✅ Phase 2.5 Name Normalization: COMPLETE (Priority 2)
 
-#### 2.1 Multi-Machine Extraction
-**Current:** Only extracts ONE machine per query  
-**Target:** Extract ALL machines mentioned
+#### 2.1 Multi-Machine Extraction ✅ COMPLETE (Dec 19, 2025)
+**Status:** Implemented and tested with 100% pass rate  
+**Implementation:** `_extract_machine_groups()` and `_extract_multiple_machines()` in intent_parser.py
 
-**Implementation in HybridParser:**
+**Features Implemented:**
 ```python
-def extract_machines(self, utterance: str) -> List[str]:
-    """Extract ALL machines mentioned in utterance"""
-    machines = []
-    
-    # Check against whitelist
-    for machine in self.validator.machine_whitelist:
-        if machine.lower() in utterance.lower():
-            machines.append(machine)
-    
-    # Check for groups (e.g., "all compressors")
-    if "all compressor" in utterance.lower():
-        machines = [m for m in self.validator.machine_whitelist 
-                   if "compressor" in m.lower()]
-    
-    return machines
+def _extract_machine_groups(self, utterance: str) -> List[str]:
+    """Extract machine groups like 'all compressors', 'which HVAC units'"""
+    # Group patterns: "all compressors", "both HVAC", "which machines"
+    # Question format: "which compressor", "what HVAC units"
+    # Factory-wide: "all machines", "factory wide", "entire facility"
 ```
 
-**Benefits:**
-- "Compare Compressor-1 and Boiler-1" → extracts BOTH
-- "Show me all HVAC units" → extracts HVAC-Main, HVAC-EU-North
-- "Which compressor uses more?" → extracts all compressors
+**Test Results:**
+- ✅ "compare Compressor-1 and Boiler-1" → extracts BOTH
+- ✅ "compare all compressors" → [Compressor-1, Compressor-EU-1]
+- ✅ "which HVAC unit is more efficient?" → [HVAC-Main, HVAC-EU-North]
+- ✅ "compare all machines" → All 8 machines extracted
+- ✅ 6/6 multi-machine tests passing
 
 #### 2.2 Advanced Time Range Extraction ⚡ PRIORITY: HIGH
 **Current:** Basic relative times (today, yesterday)  
@@ -785,38 +777,30 @@ curl -X POST http://localhost:5000/query -d '{"text": "what is the consumption?"
 # Expected: Defaults to today, logs "Using default time range: today"
 ```
 
-#### 2.3 Metric Intelligence
-**Current:** Relies on exact keyword matches  
-**Target:** Infer metric from context
+#### 2.3 Metric Intelligence ✅ COMPLETE (Dec 19, 2025)
+**Status:** Implemented and tested with 100% pass rate  
+**Implementation:** `_infer_metric()` method in intent_parser.py (58 lines)
 
-**Implementation:**
+**Features Implemented:**
 ```python
-def infer_metric(self, utterance: str, intent_type: IntentType) -> str:
-    """Intelligently infer what metric user wants"""
-    
-    # Cost indicators
-    if any(word in utterance.lower() for word in 
-           ['cost', 'price', 'expense', 'dollar', 'spend']):
-        return 'cost'
-    
-    # Power indicators (instantaneous)
-    if any(word in utterance.lower() for word in 
-           ['power', 'watt', 'kw', 'current', 'now', 'right now']):
-        return 'power'
-    
-    # Energy indicators (cumulative)
-    if any(word in utterance.lower() for word in 
-           ['energy', 'kwh', 'consumption', 'used', 'total']):
-        return 'energy'
-    
-    # Default by intent type
-    return intent_type.default_metric()
+def _infer_metric(self, utterance: str, intent_type: str) -> Optional[str]:
+    """Intelligently infer metric from context"""
+    # Smart prioritization:
+    # 1. Cost: 'cost', 'bill', 'price', 'spending' → 'cost'
+    # 2. Energy: 'kwh', 'energy' (checked BEFORE power) → 'energy'
+    # 3. Power: 'power', 'watt', 'current' → 'power'
+    # 4. Energy (fallback): 'consumption', 'used' → 'energy'
+    # 5. Efficiency, Production, Alerts based on keywords
 ```
 
-**Benefits:**
-- "How much did Compressor-1 cost today?" → auto-detects cost_metric
-- "What's the current draw?" → auto-detects power_metric
-- "Total consumption this week" → auto-detects energy_metric
+**Test Results:**
+- ✅ "How much kWh did Compressor-1 use?" → energy (not power)
+- ✅ "power consumption for HVAC-Main" → power (not energy)
+- ✅ "What did Boiler-1 cost today?" → cost
+- ✅ "which compressor is more efficient?" → efficiency
+- ✅ "Show me alerts" → alerts
+- ✅ 15/15 metric inference tests passing
+- ✅ 3/3 integration tests passing (multi-machine + metric)
 
 #### 2.4 Implicit Factory-Wide Scope (NEW) ⚡ PRIORITY: HIGH
 **Current:** Queries without machine fail  
@@ -1148,25 +1132,27 @@ def format_list_response(self, items: List[Dict], max_items: int = 3) -> str:
 - [ ] Test with 30+ new query variations
 - **Deliverable:** 90% vocabulary coverage (Partial: 5/25 files done, 60% coverage estimated)
 
-**Days 3-4:** Phase 2.2 & 2.5 - Time Parsing & Normalization ⚡ IN PROGRESS
+**Days 3-4:** Phase 2.2 & 2.5 - Time Parsing & Normalization ✅ COMPLETE
 - [x] ✅ Implement time range extraction with defaults (__init__.py) - DONE (Priority 1)
 - [x] ✅ Test "energy consumption yesterday" → ✅ WORKS (1115.75 kWh Dec 18)
 - [x] ✅ Test "Compressor-1 energy today" → ✅ WORKS
-- [ ] ⏳ Implement machine name normalization (lib/validators.py) - NEXT (Priority 2)
-- [ ] Add fuzzy matching dependency (thefuzz)
-- [ ] Test "compressor one" variations → MUST WORK
-- **Deliverable:** Voice-friendly queries work (Time parsing: ✅ DONE, Normalization: ⏳ NEXT)
+- [x] ✅ Implement machine name normalization (lib/validators.py) - DONE (Priority 2)
+- [x] ✅ Add fuzzy matching dependency (thefuzz) - DONE
+- [x] ✅ Test "compressor one" variations → ✅ WORKS
+- **Deliverable:** Voice-friendly queries work (Time parsing: ✅ DONE, Normalization: ✅ DONE)
 
-**Day 5:** Phase 2.1 & 2.4 - Multi-Machine & Implicit Scope - NOT STARTED
-- [ ] Implement multi-machine extraction in HybridParser
-- [ ] Implement implicit factory-wide logic (Priority 3)
-- [ ] Test "what's the current draw?" → Factory total
-- [ ] Test "compare X and Y since 9am"
-- **Deliverable:** Complex queries work, factory-wide defaults
+**Day 5:** Phase 2.1, 2.3 & 2.4 - Multi-Machine, Metric Intelligence & Implicit Scope ✅ COMPLETE
+- [x] ✅ Implement multi-machine extraction in HybridParser - DONE (Dec 19)
+- [x] ✅ Implement group patterns ("all compressors", "which HVAC") - DONE
+- [x] ✅ Implement metric inference logic (_infer_metric method) - DONE (Dec 19)
+- [x] ✅ Implement implicit factory-wide logic (Priority 3) - DONE
+- [x] ✅ Test "what's the current draw?" → ✅ Factory total works
+- [x] ✅ Test "compare X and Y since 9am" → ✅ Works
+- [x] ✅ Test "compare all compressors" → ✅ Works (extracts both)
+- **Deliverable:** Complex queries work, factory-wide defaults, 24/24 tests passing (100%)
 
-### **Week 2: Intelligence (12-15 hours)**
-**Days 6-7:** Phase 2.3 & 3.1 - Metric Intelligence & Context
-- [ ] Implement metric inference logic
+### **Week 2: Intelligence (12-15 hours)** ⏳ STARTING
+**Days 6-7:** Phase 3.1 - Session Context Management
 - [ ] Integrate context_manager in all handlers
 - [ ] Test follow-up queries
 - **Deliverable:** Context-aware conversations
