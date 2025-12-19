@@ -453,6 +453,165 @@ class ConversationContextManager:
                       options=options)
         return None
     
+    def apply_smart_defaults(self, intent: Intent, session: ConversationSession) -> Intent:
+        """
+        Apply intelligent defaults based on context and intent type
+        
+        Phase 3.3: Smart Defaults Enhancement
+        - Default time ranges based on intent
+        - Default metrics from intent type
+        - Use context for missing parameters
+        - Factory-wide when no machine and optional
+        
+        Args:
+            intent: Parsed intent (possibly incomplete)
+            session: Current conversation session
+            
+        Returns:
+            Intent with smart defaults applied
+        """
+        updates = {}
+        
+        # 1. Apply default time range based on intent type
+        if not intent.time_range:
+            default_time_range = self._get_default_time_range(intent.intent)
+            if default_time_range:
+                updates['time_range'] = default_time_range
+                logger.info("applied_default_time_range",
+                           intent=intent.intent.value,
+                           default=default_time_range.relative if hasattr(default_time_range, 'relative') else 'today')
+        
+        # 2. Apply default metric based on intent type (if not already inferred)
+        if not intent.metric:
+            default_metric = self._get_default_metric(intent.intent)
+            if default_metric:
+                updates['metric'] = default_metric
+                logger.info("applied_default_metric",
+                           intent=intent.intent.value,
+                           default=default_metric)
+        
+        # 3. Use session context for missing machine (if context available)
+        # Note: This is already handled in resolve_context_references,
+        # but we can add additional smart logic here
+        if not intent.machine and not intent.machines:
+            # Check if this intent type can work factory-wide
+            factory_wide_intents = [
+                IntentType.ENERGY_QUERY,
+                IntentType.POWER_QUERY,
+                IntentType.COST_ANALYSIS,
+                IntentType.RANKING,
+                IntentType.FACTORY_OVERVIEW,
+                IntentType.SEUS,
+                IntentType.KPI
+            ]
+            
+            if intent.intent in factory_wide_intents:
+                # Mark as factory-wide query
+                if not intent.params:
+                    updates['params'] = {'factory_wide': True}
+                else:
+                    params_copy = intent.params.copy()
+                    params_copy['factory_wide'] = True
+                    updates['params'] = params_copy
+                
+                logger.info("applied_factory_wide_default",
+                           intent=intent.intent.value)
+        
+        # 4. Apply default aggregation for ranking/comparison
+        if intent.intent in [IntentType.RANKING, IntentType.COMPARISON]:
+            if not intent.aggregation:
+                updates['aggregation'] = 'total'
+                logger.info("applied_default_aggregation",
+                           intent=intent.intent.value,
+                           default='total')
+        
+        # 5. Apply default limit for ranking queries
+        if intent.intent == IntentType.RANKING:
+            if not intent.limit or intent.limit == 0:
+                updates['limit'] = 5  # Top 5 by default
+                logger.info("applied_default_limit",
+                           intent=intent.intent.value,
+                           default=5)
+        
+        # Apply all updates
+        if updates:
+            intent = intent.model_copy(update=updates)
+        
+        return intent
+    
+    def _get_default_time_range(self, intent_type: IntentType) -> Optional['TimeRange']:
+        """
+        Get default time range based on intent type
+        
+        Args:
+            intent_type: Type of intent
+            
+        Returns:
+            Default TimeRange or None
+        """
+        from datetime import datetime, timezone
+        from .models import TimeRange
+        
+        # Intent-specific defaults
+        if intent_type in [IntentType.ENERGY_QUERY, IntentType.PRODUCTION]:
+            # Energy/production: default to "today" (cumulative)
+            return TimeRange(
+                start=datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0),
+                end=datetime.now(timezone.utc),
+                relative='today'
+            )
+        
+        elif intent_type == IntentType.POWER_QUERY:
+            # Power: real-time (last 5 minutes)
+            return TimeRange(
+                start=datetime.now(timezone.utc).replace(second=0, microsecond=0),
+                end=datetime.now(timezone.utc),
+                relative='now'
+            )
+        
+        elif intent_type == IntentType.ANOMALY_DETECTION:
+            # Anomalies: last 24 hours
+            return TimeRange(
+                start=datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0),
+                end=datetime.now(timezone.utc),
+                relative='last_24_hours'
+            )
+        
+        elif intent_type == IntentType.COST_ANALYSIS:
+            # Cost: current month (billing period)
+            now = datetime.now(timezone.utc)
+            return TimeRange(
+                start=now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+                end=now,
+                relative='this_month'
+            )
+        
+        # No default for other intents
+        return None
+    
+    def _get_default_metric(self, intent_type: IntentType) -> Optional[str]:
+        """
+        Get default metric based on intent type
+        
+        Args:
+            intent_type: Type of intent
+            
+        Returns:
+            Default metric name or None
+        """
+        default_metrics = {
+            IntentType.ENERGY_QUERY: 'energy',
+            IntentType.POWER_QUERY: 'power',
+            IntentType.COST_ANALYSIS: 'cost',
+            IntentType.COMPARISON: 'energy',
+            IntentType.RANKING: 'energy',
+            IntentType.KPI: 'efficiency',
+            IntentType.PERFORMANCE: 'efficiency',
+            IntentType.PRODUCTION: 'units'
+        }
+        
+        return default_metrics.get(intent_type)
+    
     def fuzzy_match_machines(self, query: str, 
                             available_machines: List[str],
                             threshold: float = 0.7) -> List[Dict[str, Any]]:
