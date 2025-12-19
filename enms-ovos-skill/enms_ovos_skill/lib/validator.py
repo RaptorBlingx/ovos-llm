@@ -9,6 +9,14 @@ import re
 import structlog
 from pydantic import BaseModel, ValidationError
 
+# Fuzzy string matching library
+try:
+    from thefuzz import fuzz
+    FUZZY_AVAILABLE = True
+except ImportError:
+    FUZZY_AVAILABLE = False
+    logger.warning("thefuzz not installed - fuzzy matching will use simple Levenshtein")
+
 from .models import Intent, IntentType, TimeRange, ValidationResult
 
 logger = structlog.get_logger(__name__)
@@ -390,7 +398,97 @@ class ENMSValidator:
         
         return False, None, None
     
-    def find_all_matching_machines(self, machine_name: str) -> List[str]:
+    def normalize_machine_name(self, raw_name: str) -> Optional[str]:
+        """
+        Normalize voice/text variations to canonical machine name
+        
+        Handles voice input variations:
+        - "compressor one" → Compressor-1
+        - "hvac main" → HVAC-Main
+        - "boiler number two" → Boiler-2
+        - Case variations (COMPRESSOR-1, compressor-1, etc.)
+        
+        Args:
+            raw_name: Raw machine name from user input or STT
+            
+        Returns:
+            Canonical machine name from whitelist, or None if no match
+        """
+        if not raw_name:
+            return None
+        
+        # Number words to digits mapping
+        number_words = {
+            'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
+            'first': '1', 'second': '2', 'third': '3', 'fourth': '4'
+        }
+        
+        # Normalize input
+        normalized = raw_name.lower().strip()
+        
+        # Remove common STT artifacts
+        normalized = normalized.replace(" number ", " ")
+        normalized = normalized.replace(" dash ", "-")
+        
+        # Convert number words to digits
+        for word, digit in number_words.items():
+            normalized = re.sub(rf'\b{word}\b', digit, normalized)
+        
+        # Standardize separators: space → hyphen
+        normalized = normalized.replace(" ", "-").replace("_", "-")
+        
+        # Try exact match (case-insensitive)
+        for machine in self.machine_whitelist:
+            machine_normalized = machine.lower().replace(" ", "-").replace("_", "-")
+            if normalized == machine_normalized:
+                logger.debug("machine_normalized_exact", raw=raw_name, matched=machine)
+                return machine
+        
+        # Try hyphen vs space variants
+        for machine in self.machine_whitelist:
+            machine_variants = [
+                machine.lower(),
+                machine.lower().replace("-", " "),
+                machine.lower().replace("-", ""),
+                machine.lower().replace(" ", "")
+            ]
+            normalized_variants = [
+                normalized,
+                normalized.replace("-", " "),
+                normalized.replace("-", "")
+            ]
+            
+            for norm_var in normalized_variants:
+                for mach_var in machine_variants:
+                    if norm_var == mach_var:
+                        logger.debug("machine_normalized_variant", raw=raw_name, matched=machine, variant=norm_var)
+                        return machine
+        
+        # Fuzzy match (80% similarity threshold)
+        if FUZZY_AVAILABLE and self.enable_fuzzy_matching:
+            best_match = None
+            best_score = 0
+            
+            for machine in self.machine_whitelist:
+                machine_lower = machine.lower()
+                score = fuzz.ratio(normalized, machine_lower)
+                
+                if score > best_score and score >= 80:
+                    best_score = score
+                    best_match = machine
+            
+            if best_match:
+                logger.info("machine_normalized_fuzzy", 
+                           raw=raw_name, 
+                           matched=best_match, 
+                           score=best_score)
+                return best_match
+        
+        logger.warning("machine_normalization_failed", raw=raw_name)
+        return None
+    
+    def find_all_matching_machines(self, machine_name: str) -> List[str]:    def find_all_matching_machines(self, machine_name: str) -> List[str]:
         """
         Find ALL machines that match the query (for ambiguous requests)
         
@@ -462,16 +560,33 @@ class ENMSValidator:
         
         return matches
     
-    def _fuzzy_match(self, s1: str, s2: str, threshold: int = 2) -> bool:
-        """Simple fuzzy string matching (Levenshtein distance)"""
-        if abs(len(s1) - len(s2)) > threshold:
-            return False
+    def _fuzzy_match(self, s1: str, s2: str, threshold: int = 80) -> bool:
+        """
+        Enhanced fuzzy string matching using thefuzz library
         
-        # Simple character difference count
-        diff = sum(c1 != c2 for c1, c2 in zip(s1, s2))
-        diff += abs(len(s1) - len(s2))
-        
-        return diff <= threshold
+        Args:
+            s1: First string to compare
+            s2: Second string to compare
+            threshold: Similarity score threshold (0-100, default 80)
+            
+        Returns:
+            True if strings are similar enough
+        """
+        if FUZZY_AVAILABLE:
+            # Use thefuzz for advanced fuzzy matching
+            similarity = fuzz.ratio(s1.lower(), s2.lower())
+            logger.debug("fuzzy_match", s1=s1, s2=s2, similarity=similarity, threshold=threshold)
+            return similarity >= threshold
+        else:
+            # Fallback to simple Levenshtein distance
+            if abs(len(s1) - len(s2)) > 3:
+                return False
+            
+            # Simple character difference count
+            diff = sum(c1 != c2 for c1, c2 in zip(s1, s2))
+            diff += abs(len(s1) - len(s2))
+            
+            return diff <= 3
     
     def _validate_metric(self, metric: str) -> bool:
         """Validate metric is in known list"""

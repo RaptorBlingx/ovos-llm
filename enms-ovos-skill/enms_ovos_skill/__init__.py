@@ -481,6 +481,35 @@ class EnmsSkill(OVOSSkill):
         else:
             return "custom"
     
+    def _normalize_machine_name(self, raw_machine: Optional[str]) -> Optional[str]:
+        """
+        Normalize machine name to handle voice variations
+        
+        Converts voice input variations to canonical names:
+        - "compressor one" → Compressor-1
+        - "hvac main" → HVAC-Main
+        - "boiler number two" → Boiler-2
+        - "COMPRESSOR-1" → Compressor-1 (case normalization)
+        
+        Args:
+            raw_machine: Raw machine name from Adapt or user input
+            
+        Returns:
+            Canonical machine name from whitelist, or None if no match
+        """
+        if not raw_machine or not self.validator:
+            return raw_machine
+        
+        # Use validator's normalization logic
+        normalized = self.validator.normalize_machine_name(raw_machine)
+        
+        if normalized and normalized != raw_machine:
+            self.logger.info("machine_name_normalized",
+                           raw=raw_machine,
+                           normalized=normalized)
+        
+        return normalized if normalized else raw_machine
+    
     def _process_query(self, utterance: str, session_id: str, expected_intent: Optional[str] = None) -> Dict[str, Any]:
         """
         CORE QUERY PROCESSING PIPELINE
@@ -2110,7 +2139,9 @@ class EnmsSkill(OVOSSkill):
     def handle_energy_query(self, message: Message):
         """Handle energy consumption queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -2143,7 +2174,9 @@ class EnmsSkill(OVOSSkill):
     def handle_machine_status(self, message: Message):
         """Handle machine status queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -2199,7 +2232,9 @@ class EnmsSkill(OVOSSkill):
     def handle_anomaly_detection(self, message: Message):
         """Handle anomaly detection queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             # Extract time range from utterance
@@ -2259,7 +2294,9 @@ class EnmsSkill(OVOSSkill):
     def handle_comparison(self, message: Message):
         """Handle machine comparison queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
@@ -2284,7 +2321,9 @@ class EnmsSkill(OVOSSkill):
     def handle_cost_analysis(self, message: Message):
         """Handle cost analysis queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             # Extract time range from utterance
@@ -2313,7 +2352,9 @@ class EnmsSkill(OVOSSkill):
     def handle_forecast(self, message: Message):
         """Handle energy forecast queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             # Extract time range from utterance
@@ -2342,7 +2383,9 @@ class EnmsSkill(OVOSSkill):
     def handle_baseline(self, message: Message):
         """Handle baseline prediction queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             # Extract time range from utterance
@@ -2371,7 +2414,9 @@ class EnmsSkill(OVOSSkill):
     def handle_baseline_models(self, message: Message):
         """Handle baseline models listing - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
@@ -2396,7 +2441,9 @@ class EnmsSkill(OVOSSkill):
     def handle_baseline_explanation(self, message: Message):
         """Handle baseline explanation queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
@@ -2444,7 +2491,9 @@ class EnmsSkill(OVOSSkill):
     def handle_kpi(self, message: Message):
         """Handle KPI queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
@@ -2469,7 +2518,9 @@ class EnmsSkill(OVOSSkill):
     def handle_performance(self, message: Message):
         """Handle performance analysis queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
@@ -2494,7 +2545,9 @@ class EnmsSkill(OVOSSkill):
     def handle_production(self, message: Message):
         """Handle production data queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
@@ -2519,7 +2572,9 @@ class EnmsSkill(OVOSSkill):
     def handle_power_query(self, message: Message):
         """Handle power consumption queries - OVOS interface layer"""
         try:
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             # Extract time range from utterance
@@ -2549,7 +2604,9 @@ class EnmsSkill(OVOSSkill):
         """Handle report generation queries - OVOS interface layer"""
         try:
             report_type = message.data.get('report_type')
-            machine = message.data.get('machine')
+            machine_raw = message.data.get('machine')
+
+            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
