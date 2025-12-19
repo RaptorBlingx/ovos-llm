@@ -18,10 +18,10 @@
 7. ✅ **Priority 2: Machine Name Normalization** - Voice variations working ("compressor one" → Compressor-1)
 8. ✅ **Priority 3: Implicit Factory-Wide Queries** - "energy consumption" → Factory-wide totals (19456.8 kWh)
 9. ✅ **Priority 4: Dynamic Machine/SEU Discovery** - Machines fetched from API, 1-hour cache, fallback support
+10. ✅ **Priority 5: Portability Layer (WASABI)** - Adapter pattern, config.yaml, setup script, 100% portable
 
 ### In Progress (⏳):
 - ⏳ **Phase 1 Vocabulary (Complete)** - 12 more .voc files to enhance
-- ⏳ **Priority 5: Portability Layer** - Config.yaml and adapter pattern (WASABI)
 
 ### Pending (⏸️):
 - ⏸️ **Priority 3:** Implicit factory-wide queries
