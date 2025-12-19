@@ -40,7 +40,8 @@ from .lib.response_formatter import ResponseFormatter
 from .lib.conversation_context import ConversationContextManager
 from .lib.voice_feedback import VoiceFeedbackManager, FeedbackType
 from .lib.feature_extractor import FeatureExtractor
-from .lib.models import IntentType, Intent
+from .lib.time_parser import TimeRangeParser
+from .lib.models import IntentType, Intent, TimeRange
 from .lib.observability import (
     queries_total,
     query_latency,
@@ -395,6 +396,90 @@ class EnmsSkill(OVOSSkill):
         # In production, use message.context.get("session_id")
         # For testing, use a default session
         return message.context.get("session_id", "default_session")
+    
+    def _extract_time_range(self, utterance: str) -> Optional[TimeRange]:
+        """
+        Extract time range from utterance using TimeRangeParser
+        
+        Handles:
+        - "yesterday" → yesterday 00:00-23:59
+        - "last week" → 7 days ago to now
+        - "today" → today 00:00 to now  
+        - No time mentioned → defaults to "today"
+        
+        Args:
+            utterance: User's query text
+            
+        Returns:
+            TimeRange object with start/end datetimes, or None if parsing fails
+        """
+        utterance_lower = utterance.lower()
+        
+        # Look for time keywords
+        time_patterns = [
+            r'yesterday',
+            r'today',
+            r'last\s+(?:hour|day|week|month)',
+            r'past\s+(?:\d+\s+)?(?:hour|day|week)s?',
+            r'since\s+\d+\s*(?:am|pm)',
+            r'between\s+.+?\s+and\s+.+?'
+        ]
+        
+        time_range_str = None
+        for pattern in time_patterns:
+            match = re.search(pattern, utterance_lower)
+            if match:
+                time_range_str = match.group(0)
+                break
+        
+        # Parse the time range
+        if time_range_str:
+            start_dt, end_dt = TimeRangeParser.parse(time_range_str)
+            
+            if start_dt and end_dt:
+                self.logger.info("time_range_extracted",
+                               raw=time_range_str,
+                               start=start_dt.isoformat(),
+                               end=end_dt.isoformat())
+                
+                return TimeRange(
+                    start=start_dt,
+                    end=end_dt,
+                    relative=time_range_str,
+                    duration=self._calculate_duration(start_dt, end_dt)
+                )
+            else:
+                self.logger.warning("time_range_parse_failed", raw=time_range_str)
+        
+        # Default: today (00:00 to now) if no time mentioned
+        start_dt, end_dt = TimeRangeParser.parse("today")
+        if start_dt and end_dt:
+            self.logger.debug("time_range_default_today", 
+                            start=start_dt.isoformat(),
+                            end=end_dt.isoformat())
+            return TimeRange(
+                start=start_dt,
+                end=end_dt,
+                relative="today",
+                duration="today"
+            )
+        
+        return None
+    
+    def _calculate_duration(self, start: datetime, end: datetime) -> str:
+        """Calculate duration string from start/end times"""
+        delta = end - start
+        
+        if delta.days >= 30:
+            return f"{delta.days // 30}month"
+        elif delta.days >= 7:
+            return f"{delta.days // 7}week"
+        elif delta.days >= 1:
+            return f"{delta.days}day"
+        elif delta.seconds >= 3600:
+            return f"{delta.seconds // 3600}hour"
+        else:
+            return "custom"
     
     def _process_query(self, utterance: str, session_id: str, expected_intent: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -2029,10 +2114,14 @@ class EnmsSkill(OVOSSkill):
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
+            # Extract time range from utterance
+            time_range = self._extract_time_range(utterance)
+            
             # Build intent object
             intent = Intent(
                 intent=IntentType.ENERGY_QUERY,
                 machine=machine,
+                time_range=time_range,
                 confidence=0.95,
                 utterance=utterance
             )
@@ -2113,8 +2202,12 @@ class EnmsSkill(OVOSSkill):
             machine = message.data.get('machine')
             utterance = message.data.get("utterances", [""])[0]
             
+            # Extract time range from utterance
+            time_range = self._extract_time_range(utterance)
+            
             intent = Intent(
                 intent=IntentType.ANOMALY_DETECTION,
+                time_range=time_range,
                 machine=machine,
                 confidence=0.95,
                 utterance=utterance
@@ -2194,8 +2287,12 @@ class EnmsSkill(OVOSSkill):
             machine = message.data.get('machine')
             utterance = message.data.get("utterances", [""])[0]
             
+            # Extract time range from utterance
+            time_range = self._extract_time_range(utterance)
+            
             intent = Intent(
                 intent=IntentType.COST_ANALYSIS,
+                time_range=time_range,
                 machine=machine,
                 confidence=0.95,
                 utterance=utterance
@@ -2219,8 +2316,12 @@ class EnmsSkill(OVOSSkill):
             machine = message.data.get('machine')
             utterance = message.data.get("utterances", [""])[0]
             
+            # Extract time range from utterance
+            time_range = self._extract_time_range(utterance)
+            
             intent = Intent(
                 intent=IntentType.FORECAST,
+                time_range=time_range,
                 machine=machine,
                 confidence=0.95,
                 utterance=utterance
@@ -2244,8 +2345,12 @@ class EnmsSkill(OVOSSkill):
             machine = message.data.get('machine')
             utterance = message.data.get("utterances", [""])[0]
             
+            # Extract time range from utterance
+            time_range = self._extract_time_range(utterance)
+            
             intent = Intent(
                 intent=IntentType.BASELINE,
+                time_range=time_range,
                 machine=machine,
                 confidence=0.95,
                 utterance=utterance
@@ -2417,9 +2522,13 @@ class EnmsSkill(OVOSSkill):
             machine = message.data.get('machine')
             utterance = message.data.get("utterances", [""])[0]
             
+            # Extract time range from utterance
+            time_range = self._extract_time_range(utterance)
+            
             intent = Intent(
                 intent=IntentType.POWER_QUERY,
                 machine=machine,
+                time_range=time_range,
                 confidence=0.95,
                 utterance=utterance
             )
