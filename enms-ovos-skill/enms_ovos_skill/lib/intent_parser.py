@@ -511,6 +511,121 @@ class HeuristicRouter:
         
         return machines_found
     
+    def _extract_machine_groups(self, utterance: str) -> List[str]:
+        """
+        Extract machine groups like "all compressors", "all HVAC units"
+        
+        Phase 2.1 Enhancement: Support group queries
+        
+        Handles:
+        - "all compressors" → ["Compressor-1", "Compressor-EU-1"]
+        - "all HVAC units" → ["HVAC-Main", "HVAC-EU-North"]
+        - "both compressors" → ["Compressor-1", "Compressor-EU-1"]
+        - "which compressor" → ["Compressor-1", "Compressor-EU-1"] (plural implied)
+        
+        Args:
+            utterance: User query
+            
+        Returns:
+            List of matching machines (empty if no group found)
+        """
+        utterance_lower = utterance.lower()
+        
+        # Group patterns
+        group_patterns = {
+            r'\b(?:all|both|every|each)\s+compressors?\b': ['Compressor-1', 'Compressor-EU-1'],
+            r'\b(?:which|what)\s+compressors?\b': ['Compressor-1', 'Compressor-EU-1'],  # NEW: question format
+            r'\b(?:all|both|every)\s+hvacs?\b': ['HVAC-Main', 'HVAC-EU-North'],
+            r'\b(?:which|what)\s+hvacs?\b': ['HVAC-Main', 'HVAC-EU-North'],  # NEW
+            r'\b(?:all|both|every)\s+hvac\s+units?\b': ['HVAC-Main', 'HVAC-EU-North'],
+            r'\b(?:which|what)\s+hvac\s+units?\b': ['HVAC-Main', 'HVAC-EU-North'],  # NEW
+            r'\b(?:all|both|every)\s+boilers?\b': ['Boiler-1'],  # Only one boiler
+            r'\b(?:all|every)\s+machines?\b': self.MACHINES,  # All machines
+            r'\b(?:which|what)\s+machines?\b': self.MACHINES,  # NEW: question format
+            r'\bfactory\s+wide\b': self.MACHINES,
+            r'\bentire\s+(?:facility|factory|plant)\b': self.MACHINES,
+            r'\b(?:all|every)\s+(?:the\s+)?equipment\b': self.MACHINES,
+        }
+        
+        for pattern, machines in group_patterns.items():
+            if re.search(pattern, utterance_lower):
+                # Filter to only machines that actually exist in MACHINES list
+                return [m for m in machines if m in self.MACHINES]
+        
+        return []
+    
+    def _infer_metric(self, utterance: str, intent_type: str) -> Optional[str]:
+        """
+        Intelligently infer metric from context
+        
+        Phase 2.3: Metric Intelligence
+        
+        Handles:
+        - "How much did Compressor-1 cost today?" → 'cost'
+        - "What's the current draw?" → 'power'
+        - "Total consumption this week" → 'energy'
+        
+        Args:
+            utterance: User query
+            intent_type: Intent type for default fallback
+            
+        Returns:
+            Inferred metric ('cost', 'power', 'energy', 'efficiency', etc.)
+        """
+        utterance_lower = utterance.lower()
+        
+        # Cost indicators (highest priority - specific metric)
+        if any(word in utterance_lower for word in 
+               ['cost', 'price', 'expense', 'dollar', '$', 'spend', 'spending', 'spent', 'bill', 'charge']):
+            return 'cost'
+        
+        # Energy indicators - FIRST check for explicit energy terms (kWh, energy)
+        # These override power keywords like "power consumption" or "how much"
+        if 'kwh' in utterance_lower or 'kilowatt hour' in utterance_lower or 'energy' in utterance_lower:
+            return 'energy'
+        
+        # Power indicators - Check for "power" keyword (handles "power consumption")
+        if 'power' in utterance_lower:
+            return 'power'
+        
+        # More energy indicators (consumption without "power" prefix)
+        if any(word in utterance_lower for word in 
+               ['consumption', 'used', 'consumed', 'total', 'cumulative', 'aggregate']):
+            return 'energy'
+        
+        # Power indicators (instantaneous) - remaining keywords
+        if any(word in utterance_lower for word in 
+               ['watt', 'kw', 'current', 'now', 'right now', 'draw', 'currently', 'real-time', 'instantaneous']):
+            return 'power'
+        
+        # Efficiency indicators
+        if any(word in utterance_lower for word in 
+               ['efficiency', 'efficient', 'performance', 'rating', 'score']):
+            return 'efficiency'
+        
+        # Production indicators
+        if any(word in utterance_lower for word in 
+               ['units', 'production', 'output', 'manufactured', 'produced', 'oee']):
+            return 'production'
+        
+        # Alert/anomaly indicators
+        if any(word in utterance_lower for word in 
+               ['alert', 'anomaly', 'anomalies', 'issue', 'problem', 'warning']):
+            return 'alerts'
+        
+        # Default by intent type
+        default_metrics = {
+            'power_query': 'power',
+            'energy_query': 'energy',
+            'cost_analysis': 'cost',
+            'kpi': 'efficiency',
+            'performance': 'efficiency',
+            'anomaly_detection': 'alerts',
+            'production': 'production'
+        }
+        
+        return default_metrics.get(intent_type, 'energy')
+    
     def route(self, utterance: str) -> Optional[Dict]:
         """
         Attempt to parse utterance using fast heuristics
@@ -748,11 +863,14 @@ class HeuristicRouter:
                         # Ambiguous - will be caught by validator
                         normalized_machine = machine
                 
+                # Phase 2.3: Infer metric (might be cost/energy query disguised as power)
+                metric = self._infer_metric(utterance, 'power_query')
+                
                 return {
                     'intent': 'power_query',
                     'confidence': 0.95,
                     'machine': normalized_machine,
-                    'metric': 'power'
+                    'metric': metric  # Was: 'power' (hardcoded)
                 }
             
             elif intent_type == 'energy_query':
@@ -764,33 +882,49 @@ class HeuristicRouter:
                     # No capture group or match failed - use fuzzy extraction
                     machine = self._extract_machine_fuzzy(utterance)
                 
+                # Phase 2.3: Infer metric (might be cost/power query disguised as energy)
+                metric = self._infer_metric(utterance, 'energy_query')
+                
                 return {
                     'intent': 'energy_query',
                     'confidence': 0.95,
                     'machine': machine,
-                    'metric': 'energy'
+                    'metric': metric  # Was: 'energy' (hardcoded)
                 }
             
             elif intent_type == 'comparison':
+                # Phase 2.1 Enhancement: Support group extraction and multi-machine
+                machines = []
+                
                 try:
+                    # Try regex capture groups first
                     machine1 = match.group(1)
                     machine2 = match.group(2)
                     machine1 = self._normalize_machine_name(machine1)
                     machine2 = self._normalize_machine_name(machine2)
+                    machines = [machine1, machine2]
                 except (IndexError, AttributeError):
-                    # Pattern without capture groups - extract machines using fuzzy matching
-                    machines = self._extract_multiple_machines(utterance)
-                    if len(machines) >= 2:
-                        machine1, machine2 = machines[0], machines[1]
-                    else:
+                    # Check for group patterns ("all compressors", etc.)
+                    machines = self._extract_machine_groups(utterance)
+                    
+                    # If no group found, try individual machine extraction
+                    if not machines:
+                        machines = self._extract_multiple_machines(utterance)
+                    
+                    # Need at least 2 machines for comparison
+                    if len(machines) < 2:
                         # Fallback: return empty to trigger adapt parser
                         return None
+                
+                # Phase 2.3: Infer metric from utterance (cost, power, energy, efficiency)
+                metric = self._infer_metric(utterance, 'comparison')
                 
                 # Return comma-separated machines (will be split by validator)
                 return {
                     'intent': 'comparison',
                     'confidence': 0.95,
-                    'machines': f"{machine1},{machine2}"
+                    'machines': ','.join(machines),
+                    'metric': metric  # NEW: Add inferred metric
                 }
             
             elif intent_type == 'anomaly_detection':
