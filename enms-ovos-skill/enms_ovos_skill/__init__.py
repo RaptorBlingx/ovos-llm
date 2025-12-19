@@ -2296,14 +2296,26 @@ class EnmsSkill(OVOSSkill):
         - "Compressor-1 energy today" → Machine-specific
         - "energy consumption" → Factory-wide
         - "how much energy are we using?" → Factory-wide
+        
+        Phase 3.1: Uses session context for follow-up queries
         """
         try:
-            machine_raw = message.data.get('machine')
-            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
-            # Extract time range from utterance
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            
+            # Extract time range from utterance (or use context)
             time_range = self._extract_time_range(utterance)
             
             # Build intent object
@@ -2331,15 +2343,21 @@ class EnmsSkill(OVOSSkill):
                     # Factory-wide: use speak_dialog with data
                     self.logger.info("factory_energy_speaking", data=result['data'])
                     try:
+                        response_text = f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today"
                         self.speak_dialog("factory_energy", result['data'])
                     except Exception as dialog_error:
                         self.logger.error("factory_energy_dialog_failed", error=str(dialog_error), data=result['data'])
                         # Fallback to simple response
-                        self.speak(f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today")
+                        response_text = f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today"
+                        self.speak(response_text)
                 else:
                     # Machine-specific: use formatter
-                    response = self.response_formatter.format_response('energy_query', result['data'])
-                    self.speak(response)
+                    response_text = self.response_formatter.format_response('energy_query', result['data'])
+                    self.speak(response_text)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response_text, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine, metric="energy")
             else:
                 self.logger.error("factory_energy_api_failed", result=result)
                 self.speak_dialog("error.general")
@@ -2409,12 +2427,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('AnomalyDetection').require('anomaly').optionally('machine').build())
     def handle_anomaly_detection(self, message: Message):
-        """Handle anomaly detection queries - OVOS interface layer"""
+        """Handle anomaly detection queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2432,6 +2460,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('anomaly_detection', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2471,12 +2503,17 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('Comparison').require('comparison').require('machine').build())
     def handle_comparison(self, message: Message):
-        """Handle machine comparison queries - OVOS interface layer"""
+        """Handle machine comparison queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             intent = Intent(
                 intent=IntentType.COMPARISON,
@@ -2490,6 +2527,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('comparison', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machines=intent.machines)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2498,12 +2539,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('CostAnalysis').require('cost_metric').optionally('machine').build())
     def handle_cost_analysis(self, message: Message):
-        """Handle cost analysis queries - OVOS interface layer"""
+        """Handle cost analysis queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2521,6 +2572,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('cost_analysis', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine, metric="cost")
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2529,12 +2584,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('Forecast').require('forecast').optionally('machine').build())
     def handle_forecast(self, message: Message):
-        """Handle energy forecast queries - OVOS interface layer"""
+        """Handle energy forecast queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2552,6 +2617,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('forecast', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2560,12 +2629,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('Baseline').require('baseline').require('machine').build())
     def handle_baseline(self, message: Message):
-        """Handle baseline prediction queries - OVOS interface layer"""
+        """Handle baseline prediction queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified and required
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2583,6 +2662,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('baseline', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2591,12 +2674,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('BaselineModels').require('baseline').require('machine').require('model_query').build())
     def handle_baseline_models(self, message: Message):
-        """Handle baseline models listing - OVOS interface layer"""
+        """Handle baseline models listing - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.BASELINE_MODELS,
@@ -2610,6 +2703,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('baseline_models', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2618,12 +2715,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('BaselineExplanation').require('kpi_metric').require('machine').require('explain_query').build())
     def handle_baseline_explanation(self, message: Message):
-        """Handle baseline explanation queries - OVOS interface layer"""
+        """Handle baseline explanation queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.BASELINE_EXPLANATION,
@@ -2637,6 +2744,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('baseline_explanation', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2668,12 +2779,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('KPI').require('kpi_metric').optionally('machine').build())
     def handle_kpi(self, message: Message):
-        """Handle KPI queries - OVOS interface layer"""
+        """Handle KPI queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.KPI,
@@ -2687,6 +2808,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('kpi', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine, metric="kpi")
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2695,12 +2820,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('Performance').require('performance_query').require('machine').build())
     def handle_performance(self, message: Message):
-        """Handle performance analysis queries - OVOS interface layer"""
+        """Handle performance analysis queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.PERFORMANCE,
@@ -2714,6 +2849,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('performance', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2722,12 +2861,22 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('Production').require('production_query').require('machine').build())
     def handle_production(self, message: Message):
-        """Handle production data queries - OVOS interface layer"""
+        """Handle production data queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.PRODUCTION,
@@ -2741,6 +2890,10 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 response = self.response_formatter.format_response('production', result['data'])
                 self.speak(response)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2756,11 +2909,24 @@ class EnmsSkill(OVOSSkill):
         - "Compressor-1 power" → Machine-specific
         - "what's the current draw?" → Factory-wide
         - "how much power are we using?" → Factory-wide
+        
+        Phase 3.1: Uses session context for follow-up queries
         """
         try:
+            utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            # Get or create session context
+            session = self.context_manager.get_or_create_session(session_id)
+            
+            # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
-            utterance = message.data.get("utterances", [""])[0]
+            
+            # Use context if no machine specified
+            if not machine and session.last_machine:
+                machine = session.last_machine
+                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2785,11 +2951,16 @@ class EnmsSkill(OVOSSkill):
             if result['success']:
                 if not machine:
                     # Factory-wide: use speak_dialog with data
+                    response_text = f"Current power is {result['data'].get('current_power_kw', 0):.1f} kilowatts"
                     self.speak_dialog("factory_power", result['data'])
                 else:
                     # Machine-specific: use formatter
-                    response = self.response_formatter.format_response('power_query', result['data'])
-                    self.speak(response)
+                    response_text = self.response_formatter.format_response('power_query', result['data'])
+                    self.speak(response_text)
+                
+                # Update context for next query
+                session.add_turn(utterance, intent, response_text, result['data'])
+                self.logger.info("context_updated", session_id=session_id, machine=machine, metric="power")
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
