@@ -488,7 +488,7 @@ class ENMSValidator:
         logger.warning("machine_normalization_failed", raw=raw_name)
         return None
     
-    def find_all_matching_machines(self, machine_name: str) -> List[str]:    def find_all_matching_machines(self, machine_name: str) -> List[str]:
+    def find_all_matching_machines(self, machine_name: str) -> List[str]:
         """
         Find ALL machines that match the query (for ambiguous requests)
         
