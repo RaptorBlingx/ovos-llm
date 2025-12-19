@@ -13,6 +13,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import structlog
+import re
 from difflib import SequenceMatcher
 
 from .models import Intent, IntentType
@@ -214,27 +215,22 @@ class ConversationContextManager:
         
         # PRIORITY: Check if resolving pending clarification
         if session.pending_clarification:
-            # Check if query is just a machine name (clarification response)
-            from .validator import ENMSValidator
-            validator = ENMSValidator()
+            # Parse clarification response (machine name, number, or reference)
+            resolved_machine = self._parse_clarification_response(
+                query, 
+                session.pending_clarification.get('options', [])
+            )
             
-            # Check if query matches any machine (case-insensitive)
-            matched_machine = None
-            for valid_machine in validator.machine_whitelist:
-                if query.lower() == valid_machine.lower():
-                    matched_machine = valid_machine
-                    break
-            
-            # If query is a valid machine name, resolve pending clarification
-            if matched_machine:
+            # If query resolved to a machine, update pending intent
+            if resolved_machine:
                 logger.info("resolving_pending_clarification",
-                           machine=matched_machine,
+                           machine=resolved_machine,
                            pending_intent=session.pending_clarification.get('intent'))
                 
                 # Restore pending intent with machine filled in
                 resolved_intent = intent.model_copy(update={
                     'intent': session.pending_clarification['intent'],
-                    'machine': matched_machine,
+                    'machine': resolved_machine,
                     'metric': session.pending_clarification.get('metric'),
                     'time_range': session.pending_clarification.get('time_range')
                 })
@@ -282,41 +278,84 @@ class ConversationContextManager:
         
         return intent
     
-    def needs_clarification(self, intent: Intent) -> Optional[str]:
+    def needs_clarification(self, intent: Intent, 
+                            ambiguous_machines: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         """
         Determine if query needs clarification
         
         Args:
             intent: Parsed intent
+            ambiguous_machines: List of machines that match ambiguous query
             
         Returns:
-            Clarification message or None
+            Dict with clarification info or None:
+            {
+                'type': 'machine_ambiguous' | 'machine_missing' | 'machines_missing' | 'intent_unknown',
+                'message': str,
+                'options': List[str]  # Optional: choices for user
+            }
         """
+        # Ambiguous machine selection (HIGHEST PRIORITY)
+        if ambiguous_machines and len(ambiguous_machines) > 1:
+            return {
+                'type': 'machine_ambiguous',
+                'message': self._generate_machine_choice_prompt(ambiguous_machines),
+                'options': ambiguous_machines
+            }
+        
         # Unknown intent
         if intent.intent == IntentType.UNKNOWN:
-            return "I'm not sure what you're asking. Could you rephrase that?"
+            return {
+                'type': 'intent_unknown',
+                'message': "I'm not sure what you're asking. Could you rephrase that?",
+                'options': None
+            }
         
         # Missing machine for STRICTLY machine-specific queries
         # Note: energy_query, power_query, anomaly_detection can work factory-wide
         if intent.intent in [IntentType.MACHINE_STATUS, IntentType.KPI]:
             if not intent.machine:
-                return "Which machine would you like to know about?"
+                return {
+                    'type': 'machine_missing',
+                    'message': "Which machine would you like to know about?",
+                    'options': None
+                }
         
         # Missing machines for comparison
         if intent.intent == IntentType.COMPARISON:
             if not intent.machines or len(intent.machines) < 2:
-                return "Which machines would you like to compare?"
+                return {
+                    'type': 'machines_missing',
+                    'message': "Which machines would you like to compare?",
+                    'options': None
+                }
         
         # Ambiguous time range
         if intent.time_range and hasattr(intent.time_range, 'relative'):
             if intent.time_range.relative == 'ambiguous':
-                return "What time period are you interested in?"
+                return {
+                    'type': 'time_ambiguous',
+                    'message': "What time period are you interested in?",
+                    'options': None
+                }
         
         return None
     
+    def _generate_machine_choice_prompt(self, machines: List[str]) -> str:
+        """Generate natural clarification prompt for machine selection"""
+        if len(machines) == 2:
+            return f"Did you mean {machines[0]} or {machines[1]}?"
+        elif len(machines) == 3:
+            return f"Did you mean {machines[0]}, {machines[1]}, or {machines[2]}?"
+        else:
+            # More than 3: use numbered list
+            numbered = "\n".join([f"{i+1}. {m}" for i, m in enumerate(machines)])
+            return f"Which machine did you mean?\n{numbered}"
+    
     def generate_clarification_response(self, intent: Intent, 
                                        session: ConversationSession,
-                                       validation_suggestions: Optional[List[str]] = None) -> str:
+                                       validation_suggestions: Optional[List[str]] = None,
+                                       ambiguous_machines: Optional[List[str]] = None) -> str:
         """
         Generate helpful clarification message
         
@@ -324,17 +363,19 @@ class ConversationContextManager:
             intent: Parsed intent (possibly incomplete)
             session: Current session (for context)
             validation_suggestions: Optional suggestions from validator
+            ambiguous_machines: List of machines that match ambiguous query
             
         Returns:
             Clarification message
         """
         # Check for standard clarifications
-        clarification = self.needs_clarification(intent)
+        clarification = self.needs_clarification(intent, ambiguous_machines)
         if clarification:
-            # Add suggestions if available
-            if validation_suggestions:
-                clarification += f" {validation_suggestions[0]}"
-            return clarification
+            message = clarification['message']
+            # Add suggestions if available and not already included
+            if validation_suggestions and clarification['type'] != 'machine_ambiguous':
+                message += f" {validation_suggestions[0]}"
+            return message
         
         # Validator provided suggestions
         if validation_suggestions:
@@ -342,6 +383,75 @@ class ConversationContextManager:
         
         # Generic fallback
         return "I didn't quite understand that. Could you try rephrasing?"
+    
+    def _parse_clarification_response(self, query: str, options: List[str]) -> Optional[str]:
+        """
+        Parse user's clarification response to machine name
+        
+        Handles:
+        - Direct machine name: "Compressor-1"
+        - Number choice: "1", "the first one", "number 2"
+        - Ordinal choice: "first", "second", "the third one"
+        - Reference: "the first", "second one"
+        
+        Args:
+            query: User's response
+            options: List of machine options presented
+            
+        Returns:
+            Resolved machine name or None
+        """
+        if not options:
+            return None
+        
+        query_lower = query.lower().strip()
+        
+        # Check for direct machine name match
+        from .validator import ENMSValidator
+        validator = ENMSValidator()
+        for valid_machine in validator.machine_whitelist:
+            if query_lower == valid_machine.lower():
+                # Verify it's in the options
+                if valid_machine in options:
+                    return valid_machine
+        
+        # Check for number/ordinal patterns
+        number_patterns = [
+            (r'^(\d+)$', 'direct'),  # "1", "2"
+            (r'(?:number|option)\s+(\d+)', 'number'),  # "number 1", "option 2"
+            (r'the\s+(\d+)(?:st|nd|rd|th)?(?:\s+one)?', 'the_num'),  # "the 1st", "the 2nd one"
+            (r'^(first|second|third|fourth|fifth)(?:\s+one)?', 'ordinal'),  # "first", "second one"
+            (r'the\s+(first|second|third|fourth|fifth)(?:\s+one)?', 'the_ordinal'),  # "the first one"
+        ]
+        
+        ordinal_to_num = {
+            'first': 1, 'second': 2, 'third': 3, 'fourth': 4, 'fifth': 5
+        }
+        
+        for pattern, pattern_type in number_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                captured = match.group(1)
+                
+                # Convert ordinal to number
+                if captured in ordinal_to_num:
+                    index = ordinal_to_num[captured] - 1
+                else:
+                    index = int(captured) - 1
+                
+                # Validate index
+                if 0 <= index < len(options):
+                    logger.info("clarification_response_parsed",
+                               query=query,
+                               pattern_type=pattern_type,
+                               index=index,
+                               resolved=options[index])
+                    return options[index]
+        
+        logger.warning("clarification_response_not_parsed",
+                      query=query,
+                      options=options)
+        return None
     
     def fuzzy_match_machines(self, query: str, 
                             available_machines: List[str],
