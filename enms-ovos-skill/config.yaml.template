@@ -1,0 +1,165 @@
+# ============================================================================
+# OVOS EnMS Skill Configuration
+# ============================================================================
+# This file enables the skill to work with ANY EnMS installation.
+# Customize these settings for your specific energy management system.
+#
+# WASABI Portability: This configuration makes the skill portable across
+# different EnMS installations without code changes.
+# ============================================================================
+
+# ==================== EnMS Adapter Configuration ====================
+
+# Adapter type - specifies which EnMS implementation to use
+# Options: 'humanergy' (default), 'generic', or custom adapter name
+adapter_type: humanergy
+
+# API connection settings
+api_base_url: http://10.33.10.109:8001/api/v1
+api_timeout: 90.0  # seconds
+max_retries: 3
+
+# ==================== Entity Discovery ====================
+
+# Dynamic machine discovery from EnMS API
+auto_discover_machines: true
+auto_discover_seus: true
+refresh_interval_hours: 1  # How often to refresh machine/SEU lists
+
+# Fallback machines (used if API discovery fails)
+# Customize this list for your facility
+fallback_machines:
+  - Compressor-1
+  - Boiler-1
+  - HVAC-Main
+  - Conveyor-A
+  - Injection-Molding-1
+  - Pump-1
+
+# ==================== Factory Metadata ====================
+
+# Factory identification (used in voice responses)
+factory_name: Humanergy Factory
+factory_id: humanergy_001
+timezone: Europe/Berlin
+
+# ==================== Terminology Customization ====================
+# Adapt to your industry's language (manufacturing, HVAC, data centers, etc.)
+
+terminology:
+  # Energy units
+  energy_unit: kWh  # Options: kWh, MWh, GJ, BTU
+  power_unit: kW    # Options: kW, MW, HP
+  
+  # Equipment terminology
+  machine_term: machine       # Or: equipment, asset, unit, device
+  seu_term: significant energy use  # Or: energy consumer, major load
+  
+  # Cost units (optional)
+  cost_currency: EUR  # Options: EUR, USD, GBP, etc.
+  cost_per_kwh: 0.15  # Your electricity rate
+
+# ==================== Voice Response Settings ====================
+
+voice:
+  # Include factory name in responses?
+  # true: "Humanergy Factory consumed 450 kWh today"
+  # false: "The factory consumed 450 kWh today"
+  use_factory_name: true
+  
+  # Response detail level
+  # low: Minimal info (just numbers)
+  # medium: Standard info (numbers + context)
+  # high: Detailed info (numbers + context + recommendations)
+  verbosity: medium
+  
+  # Number rounding
+  # true: 97.743 kWh → 97.7 kWh
+  # false: Keep full precision
+  round_numbers: true
+  
+  # Decimal places for rounding (if round_numbers: true)
+  decimal_places: 1
+
+# ==================== Default Values ====================
+# Used when user doesn't specify time range or scope
+
+defaults:
+  # Default time range when not specified
+  # Options: today, yesterday, last_hour, last_24_hours, this_week
+  time_range: today
+  
+  # Default scope when no machine specified
+  # Options: factory_wide, prompt (ask user which machine)
+  scope: factory_wide
+  
+  # Default aggregation interval for time-series
+  # Options: 1min, 15min, 1hour, 1day
+  interval: 1hour
+
+# ==================== Features ====================
+# Enable/disable specific skill capabilities
+
+features:
+  # Machine status queries ("What's the status of Compressor-1?")
+  machine_status: true
+  
+  # Energy consumption queries ("How much energy did Boiler-1 use?")
+  energy_queries: true
+  
+  # Machine comparisons ("Compare Compressor-1 and Compressor-2")
+  comparisons: true
+  
+  # Baseline predictions ("What's the expected energy for Compressor-1?")
+  baseline_predictions: true
+  
+  # Anomaly detection ("Are there any anomalies?")
+  anomaly_detection: true
+  
+  # Report generation ("Generate monthly energy report")
+  report_generation: true
+  
+  # ISO 50001 compliance features
+  iso50001_compliance: true
+  
+  # Performance opportunities ("What are the energy saving opportunities?")
+  performance_opportunities: true
+
+# ==================== Logging ====================
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: INFO
+  
+  # Log format: json (structured) or text (human-readable)
+  format: json
+  
+  # Log file path (optional, defaults to console only)
+  # file_path: /var/log/ovos/enms_skill.log
+
+# ==================== Advanced Settings ====================
+
+advanced:
+  # Cache time-to-live in seconds
+  cache_ttl: 300  # 5 minutes
+  
+  # Fuzzy matching threshold for machine names (0-100)
+  # 80 = require 80% similarity to match
+  fuzzy_match_threshold: 80
+  
+  # Enable zero-trust validation (reject unrecognized entities)
+  zero_trust_validation: true
+  
+  # Maximum machines to compare in a single query
+  max_comparison_machines: 5
+  
+  # Historical data retention (for time-series queries)
+  # How far back can users query? (in days)
+  max_historical_days: 365
+
+# ==================== Custom Adapter Settings ====================
+# Add your own settings here if using a custom adapter
+
+# custom_adapter:
+#   api_key: your-api-key-here
+#   vendor_specific_setting: value
