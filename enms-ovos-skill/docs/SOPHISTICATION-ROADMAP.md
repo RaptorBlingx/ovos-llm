@@ -16,10 +16,10 @@
 5. ✅ **Phase 1 Vocabulary (Partial)** - 5 files enhanced (+45 synonyms), 2 new files created
 6. ✅ **Priority 1: Time Range Parsing** - "yesterday", "today", "last week" all working with smart defaults
 7. ✅ **Priority 2: Machine Name Normalization** - Voice variations working ("compressor one" → Compressor-1)
+8. ✅ **Priority 3: Implicit Factory-Wide Queries** - "energy consumption" → Factory-wide totals (19456.8 kWh)
 
 ### In Progress (⏳):
 - ⏳ **Phase 1 Vocabulary (Complete)** - 12 more .voc files to enhance
-- ⏳ **Priority 3: Implicit Factory-Wide Queries** - "what's the current draw?" without machine
 
 ### Pending (⏸️):
 - ⏸️ **Priority 3:** Implicit factory-wide queries
@@ -660,12 +660,12 @@ exceeds
 
 ---
 
-### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ⚠️ IN PROGRESS (40% Complete)
+### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ⚠️ IN PROGRESS (60% Complete)
 **Goal:** Extract complex parameters from natural language + implicit queries + defaults
 **Status:**
 - ✅ Phase 2.2 Time Parsing: COMPLETE (Priority 1)
 - ✅ Phase 2.5 Name Normalization: COMPLETE (Priority 2)
-- ⏳ Phase 2.4 Factory-Wide Scope: IN PROGRESS (Priority 3)
+- ✅ Phase 2.4 Factory-Wide Scope: COMPLETE (Priority 3)
 - ⏳ Phase 2.1 Multi-Machine: PENDING
 - ⏳ Phase 2.3 Metric Intelligence: PENDING
 
