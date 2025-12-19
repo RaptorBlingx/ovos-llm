@@ -131,7 +131,7 @@ class EnmsSkill(OVOSSkill):
             self.config = {
                 "adapter_type": "humanergy",
                 "api_base_url": os.getenv("ENMS_API_URL", 
-                                          self.settings.get("enms_api_base_url", "http://172.18.0.1:8001/api/v1")),
+                                          self.settings.get("enms_api_base_url", "http://10.33.10.104:8001/api/v1")),
                 "timeout": self.settings.get("api_timeout_seconds", 90),
                 "max_retries": self.settings.get("api_max_retries", 3),
                 "factory_name": "Factory",
@@ -143,7 +143,7 @@ class EnmsSkill(OVOSSkill):
             }
         
         # Extract commonly used settings
-        self.enms_api_base_url = self.config.get("api_base_url", "http://172.18.0.1:8001/api/v1")
+        self.enms_api_base_url = self.config.get("api_base_url", "http://10.33.10.104:8001/api/v1")
         self.llm_model_path = self.settings.get("llm_model_path", "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf")
         self.confidence_threshold = self.settings.get("confidence_threshold", 0.85)
         self.enable_progress_feedback = self.settings.get("enable_progress_feedback", True)

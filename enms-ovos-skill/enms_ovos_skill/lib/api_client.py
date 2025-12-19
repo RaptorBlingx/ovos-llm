@@ -41,7 +41,7 @@ class ENMSClient:
     
     def __init__(
         self,
-        base_url: str = "http://10.33.10.109:8001/api/v1",
+        base_url: str = "http://10.33.10.104:8001/api/v1",
         timeout: float = 90.0,
         max_retries: int = 3
     ):
