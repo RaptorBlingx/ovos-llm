@@ -510,6 +510,47 @@ class EnmsSkill(OVOSSkill):
         
         return normalized if normalized else raw_machine
     
+    def _apply_implicit_scope(self, intent: Intent) -> Intent:
+        """
+        Apply factory-wide scope when no machine specified (Priority 3)
+        
+        Handles implicit queries like:
+        - "what's the current draw?" → Factory total power
+        - "energy consumption" → Factory total energy today
+        - "how much power are we using?" → All machines combined
+        
+        Rules:
+        - Energy/Power query without machine → Set factory_wide flag
+        - Status query without machine → Switch to FACTORY_OVERVIEW intent
+        
+        Args:
+            intent: Parsed intent object
+            
+        Returns:
+            Modified intent with factory_wide scope applied
+        """
+        # Power/Energy query without machine → factory total
+        if intent.intent in [IntentType.ENERGY_QUERY, IntentType.POWER_QUERY]:
+            if not intent.machine and not intent.seu:
+                # Set factory-wide flag
+                if not hasattr(intent, 'params') or intent.params is None:
+                    intent.params = {}
+                intent.params['factory_wide'] = True
+                
+                self.logger.info("implicit_factory_wide_query",
+                               intent=intent.intent.value,
+                               reason="no_machine_specified")
+        
+        # Status query without machine → factory overview
+        elif intent.intent == IntentType.MACHINE_STATUS:
+            if not intent.machine:
+                intent.intent = IntentType.FACTORY_OVERVIEW
+                self.logger.info("implicit_factory_overview",
+                               original_intent="machine_status",
+                               reason="no_machine_specified")
+        
+        return intent
+    
     def _process_query(self, utterance: str, session_id: str, expected_intent: Optional[str] = None) -> Dict[str, Any]:
         """
         CORE QUERY PROCESSING PIPELINE
@@ -929,10 +970,34 @@ class EnmsSkill(OVOSSkill):
                     data = self._run_async(self.api_client.get_machine_status(intent.machine))
                     return {'success': True, 'data': data}
                 else:
-                    # Factory-wide power query (no machine specified)
+                    # Factory-wide power query (no machine specified) - Priority 3
                     self.logger.info("power_query_factory_wide", intent="power_query", machine=None)
-                    data = self._run_async(self.api_client.system_stats())
-                    return {'success': True, 'data': data}
+                    
+                    # Call /factory/summary endpoint for aggregated data
+                    try:
+                        summary_data = self._run_async(self.api_client.get('/factory/summary'))
+                        
+                        if summary_data and 'energy' in summary_data:
+                            # Extract power data from factory summary
+                            power_data = {
+                                'current_power_kw': summary_data['energy'].get('current_power_kw', 0),
+                                'avg_power_kw': summary_data['energy'].get('avg_power_kw', 0),
+                                'total_kwh_today': summary_data['energy'].get('total_kwh_today', 0),
+                                'machines_active': summary_data.get('machines', {}).get('active', 0),
+                                'machines_total': summary_data.get('machines', {}).get('total', 0),
+                                'factory_wide': True,
+                                'timestamp': summary_data.get('timestamp')
+                            }
+                            return {'success': True, 'data': power_data, 'template': 'factory_power'}
+                        else:
+                            # Fallback to system_stats if factory/summary unavailable
+                            data = self._run_async(self.api_client.system_stats())
+                            return {'success': True, 'data': data}
+                    except Exception as e:
+                        self.logger.error("factory_summary_failed", error=str(e))
+                        # Fallback to system_stats
+                        data = self._run_async(self.api_client.system_stats())
+                        return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.ENERGY_QUERY:
                 if intent.machine:
@@ -1159,10 +1224,35 @@ class EnmsSkill(OVOSSkill):
                     
                     return {'success': True, 'data': data}
                 else:
-                    # Factory-wide energy query (no machine specified)
+                    # Factory-wide energy query (no machine specified) - Priority 3
                     self.logger.info("energy_query_factory_wide", intent="energy_query", machine=None)
-                    data = self._run_async(self.api_client.system_stats())
-                    return {'success': True, 'data': data}
+                    
+                    # Call /factory/summary endpoint for aggregated data
+                    try:
+                        summary_data = self._run_async(self.api_client.get('/factory/summary'))
+                        
+                        if summary_data and 'energy' in summary_data:
+                            # Extract energy data from factory summary
+                            energy_data = {
+                                'total_kwh_today': summary_data['energy'].get('total_kwh_today', 0),
+                                'current_power_kw': summary_data['energy'].get('current_power_kw', 0),
+                                'avg_power_kw': summary_data['energy'].get('avg_power_kw', 0),
+                                'total_cost_usd': summary_data.get('costs', {}).get('total_usd_today', 0),
+                                'machines_active': summary_data.get('machines', {}).get('active', 0),
+                                'machines_total': summary_data.get('machines', {}).get('total', 0),
+                                'factory_wide': True,
+                                'timestamp': summary_data.get('timestamp')
+                            }
+                            return {'success': True, 'data': energy_data, 'template': 'factory_energy'}
+                        else:
+                            # Fallback to system_stats if factory/summary unavailable
+                            data = self._run_async(self.api_client.system_stats())
+                            return {'success': True, 'data': data}
+                    except Exception as e:
+                        self.logger.error("factory_summary_failed", error=str(e))
+                        # Fallback to system_stats
+                        data = self._run_async(self.api_client.system_stats())
+                        return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.SEUS:
                 # Significant Energy Uses (SEUs) queries
@@ -2135,13 +2225,21 @@ class EnmsSkill(OVOSSkill):
         else:
             return "I retrieved the data successfully"
     
-    @intent_handler(IntentBuilder('EnergyQuery').require('energy_metric').require('machine').build())
+    # ========== EXISTING MACHINE-SPECIFIC HANDLERS (UPDATED FOR PRIORITY 3) ==========
+    
+    @intent_handler(IntentBuilder('EnergyQuery').require('energy_metric').optionally('machine').build())
     def handle_energy_query(self, message: Message):
-        """Handle energy consumption queries - OVOS interface layer"""
+        """
+        Handle energy consumption queries - OVOS interface layer
+        
+        Priority 3: Now handles both machine-specific AND factory-wide queries:
+        - "Compressor-1 energy today" → Machine-specific
+        - "energy consumption" → Factory-wide
+        - "how much energy are we using?" → Factory-wide
+        """
         try:
             machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -2154,15 +2252,24 @@ class EnmsSkill(OVOSSkill):
                 machine=machine,
                 time_range=time_range,
                 confidence=0.95,
-                utterance=utterance
+                utterance=utterance,
+                params={'factory_wide': True} if not machine else None
             )
             
-            # Call existing service layer
+            # Log query type
+            if not machine:
+                self.logger.info("factory_wide_energy_query", utterance=utterance)
+            else:
+                self.logger.info("machine_specific_energy_query", machine=machine, utterance=utterance)
+            
+            # Call existing service layer (handles both machine and factory-wide)
             result = self._call_enms_api(intent)
             
             # Speak result
             if result['success']:
-                response = self.response_formatter.format_response('energy_query', result['data'])
+                # Use appropriate template
+                template = result.get('template', 'factory_energy' if not machine else 'energy_query')
+                response = self.response_formatter.format_response(template, result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2568,13 +2675,19 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Production handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('PowerQuery').require('power_metric').require('machine').build())
+    @intent_handler(IntentBuilder('PowerQuery').require('power_metric').optionally('machine').build())
     def handle_power_query(self, message: Message):
-        """Handle power consumption queries - OVOS interface layer"""
+        """
+        Handle power consumption queries - OVOS interface layer
+        
+        Priority 3: Now handles both machine-specific AND factory-wide queries:
+        - "Compressor-1 power" → Machine-specific
+        - "what's the current draw?" → Factory-wide
+        - "how much power are we using?" → Factory-wide
+        """
         try:
             machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             utterance = message.data.get("utterances", [""])[0]
             
             # Extract time range from utterance
@@ -2585,13 +2698,22 @@ class EnmsSkill(OVOSSkill):
                 machine=machine,
                 time_range=time_range,
                 confidence=0.95,
-                utterance=utterance
+                utterance=utterance,
+                params={'factory_wide': True} if not machine else None
             )
+            
+            # Log query type
+            if not machine:
+                self.logger.info("factory_wide_power_query", utterance=utterance)
+            else:
+                self.logger.info("machine_specific_power_query", machine=machine, utterance=utterance)
             
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format_response('power_query', result['data'])
+                # Use appropriate template
+                template = result.get('template', 'factory_power' if not machine else 'power_query')
+                response = self.response_formatter.format_response(template, result['data'])
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")

@@ -1,0 +1,4 @@
+The factory consumed {{total_kwh_today|round(1)}} kilowatt-hours today, costing ${{total_cost_usd|round(2)}}. {{machines_active}} of {{machines_total}} machines are currently active.
+Factory-wide energy consumption today is {{total_kwh_today|round(1)}} kilowatt-hours. Total cost: ${{total_cost_usd|round(2)}}.
+Today's total energy usage across all machines is {{total_kwh_today|round(1)}} kilowatt-hours, costing approximately ${{total_cost_usd|round(2)}}.
+The entire facility has consumed {{total_kwh_today|round(1)}} kilowatt-hours today with {{machines_active}} machines running.
