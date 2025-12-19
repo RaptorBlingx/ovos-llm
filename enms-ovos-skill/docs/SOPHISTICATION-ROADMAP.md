@@ -15,10 +15,11 @@
 4. ✅ **Comparison & KPI API** - Multi-machine extraction, factory-wide KPI support
 5. ✅ **Phase 1 Vocabulary (Partial)** - 5 files enhanced (+45 synonyms), 2 new files created
 6. ✅ **Priority 1: Time Range Parsing** - "yesterday", "today", "last week" all working with smart defaults
+7. ✅ **Priority 2: Machine Name Normalization** - Voice variations working ("compressor one" → Compressor-1)
 
 ### In Progress (⏳):
-- ⏳ **Priority 2: Machine Name Normalization** - Voice variation handling (compressor one → Compressor-1)
 - ⏳ **Phase 1 Vocabulary (Complete)** - 12 more .voc files to enhance
+- ⏳ **Priority 3: Implicit Factory-Wide Queries** - "what's the current draw?" without machine
 
 ### Pending (⏸️):
 - ⏸️ **Priority 3:** Implicit factory-wide queries
@@ -219,10 +220,30 @@ def normalize_machine_name(self, raw_name: str, machine_list: List[str]) -> Opti
 | "HVAC main" | hvac main | hvac-main | HVAC-Main ✅ |
 | "boiler number two" | boiler number 2 | boiler-2 | Boiler-2 ✅ |
 
+**Implementation Status:** ✅ COMPLETE (Dec 19, 2025)
+
+**Test Results:**
+```bash
+# Test 1: "status of compressor one"
+Result: ✅ Compressor-1 is currently running, using 47.3 kW...
+
+# Test 2: "hvac main status"
+Result: ✅ HVAC-Main is currently running, using 8.5 kW...
+
+# Test 3: "boiler one status"
+Result: ✅ Boiler-1 is currently running, using 28.0 kW...
+
+# Test 4: "COMPRESSOR-1 status" (uppercase)
+Result: ✅ Compressor-1 data returned
+```
+
 **Implementation Notes:**
-- Use `thefuzz` library for fuzzy matching if needed
-- Confidence threshold: 80% similarity
-- Log normalization mismatches for improvement
+- ✅ Used `thefuzz==0.22.1` library for fuzzy matching
+- ✅ Confidence threshold: 80% similarity
+- ✅ Enhanced validator.py with normalize_machine_name() method
+- ✅ Added voice variations to machine.voc for Adapt matching
+- ✅ Fixed duplicate method definition bug (line 491)
+- ✅ All 18 intent handlers updated to normalize machine names
 
 ---
 
@@ -639,12 +660,12 @@ exceeds
 
 ---
 
-### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ⚠️ IN PROGRESS (25% Complete)
+### **Phase 2: Entity Extraction Enhancement** (6-8 hours) ⚠️ IN PROGRESS (40% Complete)
 **Goal:** Extract complex parameters from natural language + implicit queries + defaults
 **Status:**
 - ✅ Phase 2.2 Time Parsing: COMPLETE (Priority 1)
-- ⏳ Phase 2.5 Name Normalization: NEXT (Priority 2)
-- ⏳ Phase 2.4 Factory-Wide Scope: PENDING (Priority 3)
+- ✅ Phase 2.5 Name Normalization: COMPLETE (Priority 2)
+- ⏳ Phase 2.4 Factory-Wide Scope: IN PROGRESS (Priority 3)
 - ⏳ Phase 2.1 Multi-Machine: PENDING
 - ⏳ Phase 2.3 Metric Intelligence: PENDING
 
