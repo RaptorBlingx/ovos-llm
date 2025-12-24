@@ -12,11 +12,12 @@ No SEUs have baseline models yet.
 {%- endif -%}
 {%- elif total_count is defined -%}
 I found {{ total_count }} significant energy use{% if total_count != 1 %}s{% endif %}{% if filtered_by %} for {{ filtered_by | replace('_', ' ') }}{% endif %}.
-{% if seus and seus|length > 0 %} 
-{%- set seus_with_baseline = seus | selectattr('has_baseline', 'equalto', true) | list %}
-{%- set seus_without_baseline = seus | rejectattr('has_baseline', 'equalto', true) | list %}
+{% if seus and seus|length > 0 -%}
+The SEUs are: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
+{% set seus_with_baseline = seus | selectattr('has_baseline', 'equalto', true) | list -%}
+{% set seus_without_baseline = seus | rejectattr('has_baseline', 'equalto', true) | list -%}
 {{ seus_with_baseline|length }} {% if seus_with_baseline|length == 1 %}has{% else %}have{% endif %} baseline models trained{% if seus_without_baseline|length > 0 %}, and {{ seus_without_baseline|length }} need{% if seus_without_baseline|length == 1 %}s{% endif %} baselines{% endif %}.
-{%- endif %}
+{% endif %}
 {%- else -%}
 No significant energy uses found.
 {%- endif %}

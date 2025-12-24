@@ -25,7 +25,7 @@ import time
 import re
 import threading
 import concurrent.futures
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import structlog
 from ovos_workshop.decorators import intent_handler
 from ovos_workshop.intents import IntentBuilder
@@ -197,7 +197,9 @@ class EnmsSkill(OVOSSkill):
         
         # Initialize Tier 7: Conversation Context
         logger.info("initializing_conversation_context")
-        self.context_manager = ConversationContextManager()
+        # DISABLED: Context manager causes false positives
+        # self.context_manager = ConversationContextManager()
+        self.context_manager = None
         
         # Initialize Tier 8: Voice Feedback
         logger.info("initializing_voice_feedback")
@@ -636,7 +638,7 @@ class EnmsSkill(OVOSSkill):
         try:
             # Step 1: Get conversation session
             self.logger.info("⚙️ step1_get_session", elapsed_ms=int((time.time()-start_time)*1000))
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             self.logger.info("⚙️ step1_session_created", elapsed_ms=int((time.time()-start_time)*1000))
             
             # Step 2: Voice acknowledgment (varies by expected intent)
@@ -1910,7 +1912,7 @@ class EnmsSkill(OVOSSkill):
                 
                 # If no machine specified, try conversation context
                 if not machine and not machines and self.context_manager:
-                    session = self.context_manager.get_or_create_session("default_user")
+                    # DISABLED: session = self.context_manager.get_or_create_session("default_user")
                     machine = session.get_last_machine()
                     if machine:
                         self.logger.info("baseline_using_context", machine=machine)
@@ -1981,7 +1983,7 @@ class EnmsSkill(OVOSSkill):
                 
                 # Update conversation context with this machine
                 if self.context_manager:
-                    session = self.context_manager.get_or_create_session("default_user")
+                    # DISABLED: session = self.context_manager.get_or_create_session("default_user")
                     session.update_machine(machine)
                 
                 return {'success': True, 'data': prediction}
@@ -2151,7 +2153,9 @@ class EnmsSkill(OVOSSkill):
                 # Try to find additional machines in utterance
                 all_machine_names = self.validator.machine_whitelist
                 for machine in all_machine_names:
-                    if machine.lower() in intent.utterance.lower() and machine.lower() != intent.machine:
+                    machine_lower = machine.lower()
+                    intent_machine_lower = intent.machine.lower() if intent.machine else ""
+                    if machine_lower in intent.utterance.lower() and machine_lower != intent_machine_lower:
                         machines.append(machine)
                 
                 # If only one machine found, get top consumers for comparison
@@ -2187,6 +2191,11 @@ class EnmsSkill(OVOSSkill):
                     # Factory-wide KPIs - use summary endpoint
                     data = self._run_async(self.api_client.get_factory_summary())
                     return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.HEALTH:
+                # System health check - call /health endpoint
+                data = self._run_async(self.api_client.health_check())
+                return {'success': True, 'data': data}
             
             else:
                 self.logger.warning("unsupported_intent_api_call", intent=intent.intent)
@@ -2321,7 +2330,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2383,6 +2392,62 @@ class EnmsSkill(OVOSSkill):
             import traceback
             self.logger.error("factory_energy_traceback", traceback=traceback.format_exc())
             self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('SystemHealth').require('health_check').build())
+    def handle_system_health(self, message: Message):
+        """Handle system health queries - API/database/system status checks"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            
+            self.logger.info("health_check_intent_triggered", 
+                           utterance=utterance, 
+                           session_id=session_id)
+            
+            # Build intent object for health check
+            intent = Intent(
+                intent=IntentType.HEALTH,
+                confidence=0.95,
+                utterance=utterance
+            )
+            
+            # Call health check API
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                data = result.get('data', {})
+                
+                if isinstance(data, dict):
+                    status = data.get('status', 'unknown')
+                    api_status = data.get('api', {}).get('status', 'unknown') if isinstance(data.get('api'), dict) else 'unknown'
+                    db_status = data.get('database', {}).get('status', 'unknown') if isinstance(data.get('database'), dict) else 'unknown'
+                    
+                    if status == 'healthy' or api_status == 'healthy':
+                        response = "The energy management system is healthy and operational."
+                    else:
+                        response = f"System status is {status}. API: {api_status}, Database: {db_status}"
+                else:
+                    response = "The system is responding. Status check complete."
+                
+                self.speak(response)
+                
+                # Update context - use add_turn which is the proper method
+                # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+                session.add_turn(
+                    query=utterance,
+                    intent=intent,
+                    response=response,
+                    api_data=data
+                )
+            else:
+                error = result.get('error', 'Unknown error')
+                self.logger.error("health_check_failed", error=error)
+                self.speak(f"I couldn't check the system status. Error: {error}")
+        except Exception as e:
+            self.log.error(f"System health handler failed: {e}")
+            import traceback
+            self.logger.error("health_check_traceback", traceback=traceback.format_exc())
+            self.speak("I encountered an error checking the system health.")
     
     @intent_handler(IntentBuilder('MachineStatus').require('status_check').require('machine').build())
     def handle_machine_status(self, message: Message):
@@ -2450,7 +2515,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2526,7 +2591,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine
             machine_raw = message.data.get('machine')
@@ -2557,12 +2622,18 @@ class EnmsSkill(OVOSSkill):
     @intent_handler(IntentBuilder('CostAnalysis').require('cost_metric').optionally('machine').build())
     def handle_cost_analysis(self, message: Message):
         """Handle cost analysis queries - OVOS interface layer (Phase 3.1: with context)"""
+        self.logger.info("COST_HANDLER_ENTRY")
+        print("=" * 80)
+        print("COST HANDLER CALLED!")
+        print("=" * 80)
         try:
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
+            self.logger.info("cost_handler_start", utterance=utterance, session_id=session_id)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            self.logger.info("cost_session_retrieved", session_id=session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2587,16 +2658,21 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
+                self.logger.info("cost_api_success", data_keys=list(result['data'].keys()))
                 response = self.response_formatter.format_response('cost_analysis', result['data'])
+                self.logger.info("cost_response_generated", response=response[:100])
                 self.speak(response)
                 
                 # Update context for next query
                 session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine, metric="cost")
             else:
+                self.logger.error("cost_api_failed", error=result.get('error'))
                 self.speak_dialog("error.general")
         except Exception as e:
-            self.log.error(f"Cost analysis handler failed: {e}")
+            self.logger.error("cost_handler_exception", error=str(e), error_type=type(e).__name__)
+            import traceback
+            self.logger.error("cost_handler_traceback", trace=traceback.format_exc())
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('Forecast').require('forecast').optionally('machine').build())
@@ -2607,7 +2683,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2652,7 +2728,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2697,7 +2773,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2738,7 +2814,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2802,7 +2878,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2843,7 +2919,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2884,7 +2960,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -2934,7 +3010,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id)
+            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
@@ -3080,7 +3156,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             has_context = False
             if self.context_manager:
-                session = self.context_manager.get_or_create_session(session_id)
+                # DISABLED: session = self.context_manager.get_or_create_session(session_id)
                 has_context = len(session.history) > 0
             
             # Only handle if it's clearly a follow-up AND we have context

@@ -28,6 +28,7 @@ class IntentType(str, Enum):
     PRODUCTION = "production"
     REPORT = "report"  # PDF report generation
     HELP = "help"
+    HEALTH = "health"  # System health check
     UNKNOWN = "unknown"
 
 
