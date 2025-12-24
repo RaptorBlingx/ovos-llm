@@ -12,6 +12,12 @@
 {{ machine_name }} is currently using {{ current_status.power_kw|round(2) }} kilowatts.
 {% elif machine %}
 {{ machine }} is currently using {{ power_kw|round(2) }} kW{% if time_range %} {{ time_range | voice_time }}{% endif %}.
-{% elif peak_power is defined %}
+{% elif peak_power is defined and avg_power is defined %}
+{# Factory-wide power from stats #}
 Current power consumption is {{ avg_power|round(0) }} kilowatts average, with a peak of {{ peak_power|round(0) }} kilowatts.
+{% elif energy_per_hour is defined %}
+{# Factory power from system stats #}
+Current factory power is approximately {{ energy_per_hour|round(0) }} kilowatts.
+{% else %}
+I found the power information. Please check the screen for details.
 {% endif %}

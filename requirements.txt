@@ -17,8 +17,8 @@ ovos_padatious>=1.4.2
 # ===== OVOS TTS Plugin =====
 ovos-tts-plugin-server>=0.0.3
 # Edge TTS for production (good quality, no API key)
-# Uncomment if using edge-tts instead of ovos TTS server
-# edge-tts>=6.1.0
+edge-tts>=6.1.0
+ovos-tts-plugin-edge-tts>=0.0.1
 
 # ===== OVOS Audio (optional - disable for headless) =====
 # ovos-audio>=0.0.2

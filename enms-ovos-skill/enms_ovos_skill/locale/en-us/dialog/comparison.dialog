@@ -1,8 +1,10 @@
 {% if machines and machines|length >= 2 %}
-Comparing {{ machine_names[0] }} and {{ machine_names[1] }} for {{ time_period }}: {{ machine_names[0] }} consumed {{ machines[0].total_energy|round(1) }} kilowatt-hours, while {{ machine_names[1] }} consumed {{ machines[1].total_energy|round(1) }} kilowatt-hours.
-{% else %}
-Machine comparison:
+Comparing {{ machines[0].machine_name }} and {{ machines[1].machine_name }}: {{ machines[0].machine_name }} consumed {{ machines[0].today_stats.energy_kwh|round(1) }} kilowatt-hours today, while {{ machines[1].machine_name }} consumed {{ machines[1].today_stats.energy_kwh|round(1) }} kilowatt-hours.
+{% elif machines and machines|length > 0 %}
+Machine comparison for today:
 {% for m in machines %}
-{{ loop.index }}. {{ m.machine_name }}: {{ m.total_energy|round(2) }} kWh
+{{ loop.index }}. {{ m.machine_name }}: {{ m.today_stats.energy_kwh|round(1) }} kWh, costing ${{ m.today_stats.cost_usd|round(2) }}
 {% endfor %}
+{% else %}
+No machines found for comparison.
 {% endif %}
