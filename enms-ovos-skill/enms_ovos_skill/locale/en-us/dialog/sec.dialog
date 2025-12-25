@@ -1,0 +1,5 @@
+{% if sec_value is defined and machine_name is defined %}
+{{ machine_name }} has a specific energy consumption of {{ sec_value|round(3) }} kilowatt hours per unit.
+{% elif factory_sec is defined %}
+Factory-wide specific energy consumption is {{ factory_sec|round(3) }} kilowatt hours per unit.
+{% endif %}

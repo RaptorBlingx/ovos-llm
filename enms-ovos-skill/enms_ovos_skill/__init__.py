@@ -562,6 +562,11 @@ class EnmsSkill(OVOSSkill):
         if not raw_machine or not self.validator:
             return raw_machine
         
+        # Filter out generic plural words that are not machine names
+        generic_words = ['machines', 'machine', 'all', 'every', 'any']
+        if raw_machine.lower() in generic_words:
+            return None
+        
         # Use validator's normalization logic
         normalized = self.validator.normalize_machine_name(raw_machine)
         
@@ -725,16 +730,18 @@ class EnmsSkill(OVOSSkill):
             
             intent = validation.intent
             
-            # Step 5: Resolve context references (multi-turn support)
-            intent = self.context_manager.resolve_context_references(utterance, intent, session)
+            # Step 5: Resolve context references (multi-turn support) - DISABLED
+            if self.context_manager:
+                intent = self.context_manager.resolve_context_references(utterance, intent, session)
             
             # Clear pending clarification if it was resolved early
-            if session.pending_clarification and intent.machine:
+            if self.context_manager and session.pending_clarification and intent.machine:
                 self.logger.info("cleared_pending_clarification", machine=intent.machine)
                 session.pending_clarification = None
             
-            # Step 5.5: Apply smart defaults (Phase 3.3)
-            intent = self.context_manager.apply_smart_defaults(intent, session)
+            # Step 5.5: Apply smart defaults (Phase 3.3) - DISABLED
+            if self.context_manager:
+                intent = self.context_manager.apply_smart_defaults(intent, session)
             
             # Step 6: Check for ambiguous machines (Phase 3.2)
             ambiguous_machines = None
@@ -749,32 +756,33 @@ class EnmsSkill(OVOSSkill):
                                    matches=all_matches,
                                    count=len(all_matches))
             
-            # Step 7: Check if clarification needed
-            clarification = self.context_manager.needs_clarification(intent, ambiguous_machines)
-            if clarification:
-                # Store pending clarification in session
-                session.pending_clarification = {
-                    'intent': intent.intent,
-                    'metric': intent.metric,
-                    'time_range': intent.time_range,
-                    'options': clarification.get('options'),  # Machine options for ambiguous queries
-                    'timestamp': time.time()
-                }
-                clarification_response = self.context_manager.generate_clarification_response(
-                    intent, session, validation.suggestions, ambiguous_machines
-                )
-                
-                total_latency_ms = (time.time() - start_time) * 1000
-                query_latency.labels(intent_type=str(intent.intent.value), tier=str(tier)).observe(total_latency_ms / 1000)
-                
-                return {
-                    'success': False,
-                    'response': clarification_response,
-                    'latency_ms': round(total_latency_ms, 2),
-                    'tier': tier,
-                    'intent': intent.intent,
-                    'clarification_needed': clarification
-                }
+            # Step 7: Check if clarification needed - DISABLED
+            if self.context_manager:
+                clarification = self.context_manager.needs_clarification(intent, ambiguous_machines)
+                if clarification:
+                    # Store pending clarification in session
+                    session.pending_clarification = {
+                        'intent': intent.intent,
+                        'metric': intent.metric,
+                        'time_range': intent.time_range,
+                        'options': clarification.get('options'),  # Machine options for ambiguous queries
+                        'timestamp': time.time()
+                    }
+                    clarification_response = self.context_manager.generate_clarification_response(
+                        intent, session, validation.suggestions, ambiguous_machines
+                    )
+                    
+                    total_latency_ms = (time.time() - start_time) * 1000
+                    query_latency.labels(intent_type=str(intent.intent.value), tier=str(tier)).observe(total_latency_ms / 1000)
+                    
+                    return {
+                        'success': False,
+                        'response': clarification_response,
+                        'latency_ms': round(total_latency_ms, 2),
+                        'tier': tier,
+                        'intent': intent.intent,
+                        'clarification_needed': clarification
+                    }
             
             # Step 8: Call EnMS API
             self.logger.info("⚙️ step8_calling_api", intent=intent.intent.value, elapsed_ms=int((time.time()-start_time)*1000))
@@ -807,12 +815,12 @@ class EnmsSkill(OVOSSkill):
             format_latency_ms = (time.time() - format_start) * 1000
             
             # Step 10: Update conversation context
-            session.add_turn(
-                query=utterance,
-                intent=intent,
-                response=response_text,
-                api_data=api_data['data']
-            )
+            # DISABLED: session.add_turn(
+            #     query=utterance,
+            #     intent=intent,
+            #     response=response_text,
+            #     api_data=api_data['data']
+            # )
             
             # Step 11: Track metrics
             total_latency_ms = (time.time() - start_time) * 1000
@@ -955,7 +963,48 @@ class EnmsSkill(OVOSSkill):
                         data = self._run_async(self.api_client.get_machine_status(intent.machine))
                         return {'success': True, 'data': data}
                 else:
-                    return {'success': False, 'error': 'No machine specified for status query'}
+                    # No specific machine - check if query is about active/running machines count
+                    utterance_lower = intent.utterance.lower() if intent.utterance else ''
+                    
+                    # Check if query is about listing machines by status
+                    if 'how many' in utterance_lower or 'count' in utterance_lower:
+                        # Count query - use factory summary for real-time power-based counts
+                        # (not database is_active flag which may be stale)
+                        factory_data = self._run_async(self.api_client.factory_summary())
+                        machines_data = factory_data.get('machines', {})
+                        return {
+                            'success': True,
+                            'data': {
+                                'total_machines': machines_data.get('total', 0),
+                                'active_count': machines_data.get('active', 0),
+                                'offline_count': machines_data.get('idle', 0) + machines_data.get('stopped', 0)
+                            },
+                            'template': 'machine_count'
+                        }
+                    elif 'running' in utterance_lower or 'active' in utterance_lower or 'offline' in utterance_lower:
+                        # List machines by status
+                        all_machines = self._run_async(self.api_client.list_machines())
+                        
+                        if 'offline' in utterance_lower:
+                            # List offline machines
+                            filtered = [m for m in all_machines if not m.get('is_active', False)]
+                            filter_type = 'offline'
+                        else:
+                            # List running/active machines
+                            filtered = [m for m in all_machines if m.get('is_active', False)]
+                            filter_type = 'active'
+                        
+                        return {
+                            'success': True,
+                            'data': {
+                                'machines': filtered,  # Keep as list of dicts for template
+                                'total_count': len(filtered),
+                                'filter_type': filter_type
+                            },
+                            'template': 'machines_by_status'
+                        }
+                    else:
+                        return {'success': False, 'error': 'No machine specified for status query'}
             
             elif intent.intent == IntentType.POWER_QUERY:
                 if intent.machine:
@@ -1611,41 +1660,40 @@ class EnmsSkill(OVOSSkill):
                 
                 return {'success': True, 'data': data}
             
-            elif intent.intent == IntentType.RANKING:
-                # Check if this is a machine list request vs top consumers ranking
-                if not intent.limit and not intent.metric:
-                    # This is "list all machines" or "what machines do we have"
-                    # Check if utterance contains a search term (e.g., "which HVAC units")
-                    utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
-                    search_term = None
-                    
-                    # Extract search term from common patterns
-                    # Note: re is imported at module level
-                    search_patterns = [
-                        r'\b(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)s?\b',  # Match plural forms
-                        r'\bfind.*?(?:the\s+)?(\w+)\b',
-                        r'\bhow\s+many\s+(\w+)\b',  # "how many compressors"
-                    ]
-                    
-                    for pattern in search_patterns:
-                        match = re.search(pattern, utterance, re.IGNORECASE)
-                        if match:
-                            search_term = match.group(1).rstrip('s')  # Remove plural 's'
-                            break
-                    
-                    # Call list_machines with optional search parameter
-                    if search_term:
-                        machines = self._run_async(self.api_client.list_machines(search=search_term))
-                    else:
-                        machines = self._run_async(self.api_client.list_machines())
-                    
-                    return {'success': True, 'data': {'machines': machines, 'count': len(machines)}}
+            elif intent.intent == IntentType.MACHINE_LIST:
+                # List all machines or search for specific machines
+                utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
+                search_term = None
+                
+                # Extract search term from common patterns
+                search_patterns = [
+                    r'\b(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)s?\b',
+                    r'\bfind.*?(?:the\s+)?(\w+)\b',
+                    r'\bhow\s+many\s+(\w+)\b',
+                ]
+                
+                for pattern in search_patterns:
+                    match = re.search(pattern, utterance, re.IGNORECASE)
+                    if match:
+                        search_term = match.group(1).rstrip('s')  # Remove plural 's'
+                        break
+                
+                # Call list_machines with optional search parameter
+                if search_term:
+                    machines = self._run_async(self.api_client.list_machines(search=search_term))
                 else:
-                    # This is top N ranking by metric
-                    limit = intent.limit or 5
-                    metric = getattr(intent, 'ranking_metric', 'energy') or getattr(intent, 'metric', 'energy') or 'energy'
-                    data = self._run_async(self.api_client.get_top_consumers(limit=limit, metric=metric))
-                    return {'success': True, 'data': data}
+                    machines = self._run_async(self.api_client.list_machines())
+                
+                # Extract just the names for voice response
+                machine_names = [m['name'] for m in machines]
+                return {'success': True, 'data': {'machines': machine_names, 'count': len(machines)}}
+            
+            elif intent.intent == IntentType.RANKING:
+                # Top N ranking by metric (not machine list)
+                limit = intent.limit or 5
+                metric = getattr(intent, 'ranking_metric', 'energy') or getattr(intent, 'metric', 'energy') or 'energy'
+                data = self._run_async(self.api_client.get_top_consumers(limit=limit, metric=metric))
+                return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.COMPARISON and intent.machines:
                 # Multi-machine energy comparison
@@ -1720,9 +1768,16 @@ class EnmsSkill(OVOSSkill):
                     data = self._run_async(self.api_client.get_machine_status(machine))
                     return {'success': True, 'data': data}
                 else:
-                    # Factory-wide cost
-                    data = self._run_async(self.api_client.get_system_stats())
-                    return {'success': True, 'data': data}
+                    # Factory-wide cost - use system_stats which has cost data
+                    data = self._run_async(self.api_client.system_stats())
+                    # Extract cost information for cost_analysis template
+                    cost_data = {
+                        'estimated_cost': data.get('estimated_cost', 0),
+                        'cost_per_day': data.get('cost_per_day', 0),
+                        'total_energy': data.get('total_energy', 0),
+                        'energy_per_hour': data.get('energy_per_hour', 0)
+                    }
+                    return {'success': True, 'data': cost_data}
             
             elif intent.intent == IntentType.ANOMALY_DETECTION:
                 self.logger.info("🔍 ANOMALY_HANDLER_START", machine=intent.machine)
@@ -1967,19 +2022,26 @@ class EnmsSkill(OVOSSkill):
                 # Single machine prediction
                 self.logger.info("baseline_prediction", machine=machine)
                 
-                # Call baseline prediction API
-                prediction = self._run_async(
-                    self.api_client.predict_baseline(
-                        seu_name=machine,
-                        energy_source="electricity",
-                        features=features,
-                        include_message=False  # Don't use API message, we format with features
+                try:
+                    # Call baseline prediction API
+                    prediction = self._run_async(
+                        self.api_client.predict_baseline(
+                            seu_name=machine,
+                            energy_source="electricity",
+                            features=features,
+                            include_message=False  # Don't use API message, we format with features
+                        )
                     )
-                )
-                
-                # Add SEU name and features to response for template
-                prediction['seu_name'] = machine
-                prediction['features'] = features
+                    
+                    # Add SEU name and features to response for template
+                    prediction['seu_name'] = machine
+                    prediction['features'] = features
+                except Exception as e:
+                    self.logger.error("baseline_prediction_failed", machine=machine, error=str(e))
+                    return {
+                        'success': False,
+                        'error': f'Could not get baseline prediction for {machine}. The machine may not have a trained model yet.'
+                    }
                 
                 # Update conversation context with this machine
                 if self.context_manager:
@@ -2337,9 +2399,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance (or use context)
             time_range = self._extract_time_range(utterance)
@@ -2382,7 +2444,7 @@ class EnmsSkill(OVOSSkill):
                     self.speak(response_text)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response_text, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response_text, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine, metric="energy")
             else:
                 self.logger.error("factory_energy_api_failed", result=result)
@@ -2431,14 +2493,14 @@ class EnmsSkill(OVOSSkill):
                 
                 self.speak(response)
                 
-                # Update context - use add_turn which is the proper method
-                # DISABLED: session = self.context_manager.get_or_create_session(session_id)
-                session.add_turn(
-                    query=utterance,
-                    intent=intent,
-                    response=response,
-                    api_data=data
-                )
+                # Update context - DISABLED
+                # session = self.context_manager.get_or_create_session(session_id)
+                # session.add_turn(
+                #     query=utterance,
+                #     intent=intent,
+                #     response=response,
+                #     api_data=data
+                # )
             else:
                 error = result.get('error', 'Unknown error')
                 self.logger.error("health_check_failed", error=error)
@@ -2522,9 +2584,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2544,7 +2606,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
@@ -2583,6 +2645,57 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Ranking handler failed: {e}")
             self.speak_dialog("error.general")
     
+    @intent_handler(IntentBuilder('MachineStatus').require('machine_status').optionally('machine').build())
+    def handle_machine_status(self, message: Message):
+        """Handle machine status queries (running/offline/operational)"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            intent = Intent(
+                intent=IntentType.MACHINE_STATUS,
+                machine=machine,
+                confidence=0.95,
+                utterance=utterance
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                # Use template from result if specified, otherwise default to 'machine_status'
+                template_name = result.get('template', 'machine_status')
+                response = self.response_formatter.format_response(template_name, result['data'])
+                self.speak(response)
+            else:
+                self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"Machine status handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('MachineList').require('machine_list').build())
+    def handle_machine_list(self, message: Message):
+        """Handle machine list queries (list all machines)"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            
+            intent = Intent(
+                intent=IntentType.MACHINE_LIST,
+                confidence=0.95,
+                utterance=utterance
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                response = self.response_formatter.format_response('machine_list', result['data'])
+                self.speak(response)
+            else:
+                self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"Machine list handler failed: {e}")
+            self.speak_dialog("error.general")
+    
     @intent_handler(IntentBuilder('Comparison').require('comparison').require('machine').build())
     def handle_comparison(self, message: Message):
         """Handle machine comparison queries - OVOS interface layer (Phase 3.1: with context)"""
@@ -2611,7 +2724,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machines=intent.machines)
             else:
                 self.speak_dialog("error.general")
@@ -2640,9 +2753,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2664,7 +2777,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine, metric="cost")
             else:
                 self.logger.error("cost_api_failed", error=result.get('error'))
@@ -2690,9 +2803,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2712,7 +2825,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
@@ -2735,9 +2848,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified and required
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -2753,16 +2866,68 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
+                self.logger.info("baseline_result_success", data_keys=list(result.get('data', {}).keys()))
                 response = self.response_formatter.format_response('baseline', result['data'])
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
-                self.speak_dialog("error.general")
+                error_msg = result.get('error', 'Unknown error')
+                self.logger.error("baseline_result_failed", error=error_msg, machine=machine)
+                # Speak the actual error message instead of generic error
+                self.speak(error_msg if error_msg else "I couldn't get the baseline prediction for that machine.")
         except Exception as e:
             self.log.error(f"Baseline handler failed: {e}")
+            import traceback
+            self.logger.error("baseline_handler_traceback", trace=traceback.format_exc())
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('TrainBaseline').require('train').require('baseline').optionally('machine').build())
+    def handle_train_baseline(self, message: Message):
+        """Handle baseline model training requests"""
+        try:
+            machine_raw = message.data.get('machine')
+            utterance = message.data.get("utterances", [""])[0]
+            
+            if not machine_raw:
+                self.speak("Please specify which machine to train. For example, 'train a baseline for Compressor-1'")
+                return
+            
+            machine = self._normalize_machine_name(machine_raw)
+            
+            # Extract energy source from utterance (default: electricity)
+            utterance_lower = utterance.lower()
+            energy_source = "electricity"
+            if "gas" in utterance_lower or "natural gas" in utterance_lower:
+                energy_source = "natural_gas"
+            elif "steam" in utterance_lower:
+                energy_source = "steam"
+            elif "compressed air" in utterance_lower or "air" in utterance_lower:
+                energy_source = "compressed_air"
+            
+            self.logger.info("train_baseline_request", machine=machine, energy_source=energy_source)
+            
+            # Call API to train baseline
+            result = self._run_async(self.api_client.train_baseline(
+                seu_name=machine,
+                energy_source=energy_source,
+                features=[],  # Auto-select features for best accuracy
+                year=2025
+            ))
+            
+            if result.get('success'):
+                # Use the voice-friendly message from API
+                message_text = result.get('message', f"Baseline trained successfully for {machine}")
+                self.speak(message_text)
+                self.logger.info("baseline_trained", machine=machine, r_squared=result.get('r_squared'))
+            else:
+                error_msg = result.get('error') or result.get('message', 'Training failed')
+                self.speak(f"Could not train baseline for {machine}. {error_msg}")
+                self.logger.error("baseline_training_failed", machine=machine, error=error_msg)
+        except Exception as e:
+            self.log.error(f"Train baseline handler failed: {e}")
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('BaselineModels').require('baseline').require('machine').require('model_query').build())
@@ -2780,9 +2945,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.BASELINE_MODELS,
@@ -2798,7 +2963,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
@@ -2821,9 +2986,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.BASELINE_EXPLANATION,
@@ -2839,7 +3004,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
@@ -2885,9 +3050,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.KPI,
@@ -2903,7 +3068,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine, metric="kpi")
             else:
                 self.speak_dialog("error.general")
@@ -2911,7 +3076,7 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"KPI handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('Performance').require('performance_query').require('machine').build())
+    @intent_handler(IntentBuilder('Performance').require('performance_query').optionally('machine').build())
     def handle_performance(self, message: Message):
         """Handle performance analysis queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
@@ -2926,9 +3091,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.PERFORMANCE,
@@ -2944,7 +3109,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
@@ -2967,9 +3132,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             intent = Intent(
                 intent=IntentType.PRODUCTION,
@@ -2985,7 +3150,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
@@ -3017,9 +3182,9 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            # DISABLED: if not machine and session.last_machine:
+                # DISABLED: machine = session.last_machine
+                # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -3043,21 +3208,123 @@ class EnmsSkill(OVOSSkill):
             
             if result['success']:
                 if not machine:
-                    # Factory-wide: use speak_dialog with data
-                    response_text = f"Current power is {result['data'].get('current_power_kw', 0):.1f} kilowatts"
-                    self.speak_dialog("factory_power", result['data'])
+                    # Factory-wide: use formatter with factory_power template
+                    response_text = self.response_formatter.format_response('factory_power', result['data'])
+                    self.speak(response_text)
                 else:
                     # Machine-specific: use formatter
                     response_text = self.response_formatter.format_response('power_query', result['data'])
                     self.speak(response_text)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response_text, result['data'])
+                # DISABLED: session.add_turn(utterance, intent, response_text, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine, metric="power")
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
             self.log.error(f"Power query handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('LoadFactor').require('load_factor').optionally('machine').build())
+    def handle_load_factor(self, message: Message):
+        """Handle load factor queries"""
+        try:
+            from datetime import datetime, timedelta, timezone
+            
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Default to today
+            end = datetime.now(timezone.utc)
+            start = end.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            if machine:
+                # Machine-specific load factor
+                machines = self._run_async(self.api_client.list_machines(search=machine))
+                if not machines:
+                    self.speak(f"I couldn't find a machine called {machine}")
+                    return
+                
+                machine_id = machines[0]['id']
+                result = self._run_async(self.api_client.get_all_kpis(
+                    machine_id=machine_id,
+                    start=start.isoformat(),
+                    end=end.isoformat()
+                ))
+                
+                load_factor_data = result.get('kpis', {}).get('load_factor', {})
+                if 'percent' in load_factor_data:
+                    self.speak(f"{machine} has a load factor of {round(load_factor_data['percent'], 1)} percent today.")
+                else:
+                    self.speak(f"Could not get load factor for {machine}")
+            else:
+                self.speak("Please specify which machine you want the load factor for.")
+        except Exception as e:
+            self.log.error(f"Load factor handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('PeakDemand').require('peak_demand').build())
+    def handle_peak_demand(self, message: Message):
+        """Handle peak demand queries"""
+        try:
+            from datetime import datetime, timezone
+            
+            # Get factory summary for aggregate peak
+            factory_data = self._run_async(self.api_client.factory_summary())
+            energy_data = factory_data.get('energy', {})
+            
+            if 'avg_power_kw' in energy_data:
+                # Use average as approximation (or could aggregate from all machines)
+                avg_kw = round(energy_data['avg_power_kw'], 1)
+                self.speak(f"Average power demand today is {avg_kw} kilowatts.")
+            else:
+                self.speak("Could not get power demand information")
+        except Exception as e:
+            self.log.error(f"Peak demand handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('SEC').require('sec').optionally('machine').build())
+    def handle_sec(self, message: Message):
+        """Handle SEC (Specific Energy Consumption) queries"""
+        try:
+            from datetime import datetime, timezone
+            
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Default to today
+            end = datetime.now(timezone.utc)
+            start = end.replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            if machine:
+                # Machine-specific SEC
+                machines = self._run_async(self.api_client.list_machines(search=machine))
+                if not machines:
+                    self.speak(f"I couldn't find a machine called {machine}")
+                    return
+                
+                machine_id = machines[0]['id']
+                result = self._run_async(self.api_client.get_all_kpis(
+                    machine_id=machine_id,
+                    start=start.isoformat(),
+                    end=end.isoformat()
+                ))
+                
+                sec_data = result.get('kpis', {}).get('sec', {})
+                if 'value' in sec_data:
+                    sec = sec_data['value']
+                    # Format based on magnitude
+                    if sec < 0.001:
+                        sec_formatted = f"{sec:.6f}"
+                    else:
+                        sec_formatted = f"{round(sec, 3)}"
+                    self.speak(f"{machine} has a specific energy consumption of {sec_formatted} kilowatt hours per unit today.")
+                else:
+                    self.speak(f"Could not calculate SEC for {machine}. It may not have production data.")
+            else:
+                self.speak("Please specify which machine you want the SEC for.")
+        except Exception as e:
+            self.log.error(f"SEC handler failed: {e}")
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('Report').require('report_query').build())

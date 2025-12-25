@@ -1,0 +1,5 @@
+{% if load_factor is defined %}
+The factory load factor is {{ load_factor|round(1) }}%.
+{% elif machine_name and machine_load_factor is defined %}
+{{ machine_name }} has a load factor of {{ machine_load_factor|round(1) }}%.
+{% endif %}

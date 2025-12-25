@@ -1,0 +1,3 @@
+{% if peak_demand_kw is defined %}
+Peak demand today is {{ peak_demand_kw|round(1) }} kilowatts{% if peak_time is defined %} at {{ peak_time }}{% endif %}.
+{% endif %}

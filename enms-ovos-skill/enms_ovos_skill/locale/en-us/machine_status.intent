@@ -1,0 +1,6 @@
+{status|machine_status.voc} {machine}
+{machine} {status|machine_status.voc}
+show {status|machine_status.voc} {machine|machine.voc}
+which {machine|machine.voc} are {status|machine_status.voc}
+are {machine|machine.voc} {status|machine_status.voc}
+is {machine} {status|machine_status.voc}

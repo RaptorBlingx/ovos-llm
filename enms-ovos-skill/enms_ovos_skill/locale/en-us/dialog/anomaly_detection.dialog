@@ -12,9 +12,9 @@ Detected {{ anomalies_detected }} anomalies in {{ machine_name }} using baseline
 {% if total_count == 0 %}
 No active alerts. All anomalies have been resolved.
 {% elif total_count == 1 %}
-There is 1 active alert requiring attention{% if by_severity is defined %}: {% set ns = namespace(items=[]) %}{% for severity, count in by_severity.items() %}{% if count > 0 %}{% set ns.items = ns.items + [count|string + " " + severity] %}{% endif %}{% endfor %}{% if ns.items %}{{ ns.items|join(", ") }}{% endif %}{% endif %}.
+There is 1 active alert requiring attention{% if anomalies is defined and anomalies %} on {{ anomalies[0].machine_name }}{% if anomalies[0].anomaly_type and anomalies[0].anomaly_type != 'unknown' %} ({{ anomalies[0].anomaly_type }}){% endif %}{% endif %}.
 {% else %}
-There are {{ total_count }} active alerts requiring attention{% if by_severity is defined %}: {% set ns = namespace(items=[]) %}{% for severity, count in by_severity.items() %}{% if count > 0 %}{% set ns.items = ns.items + [count|string + " " + severity] %}{% endif %}{% endfor %}{% if ns.items %}{{ ns.items|join(", ") }}{% endif %}{% endif %}.
+There are {{ total_count }} active alerts requiring attention{% if anomalies is defined and anomalies %}. Recent alerts: {% set unique_machines = [] %}{% for a in anomalies[:5] %}{% if a.machine_name not in unique_machines %}{% set _ = unique_machines.append(a.machine_name) %}{% endif %}{% endfor %}{{ unique_machines|join(', ') }}{% endif %}.
 {% endif %}
 {% elif total_count is defined %}
 {# Anomalies from /anomaly/recent or /anomaly/search #}

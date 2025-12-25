@@ -13,6 +13,7 @@ class IntentType(str, Enum):
     ENERGY_QUERY = "energy_query"
     POWER_QUERY = "power_query"
     MACHINE_STATUS = "machine_status"
+    MACHINE_LIST = "machine_list"
     FACTORY_OVERVIEW = "factory_overview"
     COMPARISON = "comparison"
     RANKING = "ranking"

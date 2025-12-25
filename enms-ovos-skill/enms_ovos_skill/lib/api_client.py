@@ -145,6 +145,33 @@ class ENMSClient:
         """Get comprehensive factory summary with status, energy, costs, machines, anomalies"""
         return await self._request("GET", "/factory/summary")
     
+    async def train_baseline(
+        self,
+        seu_name: str,
+        energy_source: str = "electricity",
+        features: Optional[List[str]] = None,
+        year: int = 2025
+    ) -> Dict[str, Any]:
+        """
+        Train baseline model for SEU
+        
+        Args:
+            seu_name: SEU name (e.g., "Compressor-1")
+            energy_source: Energy source type (default: "electricity")
+            features: List of feature names (default: [] for auto-select)
+            year: Training year (default: 2025)
+        
+        Returns:
+            Training result with success, message, accuracy metrics
+        """
+        payload = {
+            "seu_name": seu_name,
+            "energy_source": energy_source,
+            "features": features or [],
+            "year": year
+        }
+        return await self._request("POST", "/baseline/train-seu", json=payload)
+    
     async def aggregated_stats(
         self,
         start_time: datetime,
@@ -663,6 +690,10 @@ class ENMSClient:
         """
         Predict baseline energy consumption
         
+        HYBRID APPROACH (Fixed Dec 24, 2025):
+        1. Try SEU name lookup (works for machines in SEUs table)
+        2. Fallback to machine_id lookup (works for all machines with baselines)
+        
         Args:
             seu_name: Machine/SEU name
             energy_source: Energy source type
@@ -678,7 +709,27 @@ class ENMSClient:
             "features": features or {},
             "include_message": include_message
         }
-        return await self._request("POST", "/baseline/predict", json=payload)
+        
+        try:
+            # Try SEU name first
+            return await self._request("POST", "/baseline/predict", json=payload)
+        except Exception as e:
+            # If SEU not found, try machine_id lookup
+            error_msg = str(e).lower()
+            if "seu_not_found" in error_msg or "not found" in error_msg:
+                # Lookup machine by name
+                machines = await self.list_machines(search=seu_name)
+                if machines and len(machines) > 0:
+                    machine_id = machines[0]['id']
+                    # Retry with machine_id
+                    payload_with_id = {
+                        "machine_id": machine_id,
+                        "features": features or {},
+                        "include_message": include_message
+                    }
+                    return await self._request("POST", "/baseline/predict", json=payload_with_id)
+            # Re-raise if not SEU_NOT_FOUND or machine lookup failed
+            raise
     
     async def get_forecast(
         self,
@@ -704,6 +755,32 @@ class ENMSClient:
             params["machine_id"] = machines[0]["id"]
         
         return await self._request("GET", "/forecast/short-term", params=params)
+    
+    # KPI Endpoints
+    
+    async def get_all_kpis(
+        self,
+        machine_id: str,
+        start: str,
+        end: str
+    ) -> Dict[str, Any]:
+        """
+        Get all KPIs for a machine in a time period
+        
+        Args:
+            machine_id: Machine UUID
+            start: Start time (ISO 8601)
+            end: End time (ISO 8601)
+            
+        Returns:
+            All KPIs (SEC, peak demand, load factor, energy cost, carbon)
+        """
+        params = {
+            "machine_id": machine_id,
+            "start": start,
+            "end": end
+        }
+        return await self._request("GET", "/kpi/all", params=params)
     
     # ISO 50001 Compliance
     

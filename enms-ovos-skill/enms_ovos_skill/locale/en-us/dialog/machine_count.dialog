@@ -1,0 +1,5 @@
+{% if active_count %}
+There are {{ active_count }} machines currently active out of {{ total_machines }} total machines.
+{% else %}
+No machines are currently active.
+{% endif %}

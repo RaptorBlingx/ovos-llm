@@ -1,0 +1,5 @@
+{% if success %}
+{{ message }}
+{% else %}
+{{ error_message }}
+{% endif %}
