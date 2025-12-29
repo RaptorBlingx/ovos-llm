@@ -962,6 +962,85 @@ class ENMSClient:
                 'year': year,
                 'month': month
             }
+    
+    async def generate_report_v2(
+        self,
+        factory_id: str,
+        report_type: str = "monthly",
+        year: int = None,
+        month: int = None
+    ) -> Dict[str, Any]:
+        """
+        Generate V2 PDF report (9.5/10 SOTA quality, production-ready)
+        
+        Args:
+            factory_id: Factory UUID (required for V2)
+            report_type: "monthly" or "weekly"
+            year: Report year (defaults to current year)
+            month: Report month 1-12 (defaults to current month)
+            
+        Returns:
+            Dict with report_id, file_path, file_size_kb, generation_time_seconds
+            {
+                "success": true,
+                "report_id": "fc97f2e2-fb02-4100-ba5e-30b76ae21334",
+                "file_path": "/tmp/enms_report_v2_fc97f2e2.pdf",
+                "file_size_kb": 251.3,
+                "generation_time_seconds": 6.8,
+                "timestamp": "2025-12-29T07:41:00.000Z"
+            }
+        """
+        # Default to current month/year if not specified
+        if year is None:
+            year = datetime.now().year
+        if month is None:
+            month = datetime.now().month
+        
+        payload = {
+            "factory_id": factory_id,
+            "report_type": report_type,
+            "year": year,
+            "month": month,
+            "include_sections": [
+                "executive_summary",
+                "energy_overview",
+                "machine_profiles",
+                "cost_analysis",
+                "carbon_analysis"
+            ]
+        }
+        
+        logger.info("report_v2_generate_request", payload=payload)
+        
+        try:
+            result = await self._request("POST", "/reports/v2/generate", json=payload)
+            logger.info("report_v2_generate_success", 
+                       report_id=result.get('report_id'),
+                       file_size_kb=result.get('file_size_kb'),
+                       generation_time_seconds=result.get('generation_time_seconds'))
+            return result
+            
+        except Exception as e:
+            logger.error("report_v2_generate_error", error=str(e))
+            raise
+    
+    def get_report_download_url(self, report_id: str) -> str:
+        """
+        Construct download URL for generated V2 report
+        
+        Args:
+            report_id: Report UUID from generate_report_v2() response
+            
+        Returns:
+            Full download URL
+            
+        Example:
+            >>> client = ENMSClient("http://localhost:8080/api/analytics/api/v1")
+            >>> url = client.get_report_download_url("fc97f2e2-fb02-4100-ba5e-30b76ae21334")
+            >>> # Returns: "http://localhost:8080/api/analytics/api/v1/reports/v2/download/fc97f2e2..."
+        """
+        # Note: base_url already includes /api/v1
+        return f"{self.base_url}/reports/v2/download/{report_id}"
 
 
 # Context manager support

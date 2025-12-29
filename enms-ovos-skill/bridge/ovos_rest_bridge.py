@@ -44,6 +44,7 @@ class QueryResponse(BaseModel):
     intent: Optional[str] = None
     confidence: Optional[float] = None
     data: Optional[Dict[str, Any]] = None
+    pdf_download: Optional[Dict[str, Any]] = None  # NEW: PDF download info
     timestamp: str
     session_id: str
 
@@ -59,6 +60,7 @@ class OVOSRestBridge:
     def __init__(self):
         self.bus: Optional[MessageBusClient] = None
         self.responses: Dict[str, Dict[str, Any]] = {}
+        self.pdf_downloads: Dict[str, Dict[str, Any]] = {}  # NEW: Track PDF downloads
         self.response_timeout = 90  # seconds (increased for ML baseline operations)
         
     def connect_to_messagebus(self):
@@ -69,6 +71,7 @@ class OVOSRestBridge:
             # Register handlers for responses from skills
             self.bus.on('speak', self._handle_speak)
             self.bus.on('enms.skill.response', self._handle_skill_response)
+            self.bus.on('enms.pdf.download', self._handle_pdf_download)  # NEW: PDF downloads
             
             # Start messagebus client in background thread
             self.bus.run_in_thread()
@@ -84,7 +87,11 @@ class OVOSRestBridge:
         utterance = message.data.get('utterance', '')
         
         if session_id in self.responses:
-            self.responses[session_id]['response'] = utterance
+            # Append responses (skill speaks twice for reports: initial + confirmation)
+            if self.responses[session_id]['response']:
+                self.responses[session_id]['response'] += f" {utterance}"
+            else:
+                self.responses[session_id]['response'] = utterance
             self.responses[session_id]['received'] = True
             logger.debug(f"Received speak for session {session_id}: {utterance[:50]}...")
     
@@ -101,6 +108,25 @@ class OVOSRestBridge:
             })
             logger.debug(f"Received skill response for session {session_id}")
     
+    def _handle_pdf_download(self, message: Message):
+        """
+        Handle PDF download events from EnmsSkill
+        
+        Captures report_id, download_url, filename for browser download
+        """
+        session_id = message.context.get('session_id', 'default')
+        
+        pdf_data = {
+            'report_id': message.data.get('report_id'),
+            'download_url': message.data.get('download_url'),
+            'filename': message.data.get('filename'),
+            'file_size_kb': message.data.get('file_size_kb'),
+            'ready': True
+        }
+        
+        self.pdf_downloads[session_id] = pdf_data
+        logger.info(f"📄 PDF download ready for session {session_id}: {pdf_data.get('filename')} ({pdf_data.get('file_size_kb')} KB)")
+    
     async def process_query(self, text: str, session_id: str, user_id: Optional[str] = None) -> QueryResponse:
         """
         Send query to OVOS messagebus and wait for response
@@ -116,6 +142,7 @@ class OVOSRestBridge:
             'data': None,
             'received': False
         }
+        self.pdf_downloads[session_id] = {'ready': False}  # NEW: Initialize PDF tracker
         
         try:
             # Send utterance to OVOS messagebus
@@ -134,11 +161,45 @@ class OVOSRestBridge:
             self.bus.emit(message)
             logger.info(f"📤 Sent query to messagebus: '{text}' (session: {session_id})")
             
+            # Detect if this is a report generation query (needs longer wait for PDF)
+            is_report_query = any(kw in text.lower() for kw in ['report', 'generate', 'create'])
+            min_wait_time = 15.0 if is_report_query else 5.0  # Reports need at least 15s
+            logger.info(f"⏱️ Query type: {'REPORT' if is_report_query else 'NORMAL'}, min_wait={min_wait_time}s")
+            print(f"🐛 DEBUG: is_report_query={is_report_query}, min_wait={min_wait_time}s", flush=True)
+            
             # Wait for response with timeout
             start_time = asyncio.get_event_loop().time()
+            last_check_time = start_time
+            
             while asyncio.get_event_loop().time() - start_time < self.response_timeout:
-                if self.responses[session_id]['received']:
-                    break
+                current_time = asyncio.get_event_loop().time()
+                
+                # Check every second if we have response AND if we should continue waiting
+                if current_time - last_check_time > 1.0:
+                    if self.responses[session_id]['received']:
+                        # Got at least one speak message
+                        response_text = self.responses[session_id]['response'].lower()
+                        
+                        # Check for completion conditions:
+                        # 1. PDF download event arrived
+                        if self.pdf_downloads.get(session_id, {}).get('ready'):
+                            logger.info(f"✅ PDF event received for session {session_id}")
+                            break
+                        
+                        # 2. Response contains final confirmation keywords
+                        if any(keyword in response_text for keyword in ['downloaded', 'check your downloads', 'ready and']):
+                            logger.info(f"✅ Final confirmation detected in response")
+                            await asyncio.sleep(0.5)  # Small delay to ensure PDF event arrives
+                            break
+                        
+                        # 3. Wait minimum time before giving up (longer for reports)
+                        elapsed = current_time - start_time
+                        if elapsed > min_wait_time:
+                            logger.info(f"⏱️ Timeout after {elapsed:.1f}s (min_wait={min_wait_time}s), returning response")
+                            break
+                    
+                    last_check_time = current_time
+                        
                 await asyncio.sleep(0.1)
             
             # Check if we got a response
@@ -152,8 +213,16 @@ class OVOSRestBridge:
                     session_id=session_id
                 )
             
+            # Check for PDF download (NEW)
+            pdf_data = None
+            if self.pdf_downloads.get(session_id, {}).get('ready'):
+                pdf_data = self.pdf_downloads[session_id]
+                logger.info(f"📄 Including PDF download data in response: {pdf_data.get('filename')}")
+            
             # Clean up
             del self.responses[session_id]
+            if session_id in self.pdf_downloads:
+                del self.pdf_downloads[session_id]
             
             return QueryResponse(
                 success=True,
@@ -161,6 +230,7 @@ class OVOSRestBridge:
                 intent=response_data.get('intent'),
                 confidence=response_data.get('confidence'),
                 data=response_data.get('data'),
+                pdf_download=pdf_data,  # NEW: Include PDF download info
                 timestamp=datetime.utcnow().isoformat(),
                 session_id=session_id
             )

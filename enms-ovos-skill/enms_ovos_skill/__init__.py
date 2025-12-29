@@ -577,6 +577,106 @@ class EnmsSkill(OVOSSkill):
         
         return normalized if normalized else raw_machine
     
+    def _extract_report_period(self, utterance: str) -> tuple:
+        """
+        Extract month and year from utterance for report generation
+        
+        Handles:
+        - Month names: "December", "Nov", "January 2024"
+        - Relative: "last month", "this month"
+        - Defaults: Current month/year if not specified
+        
+        Args:
+            utterance: User's query text
+            
+        Returns:
+            Tuple of (month: int, year: int)
+            
+        Examples:
+            >>> _extract_report_period("Generate December report")
+            (12, 2025)
+            >>> _extract_report_period("last month's report")
+            (11, 2025)  # If current month is December
+            >>> _extract_report_period("November 2024 report")
+            (11, 2024)
+        """
+        import re
+        from datetime import datetime
+        
+        # Month names mapping
+        months = {
+            'january': 1, 'jan': 1,
+            'february': 2, 'feb': 2,
+            'march': 3, 'mar': 3,
+            'april': 4, 'apr': 4,
+            'may': 5,
+            'june': 6, 'jun': 6,
+            'july': 7, 'jul': 7,
+            'august': 8, 'aug': 8,
+            'september': 9, 'sep': 9, 'sept': 9,
+            'october': 10, 'oct': 10,
+            'november': 11, 'nov': 11,
+            'december': 12, 'dec': 12
+        }
+        
+        # Default to current month/year
+        now = datetime.now()
+        month = now.month
+        year = now.year
+        
+        utterance_lower = utterance.lower()
+        
+        # Check for month names
+        for month_name, month_num in months.items():
+            if month_name in utterance_lower:
+                month = month_num
+                break
+        
+        # Check for year (2024, 2025, etc.)
+        year_match = re.search(r'\b(20\d{2})\b', utterance)
+        if year_match:
+            year = int(year_match.group(1))
+        
+        # Handle "last month"
+        if 'last month' in utterance_lower:
+            month = month - 1 if month > 1 else 12
+            year = year if month != 12 else year - 1
+        
+        # Handle "this month"
+        if 'this month' in utterance_lower:
+            month = now.month
+            year = now.year
+        
+        self.logger.info("report_period_extracted",
+                        utterance=utterance,
+                        month=month,
+                        year=year,
+                        month_name=self._month_name(month))
+        
+        return month, year
+    
+    def _month_name(self, month: int) -> str:
+        """
+        Convert month number to name for TTS
+        
+        Args:
+            month: Month number (1-12)
+            
+        Returns:
+            Month name string
+            
+        Examples:
+            >>> _month_name(1)
+            'January'
+            >>> _month_name(12)
+            'December'
+        """
+        months = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ]
+        return months[month - 1] if 1 <= month <= 12 else 'Unknown'
+    
     def _apply_implicit_scope(self, intent: Intent) -> Intent:
         """
         Apply factory-wide scope when no machine specified (Priority 3)
@@ -3329,32 +3429,92 @@ class EnmsSkill(OVOSSkill):
     
     @intent_handler(IntentBuilder('Report').require('report_query').build())
     def handle_report(self, message: Message):
-        """Handle report generation queries - OVOS interface layer"""
+        """
+        Handle report generation with PDF download - V2 Production System
+        
+        Handles queries like:
+        - "Generate December report"
+        - "Give me November 2024 report"
+        - "Create this month's energy report"
+        
+        Flow:
+        1. Parse month/year from utterance
+        2. Provide immediate feedback ("Generating...")
+        3. Call V2 API to generate PDF (~6 seconds)
+        4. Emit enms.pdf.download event for browser
+        5. Speak confirmation with file details
+        """
         try:
-            report_type = message.data.get('report_type')
-            machine_raw = message.data.get('machine')
-
-            machine = self._normalize_machine_name(machine_raw)
+            self.log.info("🎯 REPORT HANDLER CALLED!")  # DEBUG
             utterance = message.data.get("utterances", [""])[0]
+            self.log.info(f"📝 Report utterance: {utterance}")  # DEBUG
             
-            intent = Intent(
-                intent=IntentType.REPORT,
-                machine=machine,
-                confidence=0.95,
-                utterance=utterance,
-                params={'report_type': report_type} if report_type else None
+            # Parse month/year from utterance
+            self.log.info("📅 Parsing report period...")  # DEBUG
+            month, year = self._extract_report_period(utterance)
+            month_name = self._month_name(month)
+            self.log.info(f"📅 Parsed: {month_name} {year}")  # DEBUG
+            
+            # Immediate feedback
+            self.log.info("🔊 Speaking initial message...")  # DEBUG
+            self.speak(f"Generating your {month_name} {year} energy report. This will take about 5 seconds.")
+            
+            # Generate V2 report
+            self.log.info(f"🚀 Calling API to generate report for {month}/{year}")  # DEBUG
+            
+            result = self._run_async(
+                self.api_client.generate_report_v2(
+                    factory_id="11111111-1111-1111-1111-111111111111",  # Default factory
+                    report_type="monthly",
+                    year=year,
+                    month=month
+                )
             )
             
-            result = self._call_enms_api(intent)
-            
-            if result['success']:
-                response = self.response_formatter.format_response('enpi_report', result['data'])
-                self.speak(response)
+            if result and result.get('report_id'):
+                # Construct download URL
+                download_url = self.api_client.get_report_download_url(result['report_id'])
+                filename = f"EnMS_Report_{year}_{month:02d}.pdf"
+                file_size_kb = result.get('file_size_kb', 0)
+                
+                self.logger.info("report_generated",
+                               report_id=result['report_id'],
+                               download_url=download_url,
+                               file_size_kb=file_size_kb)
+                
+                # Emit PDF download event to REST bridge
+                self.bus.emit(Message(
+                    'enms.pdf.download',
+                    data={
+                        'report_id': result['report_id'],
+                        'download_url': download_url,
+                        'filename': filename,
+                        'file_size_kb': file_size_kb
+                    },
+                    context=message.context
+                ))
+                
+                self.log.info(f"📄 PDF download event emitted: {filename}")
+                
+                # Confirmation message with natural file size
+                if file_size_kb < 1024:
+                    size_str = f"{round(file_size_kb)} kilobytes"
+                else:
+                    size_str = f"{round(file_size_kb / 1024, 1)} megabytes"
+                
+                self.speak(
+                    f"Your {month_name} {year} energy report is ready and has been downloaded. "
+                    f"The PDF is {size_str}. Check your Downloads folder."
+                )
             else:
-                self.speak_dialog("error.general")
+                self.log.error(f"❌ Report generation failed: {result}")
+                self.speak(f"Sorry, I couldn't generate the {month_name} report. Please try again.")
+                
         except Exception as e:
-            self.log.error(f"Report handler failed: {e}")
-            self.speak_dialog("error.general")
+            self.log.error(f"❌ REPORT HANDLER ERROR: {e}")
+            import traceback
+            self.log.error(f"Traceback: {traceback.format_exc()}")
+            self.speak("I encountered an error generating the report. Please try again later.")
     
     @intent_handler(IntentBuilder('Help').require('help_query').build())
     def handle_help(self, message: Message):
