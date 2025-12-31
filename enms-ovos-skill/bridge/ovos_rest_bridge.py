@@ -134,6 +134,12 @@ class OVOSRestBridge:
         if not self.bus or not self.bus.connected_event.is_set():
             raise HTTPException(status_code=503, detail="Messagebus not connected")
         
+        # Clean text: strip trailing punctuation that breaks Adapt matching
+        # Question marks, periods, exclamation marks can prevent intent matching
+        cleaned_text = text.rstrip('?!.,;:')
+        if cleaned_text != text:
+            logger.info(f"🧹 Stripped punctuation: '{text}' → '{cleaned_text}'")
+        
         # Initialize response tracker
         self.responses[session_id] = {
             'response': '',
@@ -154,15 +160,15 @@ class OVOSRestBridge:
             
             message = Message(
                 'recognizer_loop:utterance',
-                data={'utterances': [text]},
+                data={'utterances': [cleaned_text]},
                 context=context
             )
             
             self.bus.emit(message)
-            logger.info(f"📤 Sent query to messagebus: '{text}' (session: {session_id})")
+            logger.info(f"📤 Sent query to messagebus: '{cleaned_text}' (session: {session_id})")
             
             # Detect if this is a report generation query (needs longer wait for PDF)
-            is_report_query = any(kw in text.lower() for kw in ['report', 'generate', 'create'])
+            is_report_query = any(kw in cleaned_text.lower() for kw in ['report', 'generate', 'create'])
             min_wait_time = 15.0 if is_report_query else 5.0  # Reports need at least 15s
             logger.info(f"⏱️ Query type: {'REPORT' if is_report_query else 'NORMAL'}, min_wait={min_wait_time}s")
             print(f"🐛 DEBUG: is_report_query={is_report_query}, min_wait={min_wait_time}s", flush=True)

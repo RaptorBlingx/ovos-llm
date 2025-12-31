@@ -2,8 +2,6 @@ factory
 factories
 plant
 plants
-facility
-facilities
 site
 sites
 carbon footprint
@@ -14,3 +12,5 @@ give me a system overview
 system overview
 what's the current factory status
 current factory status
+factory overview
+plant overview

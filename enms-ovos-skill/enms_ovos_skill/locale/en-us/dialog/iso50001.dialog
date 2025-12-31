@@ -1,0 +1,1 @@
+{% if action_plans %}I found {{ action_plans|length }} ISO 50001 action plan{{ 's' if action_plans|length != 1 else '' }}. {% for plan in action_plans[:3] %}{{ loop.index }}. {{ plan.title }}: {{ plan.progress }}% complete. {% endfor %}{% else %}No ISO 50001 action plans found.{% endif %}

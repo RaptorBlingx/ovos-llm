@@ -1,0 +1,1 @@
+{% if query_type == 'peak' %}{{ machine }}'s peak power was {{ power_kw|round(2) }} kilowatts{% if time_range %} {{ time_range }}{% endif %}.{% elif query_type == 'average' %}{{ machine }}'s average power was {{ power_kw|round(2) }} kilowatts{% if time_range %} {{ time_range }}{% endif %}.{% else %}{{ machine }} is currently using {{ power_kw|round(2) }} kilowatts.{% endif %}

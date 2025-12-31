@@ -481,7 +481,9 @@ class EnmsSkill(OVOSSkill):
         time_patterns = [
             r'yesterday',
             r'today',
-            r'last\s+(?:hour|day|week|month)',
+            r'this\s+(?:week|month|year)',  # "this week", "this month", "this year"
+            r'last\s+\d+\s+(?:hour|day|week|month)s?',  # "last 48 hours", "last 7 days"
+            r'last\s+(?:hour|day|week|month)',  # "last hour", "last week"
             r'past\s+(?:\d+\s+)?(?:hour|day|week)s?',
             r'since\s+\d+\s*(?:am|pm)',
             r'between\s+.+?\s+and\s+.+?'
@@ -1109,6 +1111,12 @@ class EnmsSkill(OVOSSkill):
             elif intent.intent == IntentType.POWER_QUERY:
                 if intent.machine:
                     # Machine-specific power query
+                    utterance = getattr(intent, 'utterance', '').lower()
+                    
+                    # Check if asking for peak or average power
+                    is_peak_query = 'peak' in utterance or 'maximum' in utterance or 'max' in utterance or 'highest' in utterance
+                    is_average_query = 'average' in utterance or 'avg' in utterance or 'mean' in utterance
+                    
                     # Check if time range is specified (via time_range or entities)
                     if intent.time_range and intent.time_range.relative not in ["today", "now", None]:
                         # Time-series power query
@@ -1192,6 +1200,59 @@ class EnmsSkill(OVOSSkill):
                             data['machine'] = intent.machine
                             data['time_range'] = entities.get('time_range', 'custom')
                             
+                            return {'success': True, 'data': data}
+                    
+                    # Check if asking for peak or average power (need time-series data)
+                    if is_peak_query or is_average_query:
+                        # Get machine ID
+                        machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        if not machines:
+                            return {'success': False, 'error': f"Machine {intent.machine} not found"}
+                        
+                        machine_id = machines[0]['id']
+                        
+                        # Default to today if no time range specified
+                        from datetime import datetime, timedelta
+                        if not intent.time_range:
+                            end_time = datetime.now()
+                            start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                        else:
+                            start_time = intent.time_range.start
+                            end_time = intent.time_range.end
+                        
+                        # Get time-series power data
+                        timeseries = self._run_async(
+                            self.api_client.get_power_timeseries(
+                                machine_id=machine_id,
+                                start_time=start_time,
+                                end_time=end_time,
+                                interval='15min'
+                            )
+                        )
+                        
+                        # Calculate peak or average from timeseries
+                        data_points = timeseries.get('data_points', [])
+                        if data_points:
+                            power_values = [point.get('value', 0) for point in data_points]
+                            if is_peak_query:
+                                result_value = max(power_values)
+                                query_type = 'peak'
+                            else:
+                                result_value = sum(power_values) / len(power_values)
+                                query_type = 'average'
+                            
+                            data = {
+                                'machine': intent.machine,
+                                'power_kw': result_value,
+                                'query_type': query_type,
+                                'time_range': intent.time_range.relative if intent.time_range else 'today',
+                                'start_time': start_time,
+                                'end_time': end_time
+                            }
+                            return {'success': True, 'data': data, 'custom_template': 'power_aggregated'}
+                        else:
+                            # No data points - fall back to current
+                            data = self._run_async(self.api_client.get_machine_status(intent.machine))
                             return {'success': True, 'data': data}
                     
                     # Default: current/today data for specific machine
@@ -1764,6 +1825,7 @@ class EnmsSkill(OVOSSkill):
                 # List all machines or search for specific machines
                 utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
                 search_term = None
+                location_filter = intent.params.get('location') if intent.params else None
                 
                 # Extract search term from common patterns
                 search_patterns = [
@@ -1784,14 +1846,103 @@ class EnmsSkill(OVOSSkill):
                 else:
                     machines = self._run_async(self.api_client.list_machines())
                 
+                # Filter by location if specified
+                if location_filter:
+                    machines = [m for m in machines if location_filter.upper() in m['name'].upper()]
+                    self.logger.info("location_filter_applied", location=location_filter, count=len(machines))
+                
                 # Extract just the names for voice response
                 machine_names = [m['name'] for m in machines]
-                return {'success': True, 'data': {'machines': machine_names, 'count': len(machines)}}
+                return {'success': True, 'data': {'machines': machine_names, 'count': len(machines), 'location': location_filter}}
             
             elif intent.intent == IntentType.RANKING:
                 # Top N ranking by metric (not machine list)
                 limit = intent.limit or 5
-                metric = getattr(intent, 'ranking_metric', 'energy') or getattr(intent, 'metric', 'energy') or 'energy'
+                ranking_metric = getattr(intent, 'ranking_metric', 'consumption')
+                
+                # For efficiency queries, get all machines and calculate efficiency
+                if ranking_metric == 'efficiency':
+                    try:
+                        from datetime import timedelta
+                        # Get all machines with energy + production data
+                        machines = self._run_async(self.api_client.list_machines())
+                        
+                        # Time range: last 24 hours
+                        end_time = datetime.now(timezone.utc)
+                        start_time = end_time - timedelta(days=1)
+                        
+                        efficiency_data = []
+                        for machine in machines[:10]:  # Limit to first 10 for performance
+                            try:
+                                # Get energy consumption using correct API method
+                                energy_data = self._run_async(self.api_client.get_energy_timeseries(
+                                    machine_id=machine['id'],
+                                    start_time=start_time,
+                                    end_time=end_time,
+                                    interval='1day'
+                                ))
+                                
+                                # Get production if available
+                                try:
+                                    production = self._run_async(self.api_client.get_machine_production(
+                                        machine_id=machine['id'],
+                                        limit=1
+                                    ))
+                                    units = production[0]['units_produced'] if production else None
+                                except:
+                                    units = None
+                                
+                                # Extract energy from response
+                                data_points = energy_data.get('data', {}).get('data_points', [])
+                                if not data_points or len(data_points) == 0:
+                                    self.logger.warning("no_energy_data", machine=machine['name'])
+                                    continue
+                                    
+                                energy_kwh = data_points[0].get('value', 0)
+                                
+                                if energy_kwh == 0:
+                                    self.logger.warning("zero_energy", machine=machine['name'])
+                                    continue
+                                
+                                # Calculate efficiency: units per kWh
+                                if units and units > 0 and energy_kwh > 0:
+                                    efficiency = units / energy_kwh
+                                else:
+                                    # Use inverse of energy as proxy (lower energy = better)
+                                    efficiency = 1.0 / energy_kwh if energy_kwh > 0 else 0
+                                
+                                efficiency_data.append({
+                                    'machine_name': machine['name'],
+                                    'efficiency_score': efficiency,
+                                    'energy_kwh': energy_kwh,
+                                    'units_produced': units or 0
+                                })
+                            except Exception as e:
+                                self.logger.warning("efficiency_calc_failed", machine=machine['name'], error=str(e))
+                                import traceback
+                                self.logger.debug("efficiency_traceback", trace=traceback.format_exc())
+                                continue
+                        
+                        # Sort by efficiency (highest first)
+                        efficiency_data.sort(key=lambda x: x['efficiency_score'], reverse=True)
+                        
+                        return {
+                            'success': True,
+                            'data': {
+                                'machines': efficiency_data[:limit],
+                                'ranking_type': 'efficiency',
+                                'total_machines': len(efficiency_data)
+                            }
+                        }
+                    except Exception as e:
+                        self.logger.error("efficiency_ranking_failed", error=str(e))
+                        import traceback
+                        self.logger.error("efficiency_traceback", trace=traceback.format_exc())
+                        # Fallback to energy consumption ranking
+                        ranking_metric = 'consumption'
+                
+                # Standard consumption/cost ranking
+                metric = 'energy' if ranking_metric == 'consumption' else ranking_metric
                 data = self._run_async(self.api_client.get_top_consumers(limit=limit, metric=metric))
                 return {'success': True, 'data': data}
             
@@ -2159,31 +2310,42 @@ class EnmsSkill(OVOSSkill):
                 
                 self.logger.info("kpi_query", machine=machine, time_range=intent.time_range)
                 
-                # Get time range (default to today)
-                if intent.time_range and intent.time_range.start:
-                    start_time = intent.time_range.start
-                    end_time = intent.time_range.end if intent.time_range.end else datetime.now(timezone.utc)
-                else:
-                    start_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-                    end_time = datetime.now(timezone.utc)
-                
-                # Get machine ID
-                machines = self._run_async(self.api_client.list_machines(search=machine))
-                if not machines or len(machines) == 0:
-                    return {'success': False, 'error': f'Machine {machine} not found'}
-                
-                machine_id = machines[0]['id']
-                
-                # Call KPI API
-                kpis = self._run_async(
-                    self.api_client.get_all_kpis(
-                        machine_id=machine_id,
-                        start_time=start_time,
-                        end_time=end_time
+                try:
+                    # Get time range (default to today)
+                    if intent.time_range and intent.time_range.start:
+                        start_time = intent.time_range.start
+                        end_time = intent.time_range.end if intent.time_range.end else datetime.now(timezone.utc)
+                    else:
+                        start_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                        end_time = datetime.now(timezone.utc)
+                    
+                    self.log.info(f"KPI time range: {start_time} to {end_time}")
+                    
+                    # Get machine ID
+                    machines = self._run_async(self.api_client.list_machines(search=machine))
+                    if not machines or len(machines) == 0:
+                        return {'success': False, 'error': f'Machine {machine} not found'}
+                    
+                    machine_id = machines[0]['id']
+                    self.log.info(f"Found machine ID: {machine_id}")
+                    
+                    # Call KPI API (note: API expects 'start' and 'end' as ISO strings, not 'start_time'/'end_time')
+                    kpis = self._run_async(
+                        self.api_client.get_all_kpis(
+                            machine_id=machine_id,
+                            start=start_time.isoformat(),
+                            end=end_time.isoformat()
+                        )
                     )
-                )
-                
-                return {'success': True, 'data': kpis}
+                    
+                    self.log.info(f"KPI API returned: {type(kpis)}, keys={list(kpis.keys()) if isinstance(kpis, dict) else 'N/A'}")
+                    
+                    return {'success': True, 'data': kpis}
+                except Exception as e:
+                    self.log.error(f"KPI API call failed: {e}")
+                    import traceback
+                    self.log.error(f"Traceback: {traceback.format_exc()}")
+                    return {'success': False, 'error': f'Failed to get KPIs: {str(e)}'}
             
             elif intent.intent == IntentType.PERFORMANCE:
                 # Performance analysis - analyze SEU performance vs baseline
@@ -2358,6 +2520,126 @@ class EnmsSkill(OVOSSkill):
                 # System health check - call /health endpoint
                 data = self._run_async(self.api_client.health_check())
                 return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.OPPORTUNITIES:
+                # Energy saving opportunities - call /performance/opportunities
+                machine = intent.machine
+                
+                # Get factory_id (use first machine's factory)
+                machines = self._run_async(self.api_client.list_machines())
+                factory_id = machines[0]['factory_id'] if machines else None
+                
+                if not factory_id:
+                    return {'success': False, 'error': 'Could not determine factory ID'}
+                
+                # Call opportunities API
+                data = self._run_async(
+                    self.api_client.get_performance_opportunities(
+                        factory_id=factory_id,
+                        period='week',
+                        seu_name=machine if machine else None
+                    )
+                )
+                return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.ISO50001:
+                # ISO 50001 queries - ENPI reports, action plans
+                utterance = getattr(intent, 'utterance', '').lower()
+                
+                if 'action plan' in utterance:
+                    if 'create' in utterance:
+                        # Create action plan (not yet implemented)
+                        return {'success': False, 'error': 'Creating action plans via voice is not yet supported'}
+                    elif 'update' in utterance or 'progress' in utterance:
+                        # Update action plan (not yet implemented)
+                        return {'success': False, 'error': 'Updating action plans via voice is not yet supported'}
+                    else:
+                        # List action plans
+                        data = self._run_async(self.api_client.list_iso_action_plans())
+                        return {'success': True, 'data': data}
+                else:
+                    # ENPI report
+                    data = self._run_async(self.api_client.get_enpi_report())
+                    return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.ALERTS:
+                # Alert subscription
+                return {'success': False, 'error': 'Alert subscription via voice is not yet implemented'}
+            
+            elif intent.intent == IntentType.ENERGY_TYPES:
+                # Energy types query - list energy types for a machine
+                machine = intent.machine
+                
+                if not machine:
+                    return {'success': False, 'error': 'Which machine? Please specify a machine name.'}
+                
+                # Get machine ID
+                machines = self._run_async(self.api_client.list_machines(search=machine))
+                if not machines:
+                    return {'success': False, 'error': f'Machine {machine} not found'}
+                
+                machine_id = machines[0]['id']
+                
+                # Get energy types
+                data = self._run_async(self.api_client.get_energy_types(machine_id=machine_id))
+                data['machine_name'] = machine
+                return {'success': True, 'data': data}
+            
+            elif intent.intent == IntentType.MODEL_QUERY:
+                # Baseline model details query
+                model_version = intent.params.get('model_id') if intent.params else None
+                
+                if not model_version:
+                    return {'success': False, 'error': 'Please specify a model version number.'}
+                
+                try:
+                    # API expects UUID, but user says "model 46" (version number)
+                    # Need to lookup by version to get UUID
+                    # First, need to determine which machine (default to Compressor-1)
+                    machine = intent.machine if intent.machine else "Compressor-1"
+                    energy_source = "electricity"  # Default
+                    
+                    # Get list of models for this machine
+                    models_response = self._run_async(self.api_client.list_baseline_models(
+                        seu_name=machine,
+                        energy_source=energy_source
+                    ))
+                    
+                    models = models_response.get('models', [])
+                    
+                    # Find model with matching version
+                    matching_model = None
+                    for model in models:
+                        if model.get('model_version') == model_version:
+                            matching_model = model
+                            break
+                    
+                    if not matching_model:
+                        return {
+                            'success': False, 
+                            'error': f'Model version {model_version} not found for {machine}. Available: versions 1-{models_response.get("total_models", 0)}. Try "list baseline models for {machine}" to see all.'
+                        }
+                    
+                    # Now get details using UUID
+                    model_uuid = matching_model['id']
+                    data = self._run_async(self.api_client.get_baseline_model_explanation(
+                        model_id=model_uuid,
+                        include_explanation=True
+                    ))
+                    # Ensure machine name is in response for template
+                    if 'machine_name' not in data or not data['machine_name']:
+                        data['machine_name'] = machine
+                    return {'success': True, 'data': data}
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    if '404' in error_msg or 'not found' in error_msg.lower():
+                        return {'success': False, 'error': f'Model {model_version} not found. It may not exist or has been deleted.'}
+                    elif '422' in error_msg:
+                        return {'success': False, 'error': f'No baseline models have been trained yet. Train a model first using "train a baseline for Compressor-1".'}
+                    elif 'MISSING_IDENTIFIER' in error_msg:
+                        return {'success': False, 'error': f'API requires machine name. Try "show details for baseline model {model_version} for Compressor-1".'}
+                    return {'success': False, 'error': f'Could not retrieve model {model_version}: {error_msg}'}
             
             else:
                 self.logger.warning("unsupported_intent_api_call", intent=intent.intent)
@@ -2718,20 +3000,31 @@ class EnmsSkill(OVOSSkill):
     def handle_ranking(self, message: Message):
         """Handle ranking/top consumers queries - OVOS interface layer"""
         try:
-            limit = message.data.get('limit', '5')
             utterance = message.data.get("utterances", [""])[0]
+            utterance_lower = utterance.lower()
             
-            # Convert limit to int if it's a string number
-            try:
-                limit_int = int(limit) if limit else 5
-            except:
-                limit_int = 5
+            # Detect efficiency vs consumption queries
+            is_efficiency_query = any(word in utterance_lower for word in [
+                'efficient', 'efficiency', 'best performing', 'performance',
+                'optimal', 'productive', 'cost effective'
+            ])
+            
+            # Extract number from utterance (e.g., "top 3", "top 5 machines")
+            import re
+            number_match = re.search(r'\b(top|first|bottom|worst)\s+(\d+)\b', utterance_lower)
+            if number_match:
+                limit_int = int(number_match.group(2))
+            else:
+                limit_int = 5  # Default to 5
+            
+            self.log.info(f"Ranking query with limit: {limit_int}, efficiency: {is_efficiency_query}")
             
             intent = Intent(
                 intent=IntentType.RANKING,
                 limit=limit_int,
                 confidence=0.95,
-                utterance=utterance
+                utterance=utterance,
+                ranking_metric='efficiency' if is_efficiency_query else 'consumption'
             )
             
             result = self._call_enms_api(intent)
@@ -2778,11 +3071,20 @@ class EnmsSkill(OVOSSkill):
         """Handle machine list queries (list all machines)"""
         try:
             utterance = message.data.get("utterances", [""])[0]
+            utterance_lower = utterance.lower()
+            
+            # Detect location filter
+            location = None
+            if 'european' in utterance_lower or 'europe' in utterance_lower or 'eu' in utterance_lower:
+                location = 'EU'
+            elif 'american' in utterance_lower or 'america' in utterance_lower or 'us' in utterance_lower:
+                location = 'US'
             
             intent = Intent(
                 intent=IntentType.MACHINE_LIST,
                 confidence=0.95,
-                utterance=utterance
+                utterance=utterance,
+                params={'location': location} if location else None
             )
             
             result = self._call_enms_api(intent)
@@ -2921,7 +3223,9 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format_response('forecast', result['data'])
+                # Use custom template if specified (e.g., demand_forecast)
+                template_name = result.get('custom_template', 'forecast')
+                response = self.response_formatter.format_response(template_name, result['data'])
                 self.speak(response)
                 
                 # Update context for next query
@@ -2931,6 +3235,8 @@ class EnmsSkill(OVOSSkill):
                 self.speak_dialog("error.general")
         except Exception as e:
             self.log.error(f"Forecast handler failed: {e}")
+            import traceback
+            self.log.error(f"Traceback: {traceback.format_exc()}")
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('Baseline').require('baseline').require('machine').build())
@@ -3071,9 +3377,9 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Baseline models handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('BaselineExplanation').require('kpi_metric').require('machine').require('explain_query').build())
+    @intent_handler(IntentBuilder('BaselineExplanation').require('explain_query').optionally('machine').build())
     def handle_baseline_explanation(self, message: Message):
-        """Handle baseline explanation queries - OVOS interface layer (Phase 3.1: with context)"""
+        """Handle baseline explanation queries (key energy drivers, model explanations)"""
         try:
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
@@ -3090,6 +3396,9 @@ class EnmsSkill(OVOSSkill):
                 # DISABLED: machine = session.last_machine
                 # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
+            # Detect if user wants concise list format
+            is_list_query = 'list' in utterance.lower()
+            
             intent = Intent(
                 intent=IntentType.BASELINE_EXPLANATION,
                 machine=machine,
@@ -3100,6 +3409,8 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
+                # Add format hint for template
+                result['data']['concise_format'] = is_list_query
                 response = self.response_formatter.format_response('baseline_explanation', result['data'])
                 self.speak(response)
                 
@@ -3142,12 +3453,16 @@ class EnmsSkill(OVOSSkill):
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
+            self.log.info(f"KPI query triggered: {utterance}")
+            
             # Get or create session context
             # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            self.log.info(f"Machine extracted: {machine_raw} → {machine}")
             
             # Use context if no machine specified
             # DISABLED: if not machine and session.last_machine:
@@ -3161,19 +3476,28 @@ class EnmsSkill(OVOSSkill):
                 utterance=utterance
             )
             
+            self.log.info(f"Calling API for KPI intent")
             result = self._call_enms_api(intent)
             
+            self.log.info(f"API result: success={result.get('success')}, data keys={list(result.get('data', {}).keys()) if result.get('data') else None}")
+            
             if result['success']:
+                self.log.info(f"Formatting response for KPI data")
                 response = self.response_formatter.format_response('kpi', result['data'])
+                self.log.info(f"Generated response: {response[:100]}...")
                 self.speak(response)
                 
                 # Update context for next query
                 # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine, metric="kpi")
             else:
+                error_msg = result.get('error', 'Unknown error')
+                self.log.error(f"API call failed: {error_msg}")
                 self.speak_dialog("error.general")
         except Exception as e:
             self.log.error(f"KPI handler failed: {e}")
+            import traceback
+            self.log.error(f"Traceback: {traceback.format_exc()}")
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('Performance').require('performance_query').optionally('machine').build())
@@ -3307,13 +3631,16 @@ class EnmsSkill(OVOSSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
+                # Check for custom template
+                template_name = result.get('custom_template', None)
+                
                 if not machine:
                     # Factory-wide: use formatter with factory_power template
-                    response_text = self.response_formatter.format_response('factory_power', result['data'])
+                    response_text = self.response_formatter.format_response(template_name or 'factory_power', result['data'])
                     self.speak(response_text)
                 else:
                     # Machine-specific: use formatter
-                    response_text = self.response_formatter.format_response('power_query', result['data'])
+                    response_text = self.response_formatter.format_response(template_name or 'power_query', result['data'])
                     self.speak(response_text)
                 
                 # Update context for next query
@@ -3538,6 +3865,140 @@ class EnmsSkill(OVOSSkill):
         except Exception as e:
             self.log.error(f"Help handler failed: {e}")
             self.speak("I can help you with energy monitoring, machine status, anomaly detection, KPIs, forecasting, and more. Try asking about a specific machine or factory overview.")
+    
+    @intent_handler(IntentBuilder('Opportunities').require('opportunities').optionally('machine').build())
+    def handle_opportunities(self, message: Message):
+        """Handle energy saving opportunities queries"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            intent = Intent(
+                intent=IntentType.OPPORTUNITIES,
+                machine=machine,
+                confidence=0.95,
+                utterance=utterance
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                response = self.response_formatter.format_response('opportunities', result['data'])
+                self.speak(response)
+            else:
+                self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"Opportunities handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('ISO50001').require('iso50001').build())
+    def handle_iso50001(self, message: Message):
+        """Handle ISO 50001 compliance queries"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            
+            intent = Intent(
+                intent=IntentType.ISO50001,
+                confidence=0.95,
+                utterance=utterance
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                response = self.response_formatter.format_response('iso50001', result['data'])
+                self.speak(response)
+            else:
+                self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"ISO50001 handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('Alerts').require('alerts').build())
+    def handle_alerts(self, message: Message):
+        """Handle alert subscription queries"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            
+            intent = Intent(
+                intent=IntentType.ALERTS,
+                confidence=0.95,
+                utterance=utterance
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                response = self.response_formatter.format_response('alerts', result['data'])
+                self.speak(response)
+            else:
+                self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"Alerts handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('EnergyTypes').require('energy_types').optionally('machine').build())
+    def handle_energy_types(self, message: Message):
+        """Handle energy types queries"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            intent = Intent(
+                intent=IntentType.ENERGY_TYPES,
+                machine=machine,
+                confidence=0.95,
+                utterance=utterance
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                response = self.response_formatter.format_response('energy_types', result['data'])
+                self.speak(response)
+            else:
+                self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"Energy types handler failed: {e}")
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('ModelQuery').require('model_query').build())
+    def handle_model_query(self, message: Message):
+        """Handle baseline model details/explanation queries"""
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            
+            # Extract model ID from utterance (e.g., "model 46", "model version 186")
+            import re
+            model_id_match = re.search(r'model\s+(version\s+)?(\d+)', utterance.lower())
+            model_id = int(model_id_match.group(2)) if model_id_match else None
+            
+            if not model_id:
+                self.speak("Which model would you like details for? Please specify a model ID number.")
+                return
+            
+            intent = Intent(
+                intent=IntentType.MODEL_QUERY,
+                confidence=0.95,
+                utterance=utterance,
+                params={'model_id': model_id}
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                response = self.response_formatter.format_response('model_query', result['data'])
+                self.speak(response)
+            else:
+                error_msg = result.get('error', 'I could not find that model.')
+                self.speak(error_msg)
+        except Exception as e:
+            self.log.error(f"Model query handler failed: {e}")
+            import traceback
+            self.logger.error("model_query_traceback", trace=traceback.format_exc())
+            self.speak_dialog("error.general")
     
     def can_converse(self, message: Message) -> bool:
         """
