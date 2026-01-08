@@ -51,6 +51,7 @@ from .lib.observability import (
     errors_total,
     validation_rejections
 )
+from .lib.event_listener import EnMSEventListener
 
 logger = structlog.get_logger(__name__)
 
@@ -93,6 +94,9 @@ class EnmsSkill(OVOSSkill):
         self.response_formatter: Optional[ResponseFormatter] = None
         self.context_manager: Optional[ConversationContextManager] = None
         self.voice_feedback: Optional[VoiceFeedbackManager] = None
+        
+        # WASABI: Event listener for proactive warnings
+        self.event_listener: Optional[EnMSEventListener] = None
         
         # Persistent event loop for async API calls (prevents 'Event loop is closed' errors)
         self._async_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -252,6 +256,9 @@ class EnmsSkill(OVOSSkill):
         logger.info("scheduled_events_registered",
                    events=["whitelist_refresh_initial", "whitelist_refresh_daily", "conversation_cleanup", "health_check"])
         
+        # WASABI: Start event listener for proactive warnings
+        self._start_event_listener()
+        
         # Background preload LLM model (non-blocking)
         # This loads the model in a background thread so first LLM query is fast
         threading.Thread(target=self._preload_llm, daemon=True, name="llm_preload").start()
@@ -290,6 +297,71 @@ class EnmsSkill(OVOSSkill):
                 self.logger.warning("llm_preload_skipped", reason="parser not initialized")
         except Exception as e:
             self.logger.error("llm_preload_failed", error=str(e), error_type=type(e).__name__)
+    
+    def _start_event_listener(self):
+        """Start EnMS event listener for proactive warnings."""
+        try:
+            # Initialize listener with callback
+            self.event_listener = EnMSEventListener(callback=self._handle_enms_event)
+            
+            # Start listener in daemon thread with startup delay
+            def run_listener():
+                """Background thread to run async event listener."""
+                try:
+                    import time
+                    time.sleep(10)  # Wait for services to be ready
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self.event_listener.start_and_listen())
+                except Exception as e:
+                    self.log.error(f"Event listener thread failed: {e}")
+            
+            listener_thread = threading.Thread(
+                target=run_listener,
+                daemon=True,
+                name="enms_event_listener"
+            )
+            listener_thread.start()
+            self.log.info("EnMS event listener starting in background (10s delay)")
+        
+        except Exception as e:
+            self.log.error(f"Failed to start event listener: {e}")
+    
+    def _handle_enms_event(self, event_type: str, data: dict):
+        """
+        Handle incoming EnMS events (called from listener thread).
+        
+        Args:
+            event_type: Type of event (anomaly_detected, system_alert, etc.)
+            data: Event data dictionary
+        """
+        self.log.info(f"=== _handle_enms_event CALLED: {event_type} ===")
+        try:
+            self.log.info(f"Received EnMS event: {event_type}")
+            self.log.info(f"Event data: {data}")
+            
+            # Extract key info
+            machine_id = data.get('machine_id', 'Unknown machine')
+            self.log.info(f"Machine ID: {machine_id}")
+            severity = data.get('severity', 'unknown')
+            metric = data.get('metric', '')
+            value = data.get('value', '')
+            
+            # Create warning message
+            message = f"Warning: {machine_id} has an anomaly detected"
+            if metric and value:
+                message = f"Alert: {machine_id} - {metric} is {value}"
+            
+            self.log.info(f"Speaking proactive warning: {message}")
+            
+            # Speak warning
+            self.speak(message)
+            self.log.info("✅ Proactive warning spoken successfully!")
+            
+        except Exception as e:
+            self.log.error(f"❌ Error handling EnMS event: {e}")
+            import traceback
+            self.log.error(f"Traceback: {traceback.format_exc()}")
     
     def _refresh_machine_whitelist(self, message=None):
         """Refresh machine whitelist from EnMS API (Priority 4: Dynamic Discovery)"""
@@ -4114,5 +4186,13 @@ class EnmsSkill(OVOSSkill):
                 self.context_manager.cleanup_expired_sessions()
         except Exception as e:
             self.logger.error("context_cleanup_failed", error=str(e))
+        
+        # Stop event listener
+        try:
+            if self.event_listener:
+                self._run_async(self.event_listener.stop())
+                self.log.info("Event listener stopped")
+        except Exception as e:
+            self.log.error(f"Event listener shutdown failed: {e}")
         
         super().shutdown()

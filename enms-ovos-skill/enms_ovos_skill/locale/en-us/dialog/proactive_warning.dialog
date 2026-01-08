@@ -1,0 +1,3 @@
+Warning: {machine_id} has an anomaly detected
+Alert: {machine_id} shows abnormal behavior
+Attention: {machine_id} anomaly - {metric} is {value}
