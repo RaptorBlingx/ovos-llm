@@ -207,58 +207,66 @@ See [ovos-evaluation.md](./enms-ovos-skill/docs/ovos-evaluation.md) for detailed
 ## 🚀 Quick Start
 
 ### Prerequisites
-- **Windows 10/11** with WSL2
-- **Ubuntu 22.04** in WSL2
-- **Python 3.10+**
-- **EnMS API** access (http://your-server:8001)
+- **Docker** 20.10+ and **Docker Compose** 2.0+
+- **Linux/macOS** or **Windows with WSL2**
+- **2GB RAM** minimum (4GB recommended)
+- **EnMS API** access (default: http://172.18.0.1:8001)
 
 ### Installation
 
+**Option 1: Automated Setup (Recommended)**
+
 ```bash
-# 1. Clone the repository
+# Clone the repository
 git clone https://github.com/RaptorBlingx/ovos-llm.git
 cd ovos-llm
 
-# 2. Set up WSL2 environment
-wsl -d Ubuntu
+# Copy environment template
+cp .env.example .env
 
-# 3. Create Python virtual environment
-python3 -m venv ~/ovos-env
-source ~/ovos-env/bin/activate
+# (Optional) Edit .env to configure EnMS API URL
+nano .env
 
-# 4. Install OVOS Core
-pip install ovos-core ovos-audio ovos-messagebus
-
-# 5. Install the EnMS skill
-cd enms-ovos-skill
-pip install -e .
-
-# 6. Configure EnMS API endpoint
-export ENMS_API_URL="http://your-server:8001/api/v1"
-
-# 7. Start OVOS services (see docs/WSL2_WORKFLOW_GUIDE.md)
+# Run the setup script
+chmod +x setup.sh
+./setup.sh
 ```
 
-### Starting the Voice Assistant
+**Option 2: Manual Setup**
 
 ```bash
-# Terminal 1: OVOS MessageBus
-ovos-messagebus
+# Clone and configure
+git clone https://github.com/RaptorBlingx/ovos-llm.git
+cd ovos-llm
+cp .env.example .env
 
-# Terminal 2: OVOS Core
-ovos-core
-
-# Terminal 3: OVOS Audio
-ovos-audio
-
-# Terminal 4: REST Bridge (for web integration)
-cd enms-ovos-skill/bridge
-python ovos_rest_bridge.py
-
-# Terminal 5: Test queries
-cd enms-ovos-skill/scripts
-python test_skill_chat.py "What's the status of Compressor-1?"
+# Build and start (defaults work out of the box)
+docker compose build
+docker compose up -d
 ```
+
+That's it! 🎉 The voice assistant is ready to use.
+
+### Testing the Voice Assistant
+
+```bash
+# Test via REST API
+curl -X POST http://localhost:5000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "What is the status of Compressor-1?"}'
+
+# Or use the test script inside container
+docker compose exec ovos-enms python3 /app/enms-ovos-skill/scripts/test_skill_chat.py "What is the status of Compressor-1?"
+
+# View logs
+docker compose logs -f ovos-enms
+```
+
+### Access Points
+
+- **REST Bridge API**: http://localhost:5000
+- **Test Endpoint**: http://localhost:5000/test
+- **Health Check**: http://localhost:5000/health
 
 ---
 
