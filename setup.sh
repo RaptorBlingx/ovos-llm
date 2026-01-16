@@ -31,8 +31,9 @@ if [ ! -f .env ]; then
     cp .env.example .env
     echo "✅ .env file created"
     echo ""
-    echo "⚠️  IMPORTANT: Review .env and update ENMS_API_URL if needed"
-    echo "   Default connects to http://172.18.0.1:8001"
+    echo "⚠️  IMPORTANT: OVOS connects to EnMS via Docker network"
+    echo "   Default: http://enms-analytics:8001/api/v1 (container name)"
+    echo "   Both containers must be on 'enms-network'"
     echo ""
 else
     echo "✅ .env file already exists"

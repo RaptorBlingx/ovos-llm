@@ -13,7 +13,8 @@ services:
       - "5000:5000"    # REST API Bridge
       - "8181:8181"    # OVOS Messagebus (internal, can be exposed for debugging)
     environment:
-      # EnMS API (use container name since containers on same network)
+      # EnMS API - Always use container name when on same Docker network
+      # .env can have SERVER_IP for reference, but we override here
       - ENMS_API_URL=${ENMS_API_URL:-http://enms-analytics:8001/api/v1}
       
       # Bridge configuration
