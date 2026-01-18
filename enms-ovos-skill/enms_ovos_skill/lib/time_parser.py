@@ -116,7 +116,107 @@ class TimeRangeParser:
             
             return start, now
         
-        # Absolute date ranges: "October 27, 3 PM to October 28, 10 AM"
+        # NEW Phase 2.3: Simple date ranges without hours: "from January 1 to January 15"
+        simple_range_pattern = r'from\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?\s+to\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?'
+        match = re.match(simple_range_pattern, time_range_str)
+        
+        if match:
+            start_month_name = match.group(1)
+            start_day = int(match.group(2))
+            start_year = int(match.group(3)) if match.group(3) else now.year
+            
+            end_month_name = match.group(4)
+            end_day = int(match.group(5))
+            end_year = int(match.group(6)) if match.group(6) else now.year
+            
+            start_month = TimeRangeParser.MONTHS.get(start_month_name)
+            end_month = TimeRangeParser.MONTHS.get(end_month_name)
+            
+            if not start_month or not end_month:
+                logger.warning("invalid_month_name", 
+                             start_month=start_month_name, 
+                             end_month=end_month_name)
+                return None, None
+            
+            try:
+                start_dt = datetime(start_year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
+                end_dt = datetime(end_year, end_month, end_day, 23, 59, 59, tzinfo=timezone.utc)
+                
+                logger.info("parsed_simple_date_range",
+                           start=start_dt.isoformat(),
+                           end=end_dt.isoformat())
+                
+                return start_dt, end_dt
+                
+            except ValueError as e:
+                logger.error("invalid_datetime_values", error=str(e))
+                return None, None
+        
+        # NEW Phase 2.3: Between...and pattern: "between January 5 and January 10"
+        between_pattern = r'between\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?\s+and\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?'
+        match = re.match(between_pattern, time_range_str)
+        
+        if match:
+            start_month_name = match.group(1)
+            start_day = int(match.group(2))
+            start_year = int(match.group(3)) if match.group(3) else now.year
+            
+            end_month_name = match.group(4)
+            end_day = int(match.group(5))
+            end_year = int(match.group(6)) if match.group(6) else now.year
+            
+            start_month = TimeRangeParser.MONTHS.get(start_month_name)
+            end_month = TimeRangeParser.MONTHS.get(end_month_name)
+            
+            if not start_month or not end_month:
+                logger.warning("invalid_month_name", 
+                             start_month=start_month_name, 
+                             end_month=end_month_name)
+                return None, None
+            
+            try:
+                start_dt = datetime(start_year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
+                end_dt = datetime(end_year, end_month, end_day, 23, 59, 59, tzinfo=timezone.utc)
+                
+                logger.info("parsed_between_date_range",
+                           start=start_dt.isoformat(),
+                           end=end_dt.isoformat())
+                
+                return start_dt, end_dt
+                
+            except ValueError as e:
+                logger.error("invalid_datetime_values", error=str(e))
+                return None, None
+        
+        # NEW Phase 2.3: Single date: "on January 15" or "on January 15th"
+        single_date_pattern = r'on\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?'
+        match = re.match(single_date_pattern, time_range_str)
+        
+        if match:
+            month_name = match.group(1)
+            day = int(match.group(2))
+            year = int(match.group(3)) if match.group(3) else now.year
+            
+            month = TimeRangeParser.MONTHS.get(month_name)
+            
+            if not month:
+                logger.warning("invalid_month_name", month=month_name)
+                return None, None
+            
+            try:
+                start_dt = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+                end_dt = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+                
+                logger.info("parsed_single_date",
+                           date=start_dt.date().isoformat())
+                
+                return start_dt, end_dt
+                
+            except ValueError as e:
+                logger.error("invalid_datetime_values", error=str(e))
+                return None, None
+        
+        # EXISTING: Absolute date ranges with hours: "October 27, 3 PM to October 28, 10 AM"
         # Pattern: "Month Day, Hour AM/PM to Month Day, Hour AM/PM"
         absolute_pattern = r'(\w+)\s+(\d+),?\s+(\d+)\s*(am|pm)?\s+to\s+(\w+)\s+(\d+),?\s+(\d+)\s*(am|pm)?'
         match = re.match(absolute_pattern, time_range_str)

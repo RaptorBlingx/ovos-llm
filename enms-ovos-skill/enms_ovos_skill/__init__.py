@@ -558,7 +558,9 @@ class EnmsSkill(OVOSSkill):
             r'last\s+(?:hour|day|week|month)',  # "last hour", "last week"
             r'past\s+(?:\d+\s+)?(?:hour|day|week)s?',
             r'since\s+\d+\s*(?:am|pm)',
-            r'between\s+.+?\s+and\s+.+?'
+            r'from\s+\w+\s+\d+(?:,?\s+\d{4})?\s+to\s+\w+\s+\d+(?:,?\s+\d{4})?',  # "from January 1 to January 15"
+            r'between\s+\w+\s+\d+\s+and\s+\w+\s+\d+',  # "between January 5 and January 10"
+            r'on\s+\w+\s+\d+(?:st|nd|rd|th)?(?:,?\s+\d{4})?'  # "on January 15" or "on January 15th, 2025"
         ]
         
         time_range_str = None
@@ -1284,7 +1286,6 @@ class EnmsSkill(OVOSSkill):
                         machine_id = machines[0]['id']
                         
                         # Default to today if no time range specified
-                        from datetime import datetime, timedelta
                         if not intent.time_range:
                             end_time = datetime.now()
                             start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -2112,14 +2113,18 @@ class EnmsSkill(OVOSSkill):
                 is_search_request = any(kw in utterance for kw in ['find', 'search']) and intent.time_range and intent.time_range.start
                 self.logger.info("🔍 anomaly_type_determined", detection=is_detection_request, active=is_active_request, search=is_search_request)
                 
-                # Extract severity from utterance (critical, warning, info)
+                # Extract severity from utterance (critical, warning, info, normal)
                 severity = None
-                if 'critical' in utterance:
+                if 'critical' in utterance or 'severe' in utterance or 'urgent' in utterance:
                     severity = 'critical'
-                elif 'warning' in utterance or 'warn' in utterance:
+                elif 'warning' in utterance or 'warn' in utterance or 'moderate' in utterance:
                     severity = 'warning'
-                elif 'info' in utterance or 'information' in utterance:
+                elif 'info' in utterance or 'information' in utterance or 'informational' in utterance:
                     severity = 'info'
+                elif 'normal' in utterance or 'low' in utterance:
+                    severity = 'normal'
+                
+                self.logger.info("🔍 severity_extracted", severity=severity, utterance_snippet=utterance[:60])
                 
                 if is_detection_request:
                     # RUN ML anomaly detection - POST /anomaly/detect
@@ -2149,7 +2154,7 @@ class EnmsSkill(OVOSSkill):
                 
                 elif is_active_request:
                     # GET active (unresolved) anomalies - GET /anomaly/active
-                    data = self._run_async(self.api_client.get_active_anomalies())
+                    data = self._run_async(self.api_client.get_active_anomalies(severity=severity))
                     data['is_active'] = True
                     return {'success': True, 'data': data}
                 
@@ -2433,8 +2438,7 @@ class EnmsSkill(OVOSSkill):
                 energy_source = "energy"
                 
                 # Get analysis date (default to today)
-                from datetime import date as date_class
-                analysis_date = date_class.today().isoformat()
+                analysis_date = datetime.now(timezone.utc).date().isoformat()
                 
                 # Call performance API
                 performance = self._run_async(
@@ -2451,39 +2455,34 @@ class EnmsSkill(OVOSSkill):
                 # Forecast - get future energy prediction
                 self.logger.info("forecast_query", machine=intent.machine)
                 
-                # Check if this is a demand forecast (detailed ARIMA predictions)
-                utterance = getattr(intent, 'utterance', '').lower()
-                is_demand_forecast = 'demand' in utterance or 'detailed' in utterance
+                # Extract horizon and periods from intent params (set by handler)
+                horizon = intent.params.get('horizon', 'short') if intent.params else 'short'
+                periods = intent.params.get('periods', 4) if intent.params else 4
+                time_unit = intent.params.get('time_unit', 'day') if intent.params else 'day'
                 
-                if is_demand_forecast and intent.machine:
-                    # Use /forecast/demand endpoint (requires machine UUID)
-                    # Lookup machine ID
-                    machines = self._run_async(
-                        self.api_client.list_machines(search=intent.machine)
-                    )
-                    
-                    if not machines:
-                        return {'success': False, 'error': f'Machine {intent.machine} not found'}
-                    
-                    machine_id = machines[0]['id']
-                    
-                    # Get detailed demand forecast
-                    forecast = self._run_async(
-                        self.api_client.forecast_demand(
-                            machine_id=machine_id,
-                            horizon="short",
-                            periods=4
-                        )
-                    )
-                    # Add machine name for template
-                    forecast['machine_name'] = intent.machine
-                    return {'success': True, 'data': forecast, 'custom_template': 'demand_forecast'}
-                else:
-                    # Use /forecast/short-term endpoint (simplified daily forecast)
+                self.log.info(f"Forecast API call: horizon={horizon}, periods={periods}, unit={time_unit}")
+                
+                # For now, only support single-day forecasts using /forecast/short-term
+                # Multi-day ARIMA forecasts require trained models (not available yet)
+                if periods > 1 or horizon in ['medium', 'long']:
+                    # User asked for multi-period forecast, but we can only provide tomorrow
                     forecast = self._run_async(
                         self.api_client.get_forecast(
                             machine=intent.machine,
-                            hours=24  # Default to 24 hour forecast
+                            hours=24
+                        )
+                    )
+                    # Add note that we're providing tomorrow only
+                    forecast['periods_requested'] = periods
+                    forecast['time_unit'] = time_unit
+                    forecast['note'] = f"Showing tomorrow's forecast (multi-period forecasts require model training)"
+                    return {'success': True, 'data': forecast}
+                else:
+                    # Single-period short-term forecast - use simplified endpoint
+                    forecast = self._run_async(
+                        self.api_client.get_forecast(
+                            machine=intent.machine,
+                            hours=24
                         )
                     )
                     return {'success': True, 'data': forecast}
@@ -3081,13 +3080,26 @@ class EnmsSkill(OVOSSkill):
                 'optimal', 'productive', 'cost effective'
             ])
             
-            # Extract number from utterance (e.g., "top 3", "top 5 machines")
+            # Extract number from utterance (e.g., "top 3", "top three", "top 5 machines")
             import re
+            
+            # Word to number mapping
+            word_to_num = {
+                'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+            }
+            
+            # Try digit pattern first (e.g., "top 3")
             number_match = re.search(r'\b(top|first|bottom|worst)\s+(\d+)\b', utterance_lower)
             if number_match:
                 limit_int = int(number_match.group(2))
             else:
-                limit_int = 5  # Default to 5
+                # Try word pattern (e.g., "top three")
+                word_match = re.search(r'\b(top|first|bottom|worst)\s+(one|two|three|four|five|six|seven|eight|nine|ten)\b', utterance_lower)
+                if word_match:
+                    limit_int = word_to_num[word_match.group(2)]
+                else:
+                    limit_int = 5  # Default to 5
             
             self.log.info(f"Ranking query with limit: {limit_int}, efficiency: {is_efficiency_query}")
             
@@ -3267,6 +3279,7 @@ class EnmsSkill(OVOSSkill):
         """Handle energy forecast queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
             utterance = message.data.get("utterances", [""])[0]
+            utterance_lower = utterance.lower()
             session_id = self._get_session_id(message)
             
             # Get or create session context
@@ -3284,12 +3297,67 @@ class EnmsSkill(OVOSSkill):
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
             
+            # Extract horizon (short/medium/long-term)
+            import re
+            horizon = "short"  # Default
+            if re.search(r'\b(medium|mid)[\s-]?term\b', utterance_lower):
+                horizon = "medium"
+            elif re.search(r'\blong[\s-]?term\b', utterance_lower):
+                horizon = "long"
+            elif re.search(r'\bshort[\s-]?term\b', utterance_lower):
+                horizon = "short"
+            
+            # Extract periods from utterance (e.g., "7-day forecast", "next 12 hours", "8 periods")
+            # Check for explicit single-day keywords first
+            periods = None
+            time_unit = 'day'  # Default unit
+            if re.search(r'\b(tomorrow|next day)\b', utterance_lower):
+                periods = 1
+                time_unit = 'day'
+            
+            # Try to extract number + time unit patterns
+            if periods is None:
+                period_match = re.search(r'\b(\d+)[\s-]?(day|hour|week|period)s?\b', utterance_lower)
+                if period_match:
+                    num = int(period_match.group(1))
+                    unit = period_match.group(2)
+                    time_unit = unit  # Store the unit
+                    
+                    # Map to periods based on unit
+                    if unit == 'hour':
+                        periods = min(num, 24)  # Cap at 24 hours
+                    elif unit == 'day':
+                        periods = num
+                    elif unit == 'week':
+                        periods = num * 7  # Convert to days
+                        time_unit = 'day'  # Weeks converted to days
+                    elif unit == 'period':
+                        periods = num
+            
+            # Try word numbers (seven, eight, etc.)
+            if periods is None:
+                word_to_num = {
+                    'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'twelve': 12, 'twenty four': 24, 'forty eight': 48
+                }
+                for word, num in word_to_num.items():
+                    if word in utterance_lower:
+                        periods = num
+                        break
+            
+            # Default to 1 period if nothing else matched (tomorrow forecast use case)
+            if periods is None:
+                periods = 1
+            
+            self.log.info(f"Forecast params extracted: horizon={horizon}, periods={periods}, unit={time_unit}")
+            
             intent = Intent(
                 intent=IntentType.FORECAST,
                 time_range=time_range,
                 machine=machine,
                 confidence=0.95,
-                utterance=utterance
+                utterance=utterance,
+                params={'horizon': horizon, 'periods': periods, 'time_unit': time_unit}
             )
             
             result = self._call_enms_api(intent)

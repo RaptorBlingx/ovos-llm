@@ -402,9 +402,12 @@ class ENMSClient:
         
         return await self._request("GET", "/anomaly/recent", params=params)
     
-    async def get_active_anomalies(self) -> Dict[str, Any]:
+    async def get_active_anomalies(self, severity: Optional[str] = None) -> Dict[str, Any]:
         """Get currently unresolved anomalies requiring attention"""
-        return await self._request("GET", "/anomaly/active")
+        params = {}
+        if severity:
+            params["severity"] = severity
+        return await self._request("GET", "/anomaly/active", params=params)
     
     async def search_anomalies(
         self,
