@@ -558,8 +558,8 @@ class EnmsSkill(OVOSSkill):
             r'last\s+(?:hour|day|week|month)',  # "last hour", "last week"
             r'past\s+(?:\d+\s+)?(?:hour|day|week)s?',
             r'since\s+\d+\s*(?:am|pm)',
-            r'from\s+\w+\s+\d+(?:,?\s+\d{4})?\s+to\s+\w+\s+\d+(?:,?\s+\d{4})?',  # "from January 1 to January 15"
-            r'between\s+\w+\s+\d+\s+and\s+\w+\s+\d+',  # "between January 5 and January 10"
+            r'from\s+\w+\s+\d+(?:st|nd|rd|th)?(?:,?\s+\d{4})?\s+to\s+\w+\s+\d+(?:st|nd|rd|th)?(?:,?\s+\d{4})?',  # "from January 1st to January 15th"
+            r'between\s+\w+\s+\d+(?:st|nd|rd|th)?\s+and\s+\w+\s+\d+(?:st|nd|rd|th)?',  # "between January 5th and January 10th"
             r'on\s+\w+\s+\d+(?:st|nd|rd|th)?(?:,?\s+\d{4})?'  # "on January 15" or "on January 15th, 2025"
         ]
         

@@ -116,8 +116,9 @@ class TimeRangeParser:
             
             return start, now
         
-        # NEW Phase 2.3: Simple date ranges without hours: "from January 1 to January 15"
-        simple_range_pattern = r'from\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?\s+to\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?'
+        # NEW Phase 2.3: Simple date ranges without hours: "from January 1st to January 15th"
+        # Supports ordinal suffixes: 1st, 2nd, 3rd, 14th, 15th (voice recognition)
+        simple_range_pattern = r'from\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\s+to\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?'
         match = re.match(simple_range_pattern, time_range_str)
         
         if match:
@@ -152,8 +153,9 @@ class TimeRangeParser:
                 logger.error("invalid_datetime_values", error=str(e))
                 return None, None
         
-        # NEW Phase 2.3: Between...and pattern: "between January 5 and January 10"
-        between_pattern = r'between\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?\s+and\s+(\w+)\s+(\d+)(?:,?\s+(\d{4}))?'
+        # NEW Phase 2.3: Between...and pattern: "between January 5th and January 10th"
+        # Supports ordinal suffixes: 1st, 2nd, 3rd, 14th, 15th (voice recognition)
+        between_pattern = r'between\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\s+and\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?'
         match = re.match(between_pattern, time_range_str)
         
         if match:
