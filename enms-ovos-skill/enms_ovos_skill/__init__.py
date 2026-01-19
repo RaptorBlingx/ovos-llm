@@ -774,6 +774,57 @@ class EnmsSkill(OVOSSkill):
         ]
         return months[month - 1] if 1 <= month <= 12 else 'Unknown'
     
+    def _extract_energy_source(self, utterance: str) -> Optional[str]:
+        """
+        Extract energy source type from utterance (Phase 2.5)
+        
+        Supports ISO 50001 multi-energy source tracking:
+        - electricity (default)
+        - natural_gas
+        - steam
+        - compressed_air
+        
+        Args:
+            utterance: User's query text
+            
+        Returns:
+            Energy source string for API, or None (defaults to electricity)
+            
+        Examples:
+            >>> _extract_energy_source("natural gas consumption for Boiler-1")
+            'natural_gas'
+            >>> _extract_energy_source("steam usage today")
+            'steam'
+            >>> _extract_energy_source("electricity for HVAC")
+            'electricity'
+            >>> _extract_energy_source("Compressor-1 energy")
+            None  # Defaults to electricity in API
+        """
+        import re
+        
+        # Normalize utterance
+        text = utterance.lower()
+        
+        # Energy source patterns (order matters - check specific before general)
+        patterns = [
+            # Natural gas variations
+            (r'\b(natural\s+gas|gas|lng)\b', 'natural_gas'),
+            # Steam
+            (r'\bsteam\b', 'steam'),
+            # Compressed air
+            (r'\b(compressed\s+air|air\s+compressor|pneumatic)\b', 'compressed_air'),
+            # Electricity (explicit mention)
+            (r'\b(electricity|electrical|electric|power|kwh|kilowatt)\b', 'electricity'),
+        ]
+        
+        for pattern, energy_source in patterns:
+            if re.search(pattern, text):
+                self.log.info(f"Energy source detected: {energy_source}")
+                return energy_source
+        
+        # No explicit energy source mentioned - return None (API defaults to electricity)
+        return None
+    
     def _apply_implicit_scope(self, intent: Intent) -> Intent:
         """
         Apply factory-wide scope when no machine specified (Priority 3)
@@ -1633,17 +1684,8 @@ class EnmsSkill(OVOSSkill):
                 # Significant Energy Uses (SEUs) queries
                 utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
                 
-                # Extract energy source from intent or utterance
-                energy_source = intent.energy_source
-                if not energy_source:
-                    if 'electricity' in utterance or 'electric' in utterance:
-                        energy_source = 'electricity'
-                    elif 'gas' in utterance or 'natural gas' in utterance:
-                        energy_source = 'natural_gas'
-                    elif 'steam' in utterance:
-                        energy_source = 'steam'
-                    elif 'compressed air' in utterance:
-                        energy_source = 'compressed_air'
+                # Extract energy source using Phase 2.5 method
+                energy_source = intent.energy_source or self._extract_energy_source(utterance)
                 
                 # Check for baseline filtering
                 asking_without_baseline = any(phrase in utterance for phrase in [
@@ -2229,13 +2271,17 @@ class EnmsSkill(OVOSSkill):
                 if not intent.machine:
                     return {'success': False, 'error': 'Machine name required for baseline models'}
                 
-                self.logger.info("baseline_models_query", machine=intent.machine)
+                # Phase 2.5: Extract energy source
+                utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
+                energy_source = intent.energy_source or self._extract_energy_source(utterance) or 'electricity'
+                
+                self.logger.info("baseline_models_query", machine=intent.machine, energy_source=energy_source)
                 
                 # Call list_baseline_models API
                 response = self._run_async(
                     self.api_client.list_baseline_models(
                         seu_name=intent.machine,
-                        energy_source="electricity"
+                        energy_source=energy_source
                     )
                 )
                 
@@ -2260,13 +2306,17 @@ class EnmsSkill(OVOSSkill):
                     self.logger.info("baseline_explanation_factory_wide")
                     return self._get_factory_wide_drivers()
                 
-                self.logger.info("baseline_explanation_query", machine=intent.machine)
+                # Phase 2.5: Extract energy source
+                utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
+                energy_source = intent.energy_source or self._extract_energy_source(utterance) or 'electricity'
+                
+                self.logger.info("baseline_explanation_query", machine=intent.machine, energy_source=energy_source)
                 
                 # First get the list of models to find the active model ID
                 models_response = self._run_async(
                     self.api_client.list_baseline_models(
                         seu_name=intent.machine,
-                        energy_source="electricity"
+                        energy_source=energy_source
                     )
                 )
                 
@@ -2317,6 +2367,10 @@ class EnmsSkill(OVOSSkill):
                 
                 # Extract features from utterance (temperature, pressure, load, production)
                 utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
+                
+                # Phase 2.5: Extract energy source
+                energy_source = intent.energy_source or self._extract_energy_source(utterance) or 'electricity'
+                
                 features = FeatureExtractor.extract_all_features(
                     utterance,
                     defaults={
@@ -2339,7 +2393,7 @@ class EnmsSkill(OVOSSkill):
                             prediction = self._run_async(
                                 self.api_client.predict_baseline(
                                     seu_name=seu_name,
-                                    energy_source="electricity",
+                                    energy_source=energy_source,  # Phase 2.5
                                     features=features,
                                     include_message=False
                                 )
@@ -2360,14 +2414,14 @@ class EnmsSkill(OVOSSkill):
                     }
                 
                 # Single machine prediction
-                self.logger.info("baseline_prediction", machine=machine)
+                self.logger.info("baseline_prediction", machine=machine, energy_source=energy_source)
                 
                 try:
-                    # Call baseline prediction API
+                    # Call baseline prediction API (Phase 2.5: uses extracted energy_source)
                     prediction = self._run_async(
                         self.api_client.predict_baseline(
                             seu_name=machine,
-                            energy_source="electricity",
+                            energy_source=energy_source,
                             features=features,
                             include_message=False  # Don't use API message, we format with features
                         )

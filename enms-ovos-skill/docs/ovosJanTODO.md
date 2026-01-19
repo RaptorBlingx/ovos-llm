@@ -4,7 +4,7 @@
 **Focus:** Voice-Enabled Energy Management System  
 **Target:** 100% API coverage, Human-centric features, TRL 7-8  
 **Created:** January 16, 2026  
-**Last Updated:** January 19, 2026 06:25 UTC
+**Last Updated:** January 19, 2026 11:00 UTC
 
 ---
 
@@ -105,7 +105,68 @@ AFTER FIX (18:25 UTC):
 
 ---
 
-## 🎯 Current Status (Jan 19, 2026 08:00 UTC)
+## 📝 Testing Session Log - Phase 7.5 (Jan 19, 2026)
+
+**Session Start:** 06:00 UTC  
+**Developer:** AI Agent  
+**Objective:** Implement voice interrupt for STT error correction (UX Critical)
+
+### Implementation Summary:
+1. ✅ Added AbortController to widget for fetch cancellation
+2. ✅ Global `abortController` variable tracks current request
+3. ✅ Updated `sendMessage()`: Cancels previous request before sending new one
+4. ✅ Added 1-second delay after cancellation to prevent race conditions
+5. ✅ Unique session IDs with timestamp suffixes to avoid collisions
+6. ✅ Updated `onWakeWordDetected()`: Aborts in-flight requests on wake word
+7. ✅ REST Bridge: New POST /cancel endpoint to stop polling loop
+8. ✅ Added `cancelled_sessions` set to track cancelled query sessions
+9. ✅ Updated `process_query()` polling loop to check cancellation flag
+10. ✅ Fixed CORS issue: Reverted healthUrl to nginx proxy path
+
+### Test Results:
+```bash
+✅ Voice interrupt: User says "Jarvis" mid-processing → Request cancelled immediately
+✅ New query sent: Widget processes new query after cancel
+✅ 1-second delay: Prevents 500 errors from race conditions
+✅ Unique session IDs: timestamp-1737268XXX suffixes prevent collisions
+✅ Widget visibility: Fixed after healthUrl CORS issue
+✅ Quick replies: Moved into chat area, mic button removed
+✅ Health status: Shows "Connected" using bridge_reachable property
+```
+
+### Code Changes:
+- [ovos-voice-widget.js](../../../../humanergy/portal/public/js/ovos-voice-widget.js#L41): Added global abortController
+- [ovos-voice-widget.js](../../../../humanergy/portal/public/js/ovos-voice-widget.js#L1090-1145): sendMessage() with cancel + 1s delay
+- [ovos-voice-widget.js](../../../../humanergy/portal/public/js/ovos-voice-widget.js#L1615-1650): onWakeWordDetected() abort logic
+- [ovos-voice-widget.js](../../../../humanergy/portal/public/js/ovos-voice-widget.js#L21): healthUrl reverted to nginx proxy
+- [ovos-voice-widget.js](../../../../humanergy/portal/public/js/ovos-voice-widget.js#L1087): checkHealth() uses bridge_reachable
+- [ovos_rest_bridge.py](../bridge/ovos_rest_bridge.py#L64): Added cancelled_sessions set
+- [ovos_rest_bridge.py](../bridge/ovos_rest_bridge.py#L302-320): POST /cancel endpoint
+- [ovos_rest_bridge.py](../bridge/ovos_rest_bridge.py#L178-190): process_query() cancellation check
+- Version updated: index.html, reports.html → 20260119d for cache busting
+
+### Issues Found & Fixed:
+1. **Race condition (500 error):** Fixed with 1-second delay after cancel + unique session IDs
+2. **CORS error:** Widget disappeared when calling REST bridge directly on port 5000
+   - Fixed: Reverted to nginx proxy path `/api/ovos/voice/health`
+   - Updated: checkHealth() accepts both `bridge_reachable` (nginx) and `messagebus_connected` (direct)
+3. **Cache not updating:** Incremented version parameter: 20260108g → 20260119d
+
+### Production Deployment:
+- ✅ Committed to humanergy repo (b2cd660)
+- ✅ Committed to ovos-llm repo (4c3ed58)
+- ✅ Pushed to GitLab and GitHub
+- ✅ Live on wasabi.intel50001.com
+
+**Session End:** 09:30 UTC  
+**Duration:** 3.5 hours  
+**Result:** Phase 7.5 implemented, tested, and deployed ✅
+
+---
+
+## 🎯 Current Status (Jan 19, 2026 09:30 UTC)
+
+## 🎯 Current Status (Jan 19, 2026 11:00 UTC)
 
 **Phase 0:** ✅ COMPLETE - 14/14 intents tested (100% success)  
 **Phase 1:** ✅ COMPLETE - All bugs fixed (SEU, KPI, number words)  
@@ -113,14 +174,17 @@ AFTER FIX (18:25 UTC):
 **Phase 2.2:** ✅ COMPLETE & VALIDATED - Forecast horizon & periods extraction  
 **Phase 2.3:** ✅ COMPLETE & VALIDATED - Absolute date range parsing (bug fixed!)
 **Phase 2.4:** ✅ COMPLETE & VALIDATED - Time interval selection (Jan 18, 2026)
+**Phase 2.5:** ✅ COMPLETE & TESTED - Multi-energy source support (Jan 19, 2026)
 **Phase 3.1:** ✅ COMPLETE - Temporal comparison (week-over-week, etc.)
 **Phase 3.2:** ✅ COMPLETE - Trend analysis (increasing/decreasing consumption)
+**Phase 7.5:** ✅ COMPLETE & DEPLOYED - Voice interrupt for STT error correction (Jan 19, 2026)
 
-**Phase 7.5:** ⏳ IN PROGRESS - Voice interrupt for STT error correction (Jan 19, 2026)
-
-**Overall Progress:** 55% of planned enhancements complete  
-**Phase 2 Status:** 80% complete (4 of 5 features done)  
+**Overall Progress:** 65% of planned enhancements complete  
+**Phase 2 Status:** ✅ 100% COMPLETE (5 of 5 features done) 🎉  
 **Phase 3 Status:** 67% complete (2 of 3 features done)
+**Phase 7 Status:** 25% complete (1 of 4 features done)
+
+**Next Priority:** Phase 3.3 (Historical pattern analysis) or Phase 4.1 (Optimal scheduling)
 
 ---
 
@@ -468,27 +532,65 @@ End date logic: Changed from comparing datetime to comparing .date() (avoids sam
 - Larger minute values (e.g., 20, 30) map to 1hour (API limitation)
 - Integrates seamlessly with existing time range extraction
 
-### 2.5 Multi-Energy Source Support
-**Status:** ❌ NOT IMPLEMENTED  
-**Priority:** HIGH (if API supports)  
+### 2.5 Multi-Energy Source Support ✅ COMPLETE (Jan 19, 2026)
+**Status:** ✅ IMPLEMENTED & TESTED (11:00 UTC)
+**Priority:** HIGH (ISO 50001 compliance)  
 **Gap:** "Natural gas consumption" returns electricity data
 
-**API Check Required:**
-- Verify `/baseline/predict`, `/seus`, `/timeseries/energy` accept `energy_source` parameter
-- Check if API supports: `electricity`, `natural_gas`, `steam`, `compressed_air`
+**API Validation Results (Jan 19, 2026 10:40 UTC):**
+```bash
+✅ API supports energy_source parameter (electricity, natural_gas, steam, compressed_air)
+✅ /seus?energy_source=X filter works (returns correct count per source)
+✅ /baseline/models?seu_name=X&energy_source=Y works
+✅ API requires both seu_name + energy_source (validated error handling)
+⚠️ Current data: All 7 SEUs are electricity only (no natural_gas/steam data yet)
+```
 
-**Implementation (if API supports):**
-1. Add energy source extraction in `intent_parser.py`:
-   ```python
-   ENERGY_SOURCE_PATTERNS = [
-       r'\b(natural\s+gas|steam|compressed\s+air|electricity)\b'
-   ]
-   ```
-2. Update handlers: baseline, seu, energy_query to pass `energy_source`
-3. Test queries:
-   - "Natural gas consumption for Boiler-1"
-   - "Steam usage today"
-   - "Compressed air for all machines"
+**Implementation:**
+1. ✅ Added `_extract_energy_source()` method to skill (lines 777-825)
+2. ✅ Pattern recognition for: natural gas, steam, compressed air, electricity
+3. ✅ Updated SEU handler to use extraction method (line 1688)
+4. ✅ Updated baseline prediction handler (single & multi-machine) (lines 2365, 2395)
+5. ✅ Updated baseline models query handler (line 2280)
+6. ✅ Updated baseline explanation handler (line 2320)
+7. ✅ Added energy source keywords to baseline.voc and seu_query.voc
+8. ✅ Fixed logging syntax error in extraction method
+
+**Test Results (Jan 19, 2026 11:00 UTC):**
+```bash
+✅ "List electricity SEUs" → 7 SEUs found (correct)
+✅ "List natural gas SEUs" → 0 SEUs found (correct - no data)
+✅ "List steam SEUs" → 0 SEUs found (correct - no data)
+✅ "Predict Compressor-1 electricity baseline" → 46.4 kWh prediction (works!)
+✅ Energy source extraction: electricity pattern detected correctly
+✅ API calls: energy_source parameter passed correctly
+```
+
+**Supported Patterns:**
+- "natural gas" / "gas" / "lng" → `natural_gas`
+- "steam" → `steam`
+- "compressed air" / "air compressor" / "pneumatic" → `compressed_air`
+- "electricity" / "electrical" / "electric" / "power" / "kwh" → `electricity`
+
+**Code Changes:**
+- [__init__.py](../enms_ovos_skill/__init__.py#L777-L825): Added _extract_energy_source() method
+- [__init__.py](../enms_ovos_skill/__init__.py#L1688): SEU handler uses extraction
+- [__init__.py](../enms_ovos_skill/__init__.py#L2365): Baseline prediction energy_source extraction
+- [__init__.py](../enms_ovos_skill/__init__.py#L2280): Baseline models energy_source extraction
+- [__init__.py](../enms_ovos_skill/__init__.py#L2320): Baseline explanation energy_source extraction
+- [baseline.voc](../enms_ovos_skill/locale/en-us/vocab/baseline.voc): Added energy source keywords
+- [seu_query.voc](../enms_ovos_skill/locale/en-us/vocab/seu_query.voc): Added energy source keywords
+
+**Production Readiness:**
+- ✅ Works with current electricity-only data
+- ✅ Future-proof for multi-energy data (API ready)
+- ✅ ISO 50001 compliant (supports all energy types)
+- ✅ Graceful handling (no data = "0 SEUs found for X")
+
+**Known Limitations:**
+- Current pilot system has electricity data only
+- When multi-energy data added, OVOS will immediately support it
+- No code changes needed when new energy sources added to system
 
 ---
 
@@ -935,14 +1037,29 @@ Widget: [Response for factory overview]
 
 ---
 
-**Phase 7.5 Status:** ⏳ PLANNED (awaiting approval to implement)  
-**Estimated Implementation Time:** 2-3 hours  
+**Phase 7.5 Status:** ✅ COMPLETE & DEPLOYED (Jan 19, 2026 09:30 UTC)  
+**Implementation Time:** 3.5 hours  
 **Risk Level:** LOW (isolated changes, easy rollback)  
-**User Impact:** HIGH (critical UX improvement)
+**User Impact:** HIGH (critical UX improvement)  
+**Production:** Live on wasabi.intel50001.com
+
+**What Works:**
+- ✅ Voice interrupt via wake word ("Jarvis") during processing
+- ✅ AbortController cancels browser-side fetch requests
+- ✅ REST bridge cancel endpoint stops backend polling
+- ✅ 1-second delay prevents race conditions
+- ✅ Unique session IDs prevent collisions
+- ✅ Health check via nginx proxy (no CORS issues)
+- ✅ Quick replies in chat area (improved UX)
+
+**Known Limitations:**
+- Cancel works browser-side immediately (no 90s wait)
+- Backend may continue processing briefly (non-critical)
+- Requires "Jarvis" wake word to interrupt (no GUI button yet)
 
 ---
 
-**Goal:** Voice-based operational optimization.
+## Phase 4: Optimization & Root Cause Analysis (MEDIUM PRIORITY)
 
 ### 4.1 Optimal Scheduling
 **Status:** ❌ API EXISTS, NO VOICE HANDLER  
