@@ -105,7 +105,7 @@ AFTER FIX (18:25 UTC):
 
 ---
 
-## 🎯 Current Status (Jan 18, 2026 18:40 UTC)
+## 🎯 Current Status (Jan 19, 2026 08:00 UTC)
 
 **Phase 0:** ✅ COMPLETE - 14/14 intents tested (100% success)  
 **Phase 1:** ✅ COMPLETE - All bugs fixed (SEU, KPI, number words)  
@@ -113,9 +113,14 @@ AFTER FIX (18:25 UTC):
 **Phase 2.2:** ✅ COMPLETE & VALIDATED - Forecast horizon & periods extraction  
 **Phase 2.3:** ✅ COMPLETE & VALIDATED - Absolute date range parsing (bug fixed!)
 **Phase 2.4:** ✅ COMPLETE & VALIDATED - Time interval selection (Jan 18, 2026)
+**Phase 3.1:** ✅ COMPLETE - Temporal comparison (week-over-week, etc.)
+**Phase 3.2:** ✅ COMPLETE - Trend analysis (increasing/decreasing consumption)
 
-**Overall Progress:** 50% of planned enhancements complete  
-**Phase 2 Status:** 80% complete (4 of 5 features done) — Phase 3.1 and 3.2 implemented
+**Phase 7.5:** ⏳ IN PROGRESS - Voice interrupt for STT error correction (Jan 19, 2026)
+
+**Overall Progress:** 55% of planned enhancements complete  
+**Phase 2 Status:** 80% complete (4 of 5 features done)  
+**Phase 3 Status:** 67% complete (2 of 3 features done)
 
 ---
 
@@ -567,7 +572,375 @@ End date logic: Changed from comparing datetime to comparing .date() (avoids sam
 
 ---
 
-## Phase 4: Optimization Queries (HIGH VALUE)
+## Phase 7: Human-Centric Features (WASABI Goal)
+
+**Goal:** Voice-first user experience improvements for industrial workers.
+
+### 7.5 Voice Interrupt for STT Error Correction ⏳ IN PROGRESS
+**Status:** ⏳ PLANNED (Jan 19, 2026)  
+**Priority:** HIGH (UX Critical)  
+**User Need:** Recover from speech recognition errors without mouse/GUI interaction
+
+**Problem Statement:**
+User says "compare this week to last week" → STT mishears as "weather this week to last week" → Wrong query sent to OVOS → Fails or wrong response. User discovers error too late (after processing starts) and cannot correct it via voice.
+
+**Current Behavior:**
+1. User says "Jarvis" (wake word) → Widget listens
+2. User speaks query → STT transcribes → Auto-sent to OVOS → Processing (30-90s timeout)
+3. If user says "Jarvis" mid-processing to interrupt:
+   - Wake word detection fires → STT captures new query → Shows in text box
+   - BUT: `sendMessage()` blocked by `if (isLoading) return` guard
+   - Result: New query NOT sent, user frustrated
+
+**Proposed Solution:**
+Enable true voice-driven interrupt: When user says "Jarvis" during an active query, cancel the in-flight request and process the new query immediately.
+
+**Architecture Overview:**
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Browser Widget (ovos-voice-widget.js)                           │
+│  - AbortController for fetch cancellation                        │
+│  - Global currentRequest tracker                                 │
+│  - onWakeWordDetected() triggers abort → new query               │
+└──────────────────────────────────────────────────────────────────┘
+                            │
+                            │ HTTP POST /query (with AbortSignal)
+                            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  REST Bridge (ovos_rest_bridge.py)                               │
+│  - New endpoint: POST /cancel?session_id=X                       │
+│  - Cancellation flag: cancelled_sessions set                     │
+│  - process_query() checks flag in polling loop                   │
+└──────────────────────────────────────────────────────────────────┘
+                            │
+                            │ Messagebus: recognizer_loop:utterance
+                            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  OVOS Skill (enms_ovos_skill/__init__.py)                        │
+│  - No changes needed (cancellation handled before skill)         │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Implementation Plan
+
+#### Part 1: Widget-Side Abort (ovos-voice-widget.js) ✅ PRIMARY
+
+**File:** `/home/ubuntu/humanergy/portal/public/js/ovos-voice-widget.js`
+
+**Changes Required:**
+
+1. **Add global abort controller** (~line 35):
+```javascript
+let abortController = null;  // Track current request for cancellation
+```
+
+2. **Update `sendMessage()` function** (~line 1090-1160):
+```javascript
+async function sendMessage(text) {
+    if (!text.trim()) return;
+    
+    // NEW: Cancel previous request if running
+    if (isLoading && abortController) {
+        console.log('🚫 Cancelling previous request...');
+        abortController.abort();
+        hideTyping();
+        addMessage('(Previous request cancelled)', false, false);
+        
+        // Optional: Call REST bridge cancel endpoint
+        try {
+            await fetch(`${CONFIG.apiUrl.replace('/query', '/cancel')}?session_id=${sessionId}`, 
+                       { method: 'POST' });
+        } catch (e) {
+            console.warn('Cancel request failed (non-critical):', e);
+        }
+    }
+    
+    isLoading = true;
+    abortController = new AbortController();  // NEW: Create controller
+    const input = document.getElementById('ovos-input');
+    const sendBtn = document.getElementById('ovos-send');
+    
+    input.disabled = true;
+    sendBtn.disabled = true;
+
+    addMessage(text, true);
+    input.value = '';
+    showTyping();
+
+    // Stop any currently playing audio
+    if (currentAudio) {
+        currentAudio.pause();
+        currentAudio = null;
+    }
+
+    try {
+        const res = await fetch(CONFIG.apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, session_id: sessionId }),
+            signal: abortController.signal  // NEW: Pass abort signal
+        });
+
+        hideTyping();
+        const data = await res.json();
+        // ... rest of response handling
+        
+    } catch (err) {
+        hideTyping();
+        if (err.name === 'AbortError') {
+            console.log('✅ Request aborted successfully');
+            // Don't show error - already showed "(cancelled)" message
+        } else {
+            console.error('OVOS error:', err);
+            addMessage('Connection error. Is OVOS REST Bridge running?', false, true);
+        }
+    } finally {
+        isLoading = false;
+        abortController = null;  // NEW: Clear controller
+        input.disabled = false;
+        sendBtn.disabled = false;
+        input.focus();
+    }
+}
+```
+
+3. **Update `onWakeWordDetected()` function** (~line 1595):
+```javascript
+function onWakeWordDetected() {
+    console.log('🎯 Wake word activated!');
+    
+    // NEW: Abort any in-flight request
+    if (isLoading && abortController) {
+        console.log('🚫 Interrupting current request...');
+        abortController.abort();
+        hideTyping();
+    }
+    
+    // Visual feedback on indicator
+    const indicator = document.getElementById('ovos-wakeword-indicator');
+    if (indicator) {
+        indicator.style.background = 'rgba(124, 58, 237, 0.95)';
+        indicator.querySelector('span').textContent = 'Listening...';
+    }
+    
+    // Open widget if closed
+    if (!isOpen) {
+        toggleWidget();
+    }
+    
+    // Add feedback message (only if not cancelling)
+    if (!isLoading) {
+        addMessage('Jarvis activated! Listening for your command...', false, false);
+    }
+    
+    // Start query listening
+    setTimeout(() => {
+        if (!isListening) {
+            toggleListening();
+        }
+    }, 300);
+}
+```
+
+**Expected Behavior After Widget Changes:**
+- User speaks query → Processing starts (isLoading=true)
+- User says "Jarvis" mid-processing → Abort fired, "(cancelled)" message shown
+- Widget immediately ready for new query
+- Browser-side cancellation complete (no waiting for backend)
+
+---
+
+#### Part 2: REST Bridge Cancel Endpoint (ovos_rest_bridge.py) ✅ RECOMMENDED
+
+**File:** `/home/ubuntu/ovos-llm/enms-ovos-skill/bridge/ovos_rest_bridge.py`
+
+**Why Needed:**
+Widget abort only stops browser waiting. REST bridge still polls messagebus for 90 seconds. Adding cancellation flag stops wasted backend resources.
+
+**Changes Required:**
+
+1. **Add cancelled sessions tracker** (~line 60):
+```python
+class OVOSRestBridge:
+    """REST API bridge to OVOS messagebus"""
+    
+    def __init__(self):
+        self.bus: Optional[MessageBusClient] = None
+        self.responses: Dict[str, Dict[str, Any]] = {}
+        self.pdf_downloads: Dict[str, Dict[str, Any]] = {}
+        self.cancelled_sessions: set = set()  # NEW: Track cancelled requests
+        self.response_timeout = 90
+```
+
+2. **Add cancel endpoint** (~line 280, after /health endpoint):
+```python
+@app.post("/cancel")
+async def cancel_query(session_id: str):
+    """
+    Cancel an in-flight query by session ID.
+    This stops the polling loop in process_query() early.
+    
+    Args:
+        session_id: Session ID to cancel
+        
+    Returns:
+        Success confirmation
+    """
+    logger.info(f"📛 Cancel request for session {session_id}")
+    bridge.cancelled_sessions.add(session_id)
+    return {"success": True, "session_id": session_id, "cancelled": True}
+```
+
+3. **Update process_query() polling loop** (~line 160):
+```python
+async def process_query(self, text: str, session_id: str, ...) -> QueryResponse:
+    """Process query and wait for response"""
+    try:
+        # Initialize response tracker
+        self.responses[session_id] = {...}
+        
+        # Emit to messagebus
+        message = Message('recognizer_loop:utterance', 
+                         {'utterances': [text], 'lang': 'en-us'},
+                         {'session_id': session_id})
+        self.bus.emit(message)
+        
+        # Wait for response with cancellation support
+        start_time = asyncio.get_event_loop().time()
+        while asyncio.get_event_loop().time() - start_time < self.response_timeout:
+            
+            # NEW: Check for cancellation
+            if session_id in self.cancelled_sessions:
+                self.cancelled_sessions.discard(session_id)
+                logger.info(f"🚫 Query cancelled for session {session_id}")
+                return QueryResponse(
+                    success=False,
+                    response="Request cancelled by user",
+                    timestamp=datetime.utcnow().isoformat(),
+                    session_id=session_id
+                )
+            
+            # Check for response
+            if self.responses[session_id]['received']:
+                response_data = self.responses[session_id]
+                # ... return response
+                
+            await asyncio.sleep(0.1)
+        
+        # Timeout handling...
+```
+
+**Expected Behavior After REST Bridge Changes:**
+- Widget calls `POST /cancel?session_id=X`
+- REST bridge sets cancellation flag
+- Polling loop exits early with "cancelled" message
+- No 90-second backend wait
+- Clean resource cleanup
+
+---
+
+### Testing Plan
+
+**Test Scenario 1: Mid-Processing Interrupt**
+1. Say "Jarvis"
+2. Say "energy forecast for tomorrow" (long-running query)
+3. Wait 2 seconds (query still processing)
+4. Say "Jarvis" again (interrupt)
+5. Say "factory overview" (new query)
+
+**Expected Result:**
+```
+User: "energy forecast for tomorrow"
+Widget: [Thinking...] 
+User: "Jarvis" (interrupt)
+Widget: (Previous request cancelled)
+        Jarvis activated! Listening for your command...
+User: "factory overview"
+Widget: [Response for factory overview]
+```
+
+**Test Scenario 2: STT Error Recovery**
+1. Say "Jarvis"
+2. Say "compare this week to last week" → STT hears "weather this week to last week"
+3. See error in textbox, immediately say "Jarvis"
+4. Repeat correct query
+
+**Expected Result:**
+- First query cancelled before OVOS processes it
+- Second query sent correctly
+- No need to wait for timeout or error
+
+**Test Scenario 3: Normal Flow (No Interrupt)**
+1. Say "Jarvis"
+2. Say "list all machines"
+3. Wait for response (should complete normally)
+
+**Expected Result:**
+- No "(cancelled)" message shown
+- Normal response flow
+- AbortController exists but not triggered
+
+---
+
+### Success Criteria
+
+- ✅ Widget can abort in-flight fetch requests
+- ✅ "(Previous request cancelled)" message shows when interrupting
+- ✅ New query processes immediately after cancellation
+- ✅ REST bridge stops polling when cancelled
+- ✅ No 90-second timeout wait after cancellation
+- ✅ Normal queries unaffected (no regression)
+- ✅ STT error recovery: User can correct within 3 seconds of speaking
+- ✅ Browser console shows "🚫 Cancelling..." and "✅ Request aborted"
+
+---
+
+### Edge Cases to Handle
+
+1. **Rapid wake word triggering:** Debounce already exists (3-second cooldown)
+2. **Cancel during response playback:** Already handled (currentAudio.pause())
+3. **Network timeout vs manual cancel:** Check `err.name === 'AbortError'`
+4. **Session ID cleanup:** Discard from cancelled_sessions after checking
+5. **Multiple cancellations:** Abort previous controller, create new one
+
+---
+
+### Code Files Changed
+
+| File | Purpose | Lines Changed |
+|------|---------|---------------|
+| `portal/public/js/ovos-voice-widget.js` | Widget abort logic | ~40 lines |
+| `bridge/ovos_rest_bridge.py` | Cancel endpoint + polling check | ~25 lines |
+
+**Total Complexity:** LOW (simple abort pattern, well-established in JS/Python)
+
+---
+
+### Future Enhancements (Post-MVP)
+
+1. **Visual cancel button:** Add "Stop" button in widget during processing
+2. **Gesture-based cancel:** Double-tap wake word = force cancel
+3. **Confirmation before long queries:** "This may take 60 seconds. Continue?"
+4. **Cancel analytics:** Track how often users interrupt (UX metric)
+
+---
+
+### Related Documentation
+
+- [REST Bridge API](../bridge/README.md#cancellation-endpoint)
+- [Widget Architecture](../../../humanergy/portal/README.md#voice-widget)
+- [AbortController MDN](https://developer.mozilla.org/en-US/docs/Web/API/AbortController)
+
+---
+
+**Phase 7.5 Status:** ⏳ PLANNED (awaiting approval to implement)  
+**Estimated Implementation Time:** 2-3 hours  
+**Risk Level:** LOW (isolated changes, easy rollback)  
+**User Impact:** HIGH (critical UX improvement)
+
+---
 
 **Goal:** Voice-based operational optimization.
 
