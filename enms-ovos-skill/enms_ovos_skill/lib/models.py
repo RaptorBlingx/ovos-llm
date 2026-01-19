@@ -37,6 +37,8 @@ class IntentType(str, Enum):
     LOAD_FACTOR = "load_factor"  # Load factor queries
     TRAIN_BASELINE = "train_baseline"  # Train baseline model
     MODEL_QUERY = "model_query"  # Query baseline model details
+    TEMPORAL_COMPARISON = "temporal_comparison"  # Compare two time periods
+    TREND_ANALYSIS = "trend_analysis"  # Trend direction over recent periods
     UNKNOWN = "unknown"
 
 
