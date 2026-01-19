@@ -105,6 +105,10 @@ class EnmsSkill(OVOSSkill):
         self.query_count = 0
         self.total_latency_ms = 0
         
+        # Store last query for retry functionality
+        self.last_query_text: Optional[str] = None
+        self.last_query_message: Optional[Message] = None
+        
         # Call parent constructor LAST (may trigger initialize())
         super().__init__(bus=bus, skill_id=skill_id, **kwargs)
         
@@ -557,7 +561,9 @@ class EnmsSkill(OVOSSkill):
             r'last\s+(?:hour|day|week|month)',  # "last hour", "last week"
             r'past\s+(?:\d+\s+)?(?:hour|day|week)s?',
             r'since\s+\d+\s*(?:am|pm)',
-            r'between\s+.+?\s+and\s+.+?'
+            r'from\s+\w+\s+\d+(?:st|nd|rd|th)?(?:,?\s+\d{4})?\s+to\s+\w+\s+\d+(?:st|nd|rd|th)?(?:,?\s+\d{4})?',  # "from January 1st to January 15th"
+            r'between\s+\w+\s+\d+(?:st|nd|rd|th)?\s+and\s+\w+\s+\d+(?:st|nd|rd|th)?',  # "between January 5th and January 10th"
+            r'on\s+\w+\s+\d+(?:st|nd|rd|th)?(?:,?\s+\d{4})?'  # "on January 15" or "on January 15th, 2025"
         ]
         
         time_range_str = None
@@ -615,6 +621,23 @@ class EnmsSkill(OVOSSkill):
             return f"{delta.seconds // 3600}hour"
         else:
             return "custom"
+    
+    def _format_period_label(self, period: TimeRange) -> str:
+        """Format a time period as a human-readable label for comparison responses"""
+        if period.relative:
+            return period.relative.replace('_', ' ')
+        
+        # Format dates
+        start_str = period.start.strftime('%B %d') if period.start else ''
+        end_str = period.end.strftime('%B %d') if period.end else ''
+        
+        if start_str and end_str:
+            # Check if same day
+            if period.start.date() == period.end.date():
+                return start_str
+            return f"{start_str} to {end_str}"
+        
+        return 'unknown period'
     
     def _normalize_machine_name(self, raw_machine: Optional[str]) -> Optional[str]:
         """
@@ -749,6 +772,57 @@ class EnmsSkill(OVOSSkill):
             'July', 'August', 'September', 'October', 'November', 'December'
         ]
         return months[month - 1] if 1 <= month <= 12 else 'Unknown'
+    
+    def _extract_energy_source(self, utterance: str) -> Optional[str]:
+        """
+        Extract energy source type from utterance (Phase 2.5)
+        
+        Supports ISO 50001 multi-energy source tracking:
+        - electricity (default)
+        - natural_gas
+        - steam
+        - compressed_air
+        
+        Args:
+            utterance: User's query text
+            
+        Returns:
+            Energy source string for API, or None (defaults to electricity)
+            
+        Examples:
+            >>> _extract_energy_source("natural gas consumption for Boiler-1")
+            'natural_gas'
+            >>> _extract_energy_source("steam usage today")
+            'steam'
+            >>> _extract_energy_source("electricity for HVAC")
+            'electricity'
+            >>> _extract_energy_source("Compressor-1 energy")
+            None  # Defaults to electricity in API
+        """
+        import re
+        
+        # Normalize utterance
+        text = utterance.lower()
+        
+        # Energy source patterns (order matters - check specific before general)
+        patterns = [
+            # Natural gas variations
+            (r'\b(natural\s+gas|gas|lng)\b', 'natural_gas'),
+            # Steam
+            (r'\bsteam\b', 'steam'),
+            # Compressed air
+            (r'\b(compressed\s+air|air\s+compressor|pneumatic)\b', 'compressed_air'),
+            # Electricity (explicit mention)
+            (r'\b(electricity|electrical|electric|power|kwh|kilowatt)\b', 'electricity'),
+        ]
+        
+        for pattern, energy_source in patterns:
+            if re.search(pattern, text):
+                self.log.info(f"Energy source detected: {energy_source}")
+                return energy_source
+        
+        # No explicit energy source mentioned - return None (API defaults to electricity)
+        return None
     
     def _apply_implicit_scope(self, intent: Intent) -> Intent:
         """
@@ -1202,16 +1276,21 @@ class EnmsSkill(OVOSSkill):
                         
                         machine_id = machines[0]['id']
                         
-                        # Determine interval
-                        time_delta = intent.time_range.end - intent.time_range.start
-                        if time_delta.days > 30:
-                            interval = '1day'
-                        elif time_delta.days > 7:
-                            interval = '1day'
-                        elif time_delta.days > 1:
-                            interval = '1hour'
+                        # Phase 2.4: Use requested interval if provided, otherwise auto-determine
+                        requested_interval = intent.params.get('interval') if intent.params else None
+                        
+                        if requested_interval:
+                            interval = requested_interval
+                            self.logger.info("using_requested_interval", interval=interval)
                         else:
-                            interval = '15min'
+                            # Auto-determine interval based on time range (API only supports: 1min, 5min, 15min, 1hour)
+                            time_delta = intent.time_range.end - intent.time_range.start
+                            if time_delta.days > 7:
+                                interval = '1hour'  # For long periods, use hourly data
+                            elif time_delta.days > 1:
+                                interval = '1hour'
+                            else:
+                                interval = '15min'
                         
                         # Get time-series power data
                         timeseries = self._run_async(
@@ -1283,7 +1362,6 @@ class EnmsSkill(OVOSSkill):
                         machine_id = machines[0]['id']
                         
                         # Default to today if no time range specified
-                        from datetime import datetime, timedelta
                         if not intent.time_range:
                             end_time = datetime.now()
                             start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1368,11 +1446,6 @@ class EnmsSkill(OVOSSkill):
                                    time_range_value=intent.time_range,
                                    relative=intent.time_range.relative if intent.time_range else None)
                     
-                    # Check if utterance mentions interval keywords (hourly, 15-minute, etc.)
-                    utterance_lower = intent.utterance.lower() if hasattr(intent, 'utterance') else ''
-                    needs_timeseries = False
-                    requested_interval = None
-                    
                     # Check for multi-energy queries
                     is_energy_types = 'energy types' in utterance_lower or 'energy sources' in utterance_lower or 'what energy' in utterance_lower
                     is_energy_summary = 'energy summary' in utterance_lower or 'all energy' in utterance_lower
@@ -1444,18 +1517,10 @@ class EnmsSkill(OVOSSkill):
                             data['energy_type'] = specific_energy_type
                             return {'success': True, 'data': data, 'custom_template': 'energy_type_readings'}
                     
-                    if 'hourly' in utterance_lower or 'hour by hour' in utterance_lower:
-                        needs_timeseries = True
-                        requested_interval = '1hour'
-                    elif '15-minute' in utterance_lower or '15 minute' in utterance_lower or 'fifteen minute' in utterance_lower:
-                        needs_timeseries = True
-                        requested_interval = '15min'
-                    elif '5-minute' in utterance_lower or '5 minute' in utterance_lower:
-                        needs_timeseries = True
-                        requested_interval = '5min'
-                    elif 'daily' in utterance_lower or 'day by day' in utterance_lower:
-                        needs_timeseries = True
-                        requested_interval = '1day'
+                    # Phase 2.4: Use extracted interval from params (replaces old hardcoded logic)
+                    utterance_lower = intent.utterance.lower() if hasattr(intent, 'utterance') else ''
+                    requested_interval = intent.params.get('interval') if intent.params else None
+                    needs_timeseries = requested_interval is not None
                     
                     # Check if time range is specified (beyond "today") OR if interval keywords detected
                     if intent.time_range and (intent.time_range.relative not in ["today", "now", None] or needs_timeseries):
@@ -1618,17 +1683,8 @@ class EnmsSkill(OVOSSkill):
                 # Significant Energy Uses (SEUs) queries
                 utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
                 
-                # Extract energy source from intent or utterance
-                energy_source = intent.energy_source
-                if not energy_source:
-                    if 'electricity' in utterance or 'electric' in utterance:
-                        energy_source = 'electricity'
-                    elif 'gas' in utterance or 'natural gas' in utterance:
-                        energy_source = 'natural_gas'
-                    elif 'steam' in utterance:
-                        energy_source = 'steam'
-                    elif 'compressed air' in utterance:
-                        energy_source = 'compressed_air'
+                # Extract energy source using Phase 2.5 method
+                energy_source = intent.energy_source or self._extract_energy_source(utterance)
                 
                 # Check for baseline filtering
                 asking_without_baseline = any(phrase in utterance for phrase in [
@@ -1934,7 +1990,6 @@ class EnmsSkill(OVOSSkill):
                 # For efficiency queries, get all machines and calculate efficiency
                 if ranking_metric == 'efficiency':
                     try:
-                        from datetime import timedelta
                         # Get all machines with energy + production data
                         machines = self._run_async(self.api_client.list_machines())
                         
@@ -2111,14 +2166,18 @@ class EnmsSkill(OVOSSkill):
                 is_search_request = any(kw in utterance for kw in ['find', 'search']) and intent.time_range and intent.time_range.start
                 self.logger.info("🔍 anomaly_type_determined", detection=is_detection_request, active=is_active_request, search=is_search_request)
                 
-                # Extract severity from utterance (critical, warning, info)
+                # Extract severity from utterance (critical, warning, info, normal)
                 severity = None
-                if 'critical' in utterance:
+                if 'critical' in utterance or 'severe' in utterance or 'urgent' in utterance:
                     severity = 'critical'
-                elif 'warning' in utterance or 'warn' in utterance:
+                elif 'warning' in utterance or 'warn' in utterance or 'moderate' in utterance:
                     severity = 'warning'
-                elif 'info' in utterance or 'information' in utterance:
+                elif 'info' in utterance or 'information' in utterance or 'informational' in utterance:
                     severity = 'info'
+                elif 'normal' in utterance or 'low' in utterance:
+                    severity = 'normal'
+                
+                self.logger.info("🔍 severity_extracted", severity=severity, utterance_snippet=utterance[:60])
                 
                 if is_detection_request:
                     # RUN ML anomaly detection - POST /anomaly/detect
@@ -2148,7 +2207,7 @@ class EnmsSkill(OVOSSkill):
                 
                 elif is_active_request:
                     # GET active (unresolved) anomalies - GET /anomaly/active
-                    data = self._run_async(self.api_client.get_active_anomalies())
+                    data = self._run_async(self.api_client.get_active_anomalies(severity=severity))
                     data['is_active'] = True
                     return {'success': True, 'data': data}
                 
@@ -2211,13 +2270,17 @@ class EnmsSkill(OVOSSkill):
                 if not intent.machine:
                     return {'success': False, 'error': 'Machine name required for baseline models'}
                 
-                self.logger.info("baseline_models_query", machine=intent.machine)
+                # Phase 2.5: Extract energy source
+                utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
+                energy_source = intent.energy_source or self._extract_energy_source(utterance) or 'electricity'
+                
+                self.logger.info("baseline_models_query", machine=intent.machine, energy_source=energy_source)
                 
                 # Call list_baseline_models API
                 response = self._run_async(
                     self.api_client.list_baseline_models(
                         seu_name=intent.machine,
-                        energy_source="electricity"
+                        energy_source=energy_source
                     )
                 )
                 
@@ -2242,13 +2305,17 @@ class EnmsSkill(OVOSSkill):
                     self.logger.info("baseline_explanation_factory_wide")
                     return self._get_factory_wide_drivers()
                 
-                self.logger.info("baseline_explanation_query", machine=intent.machine)
+                # Phase 2.5: Extract energy source
+                utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
+                energy_source = intent.energy_source or self._extract_energy_source(utterance) or 'electricity'
+                
+                self.logger.info("baseline_explanation_query", machine=intent.machine, energy_source=energy_source)
                 
                 # First get the list of models to find the active model ID
                 models_response = self._run_async(
                     self.api_client.list_baseline_models(
                         seu_name=intent.machine,
-                        energy_source="electricity"
+                        energy_source=energy_source
                     )
                 )
                 
@@ -2299,6 +2366,10 @@ class EnmsSkill(OVOSSkill):
                 
                 # Extract features from utterance (temperature, pressure, load, production)
                 utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
+                
+                # Phase 2.5: Extract energy source
+                energy_source = intent.energy_source or self._extract_energy_source(utterance) or 'electricity'
+                
                 features = FeatureExtractor.extract_all_features(
                     utterance,
                     defaults={
@@ -2321,7 +2392,7 @@ class EnmsSkill(OVOSSkill):
                             prediction = self._run_async(
                                 self.api_client.predict_baseline(
                                     seu_name=seu_name,
-                                    energy_source="electricity",
+                                    energy_source=energy_source,  # Phase 2.5
                                     features=features,
                                     include_message=False
                                 )
@@ -2342,14 +2413,14 @@ class EnmsSkill(OVOSSkill):
                     }
                 
                 # Single machine prediction
-                self.logger.info("baseline_prediction", machine=machine)
+                self.logger.info("baseline_prediction", machine=machine, energy_source=energy_source)
                 
                 try:
-                    # Call baseline prediction API
+                    # Call baseline prediction API (Phase 2.5: uses extracted energy_source)
                     prediction = self._run_async(
                         self.api_client.predict_baseline(
                             seu_name=machine,
-                            energy_source="electricity",
+                            energy_source=energy_source,
                             features=features,
                             include_message=False  # Don't use API message, we format with features
                         )
@@ -2432,8 +2503,7 @@ class EnmsSkill(OVOSSkill):
                 energy_source = "energy"
                 
                 # Get analysis date (default to today)
-                from datetime import date as date_class
-                analysis_date = date_class.today().isoformat()
+                analysis_date = datetime.now(timezone.utc).date().isoformat()
                 
                 # Call performance API
                 performance = self._run_async(
@@ -2450,39 +2520,34 @@ class EnmsSkill(OVOSSkill):
                 # Forecast - get future energy prediction
                 self.logger.info("forecast_query", machine=intent.machine)
                 
-                # Check if this is a demand forecast (detailed ARIMA predictions)
-                utterance = getattr(intent, 'utterance', '').lower()
-                is_demand_forecast = 'demand' in utterance or 'detailed' in utterance
+                # Extract horizon and periods from intent params (set by handler)
+                horizon = intent.params.get('horizon', 'short') if intent.params else 'short'
+                periods = intent.params.get('periods', 4) if intent.params else 4
+                time_unit = intent.params.get('time_unit', 'day') if intent.params else 'day'
                 
-                if is_demand_forecast and intent.machine:
-                    # Use /forecast/demand endpoint (requires machine UUID)
-                    # Lookup machine ID
-                    machines = self._run_async(
-                        self.api_client.list_machines(search=intent.machine)
-                    )
-                    
-                    if not machines:
-                        return {'success': False, 'error': f'Machine {intent.machine} not found'}
-                    
-                    machine_id = machines[0]['id']
-                    
-                    # Get detailed demand forecast
-                    forecast = self._run_async(
-                        self.api_client.forecast_demand(
-                            machine_id=machine_id,
-                            horizon="short",
-                            periods=4
-                        )
-                    )
-                    # Add machine name for template
-                    forecast['machine_name'] = intent.machine
-                    return {'success': True, 'data': forecast, 'custom_template': 'demand_forecast'}
-                else:
-                    # Use /forecast/short-term endpoint (simplified daily forecast)
+                self.log.info(f"Forecast API call: horizon={horizon}, periods={periods}, unit={time_unit}")
+                
+                # For now, only support single-day forecasts using /forecast/short-term
+                # Multi-day ARIMA forecasts require trained models (not available yet)
+                if periods > 1 or horizon in ['medium', 'long']:
+                    # User asked for multi-period forecast, but we can only provide tomorrow
                     forecast = self._run_async(
                         self.api_client.get_forecast(
                             machine=intent.machine,
-                            hours=24  # Default to 24 hour forecast
+                            hours=24
+                        )
+                    )
+                    # Add note that we're providing tomorrow only
+                    forecast['periods_requested'] = periods
+                    forecast['time_unit'] = time_unit
+                    forecast['note'] = f"Showing tomorrow's forecast (multi-period forecasts require model training)"
+                    return {'success': True, 'data': forecast}
+                else:
+                    # Single-period short-term forecast - use simplified endpoint
+                    forecast = self._run_async(
+                        self.api_client.get_forecast(
+                            machine=intent.machine,
+                            hours=24
                         )
                     )
                     return {'success': True, 'data': forecast}
@@ -2711,6 +2776,135 @@ class EnmsSkill(OVOSSkill):
                     elif 'MISSING_IDENTIFIER' in error_msg:
                         return {'success': False, 'error': f'API requires machine name. Try "show details for baseline model {model_version} for Compressor-1".'}
                     return {'success': False, 'error': f'Could not retrieve model {model_version}: {error_msg}'}
+
+            elif intent.intent == IntentType.TREND_ANALYSIS:
+                # Trend analysis over last 4 weeks (current 2 weeks vs prior 2 weeks)
+                metric = intent.params.get('metric', 'energy') if intent.params else 'energy'
+                machine = intent.machine
+                if not machine:
+                    return {'success': False, 'error': 'Please specify a machine for trend analysis'}
+                
+                machines = self._run_async(self.api_client.list_machines(search=machine))
+                if not machines:
+                    return {'success': False, 'error': f"Machine {machine} not found"}
+                
+                machine_id = machines[0]['id']
+                now = datetime.now(timezone.utc)
+                end_time = now
+                mid_time = now - timedelta(days=14)
+                start_time = now - timedelta(days=28)
+                interval = '1day'
+                api_method = self.api_client.get_power_timeseries if metric == 'power' else self.api_client.get_energy_timeseries
+                
+                current_data = self._run_async(api_method(
+                    machine_id=machine_id,
+                    start_time=mid_time,
+                    end_time=end_time,
+                    interval=interval
+                ))
+                previous_data = self._run_async(api_method(
+                    machine_id=machine_id,
+                    start_time=start_time,
+                    end_time=mid_time,
+                    interval=interval
+                ))
+                
+                def _totals(payload):
+                    points = payload.get('data_points', []) if isinstance(payload, dict) else []
+                    total = sum(p.get('value', 0) for p in points)
+                    count = len(points)
+                    return total, count
+                
+                prev_total, prev_points = _totals(previous_data)
+                curr_total, curr_points = _totals(current_data)
+                prev_avg = prev_total / prev_points if prev_points else 0
+                curr_avg = curr_total / curr_points if curr_points else 0
+                delta = curr_avg - prev_avg
+                percent_change = (delta / prev_avg * 100) if prev_avg > 0 else 0
+                if delta > 0.01:
+                    trend = 'up'
+                elif delta < -0.01:
+                    trend = 'down'
+                else:
+                    trend = 'flat'
+                
+                unit = 'kW' if metric == 'power' else 'kWh'
+                
+                return {
+                    'success': True,
+                    'data': {
+                        'machine': machine,
+                        'metric': metric,
+                        'trend': trend,
+                        'percent_change': percent_change,
+                        'current_avg': curr_avg,
+                        'previous_avg': prev_avg,
+                        'unit': unit,
+                        'current_period_label': 'last two weeks',
+                        'previous_period_label': 'prior two weeks'
+                    }
+                }
+            
+            elif intent.intent == IntentType.TEMPORAL_COMPARISON:
+                # Compare two time periods (Phase 3.1)
+                current_period = intent.params.get('current_period') if intent.params else None
+                comparison_period = intent.params.get('comparison_period') if intent.params else None
+                metric = intent.params.get('metric', 'energy') if intent.params else 'energy'
+                
+                if not current_period or not comparison_period:
+                    return {'success': False, 'error': 'Could not parse time periods for comparison'}
+                
+                # Determine API method based on metric
+                api_method = self.api_client.get_power_timeseries if metric == 'power' else self.api_client.get_energy_timeseries
+                
+                if intent.machine:
+                    # Machine-specific comparison (use machine_id)
+                    machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                    if not machines:
+                        return {'success': False, 'error': f"Machine {intent.machine} not found"}
+                    machine_id = machines[0].get('id') or machines[0].get('machine_id')
+                    
+                    current_data = self._run_async(api_method(
+                        machine_id=machine_id,
+                        start_time=current_period.start,
+                        end_time=current_period.end
+                    ))
+                    comparison_data = self._run_async(api_method(
+                        machine_id=machine_id,
+                        start_time=comparison_period.start,
+                        end_time=comparison_period.end
+                    ))
+                else:
+                    # Factory-wide comparisons are heavy; ask for a machine
+                    return {'success': False, 'error': 'Factory-wide temporal comparisons can be slow. Please specify a machine (e.g., "compare Compressor-1 this week to last week").'}
+                
+                # Calculate delta and percentage change
+                if metric == 'power':
+                    current_value = current_data.get('avg_power_kw', 0)
+                    comparison_value = comparison_data.get('avg_power_kw', 0)
+                    unit = 'kW'
+                else:
+                    current_value = current_data.get('total_kwh', 0)
+                    comparison_value = comparison_data.get('total_kwh', 0)
+                    unit = 'kWh'
+                
+                delta = current_value - comparison_value
+                percent_change = (delta / comparison_value * 100) if comparison_value > 0 else 0
+                
+                return {
+                    'success': True,
+                    'data': {
+                        'machine': intent.machine,
+                        'metric': metric,
+                        'current_value': current_value,
+                        'comparison_value': comparison_value,
+                        'delta': delta,
+                        'percent_change': percent_change,
+                        'unit': unit,
+                        'current_period_label': self._format_period_label(current_period),
+                        'comparison_period_label': self._format_period_label(comparison_period)
+                    }
+                }
             
             else:
                 self.logger.warning("unsupported_intent_api_call", intent=intent.intent)
@@ -2842,6 +3036,8 @@ class EnmsSkill(OVOSSkill):
         """
         try:
             utterance = message.data.get("utterances", [""])[0]
+            self.last_query_text = utterance
+            self.last_query_message = message
             session_id = self._get_session_id(message)
             
             # Get or create session context
@@ -2859,6 +3055,12 @@ class EnmsSkill(OVOSSkill):
             # Extract time range from utterance (or use context)
             time_range = self._extract_time_range(utterance)
             
+            # Phase 2.4: Extract interval from utterance
+            from enms_ovos_skill.lib.time_parser import TimeRangeParser
+            requested_interval = TimeRangeParser.extract_interval(utterance)
+            if requested_interval:
+                self.log.info(f"🔍 DEBUG: Extracted interval for energy query: {requested_interval}")
+            
             # Build intent object
             intent = Intent(
                 intent=IntentType.ENERGY_QUERY,
@@ -2866,7 +3068,7 @@ class EnmsSkill(OVOSSkill):
                 time_range=time_range,
                 confidence=0.95,
                 utterance=utterance,
-                params={'factory_wide': True} if not machine else None
+                params={'factory_wide': True, 'interval': requested_interval} if not machine else {'interval': requested_interval}
             )
             
             # Log query type
@@ -3080,13 +3282,26 @@ class EnmsSkill(OVOSSkill):
                 'optimal', 'productive', 'cost effective'
             ])
             
-            # Extract number from utterance (e.g., "top 3", "top 5 machines")
+            # Extract number from utterance (e.g., "top 3", "top three", "top 5 machines")
             import re
+            
+            # Word to number mapping
+            word_to_num = {
+                'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+            }
+            
+            # Try digit pattern first (e.g., "top 3")
             number_match = re.search(r'\b(top|first|bottom|worst)\s+(\d+)\b', utterance_lower)
             if number_match:
                 limit_int = int(number_match.group(2))
             else:
-                limit_int = 5  # Default to 5
+                # Try word pattern (e.g., "top three")
+                word_match = re.search(r'\b(top|first|bottom|worst)\s+(one|two|three|four|five|six|seven|eight|nine|ten)\b', utterance_lower)
+                if word_match:
+                    limit_int = word_to_num[word_match.group(2)]
+                else:
+                    limit_int = 5  # Default to 5
             
             self.log.info(f"Ranking query with limit: {limit_int}, efficiency: {is_efficiency_query}")
             
@@ -3266,6 +3481,7 @@ class EnmsSkill(OVOSSkill):
         """Handle energy forecast queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
             utterance = message.data.get("utterances", [""])[0]
+            utterance_lower = utterance.lower()
             session_id = self._get_session_id(message)
             
             # Get or create session context
@@ -3283,12 +3499,67 @@ class EnmsSkill(OVOSSkill):
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
             
+            # Extract horizon (short/medium/long-term)
+            import re
+            horizon = "short"  # Default
+            if re.search(r'\b(medium|mid)[\s-]?term\b', utterance_lower):
+                horizon = "medium"
+            elif re.search(r'\blong[\s-]?term\b', utterance_lower):
+                horizon = "long"
+            elif re.search(r'\bshort[\s-]?term\b', utterance_lower):
+                horizon = "short"
+            
+            # Extract periods from utterance (e.g., "7-day forecast", "next 12 hours", "8 periods")
+            # Check for explicit single-day keywords first
+            periods = None
+            time_unit = 'day'  # Default unit
+            if re.search(r'\b(tomorrow|next day)\b', utterance_lower):
+                periods = 1
+                time_unit = 'day'
+            
+            # Try to extract number + time unit patterns
+            if periods is None:
+                period_match = re.search(r'\b(\d+)[\s-]?(day|hour|week|period)s?\b', utterance_lower)
+                if period_match:
+                    num = int(period_match.group(1))
+                    unit = period_match.group(2)
+                    time_unit = unit  # Store the unit
+                    
+                    # Map to periods based on unit
+                    if unit == 'hour':
+                        periods = min(num, 24)  # Cap at 24 hours
+                    elif unit == 'day':
+                        periods = num
+                    elif unit == 'week':
+                        periods = num * 7  # Convert to days
+                        time_unit = 'day'  # Weeks converted to days
+                    elif unit == 'period':
+                        periods = num
+            
+            # Try word numbers (seven, eight, etc.)
+            if periods is None:
+                word_to_num = {
+                    'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+                    'twelve': 12, 'twenty four': 24, 'forty eight': 48
+                }
+                for word, num in word_to_num.items():
+                    if word in utterance_lower:
+                        periods = num
+                        break
+            
+            # Default to 1 period if nothing else matched (tomorrow forecast use case)
+            if periods is None:
+                periods = 1
+            
+            self.log.info(f"Forecast params extracted: horizon={horizon}, periods={periods}, unit={time_unit}")
+            
             intent = Intent(
                 intent=IntentType.FORECAST,
                 time_range=time_range,
                 machine=machine,
                 confidence=0.95,
-                utterance=utterance
+                utterance=utterance,
+                params={'horizon': horizon, 'periods': periods, 'time_unit': time_unit}
             )
             
             result = self._call_enms_api(intent)
@@ -3667,6 +3938,9 @@ class EnmsSkill(OVOSSkill):
         """
         try:
             utterance = message.data.get("utterances", [""])[0]
+            self.last_query_text = utterance
+            self.last_query_message = message
+            self.log.info(f"🔍 DEBUG: handle_power_query CALLED: '{utterance}'")
             session_id = self._get_session_id(message)
             
             # Get or create session context
@@ -3682,7 +3956,15 @@ class EnmsSkill(OVOSSkill):
                 # DISABLED: self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
             # Extract time range from utterance
+            self.log.info(f"🔍 DEBUG: About to extract time_range from '{utterance}'")
             time_range = self._extract_time_range(utterance)
+            self.log.info(f"🔍 DEBUG: time_range extraction result: {time_range}")
+            
+            # Phase 2.4: Extract interval from utterance
+            from enms_ovos_skill.lib.time_parser import TimeRangeParser
+            requested_interval = TimeRangeParser.extract_interval(utterance)
+            if requested_interval:
+                self.log.info(f"🔍 DEBUG: Extracted interval: {requested_interval}")
             
             intent = Intent(
                 intent=IntentType.POWER_QUERY,
@@ -3690,7 +3972,7 @@ class EnmsSkill(OVOSSkill):
                 time_range=time_range,
                 confidence=0.95,
                 utterance=utterance,
-                params={'factory_wide': True} if not machine else None
+                params={'factory_wide': True, 'interval': requested_interval} if not machine else {'interval': requested_interval}
             )
             
             # Log query type
@@ -3716,11 +3998,12 @@ class EnmsSkill(OVOSSkill):
                 
                 # Update context for next query
                 # DISABLED: session.add_turn(utterance, intent, response_text, result['data'])
-                self.logger.info("context_updated", session_id=session_id, machine=machine, metric="power")
+                self.log.info(f"context_updated session={session_id} machine={machine}")
             else:
+                self.log.error(f"🔴 Power query API call returned success=False: {result}")
                 self.speak_dialog("error.general")
         except Exception as e:
-            self.log.error(f"Power query handler failed: {e}")
+            self.log.error(f"🔴 Power query handler EXCEPTION: {e}", exc_info=True)
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('LoadFactor').require('load_factor').optionally('machine').build())
@@ -4069,6 +4352,178 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Model query handler failed: {e}")
             import traceback
             self.logger.error("model_query_traceback", trace=traceback.format_exc())
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('TrendAnalysis').require('trend_analysis').optionally('machine').build())
+    def handle_trend_analysis(self, message: Message):
+        """Handle trend analysis queries - detects direction vs prior period"""
+        self.log.info("=== TREND ANALYSIS HANDLER CALLED ===")
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            self.last_query_text = utterance
+            self.last_query_message = message
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            utterance_lower = utterance.lower()
+            metric = 'power' if any(word in utterance_lower for word in ['power', 'kw', 'kilowatt']) else 'energy'
+
+            if not machine:
+                self.speak("Which machine should I analyze the trend for?")
+                return
+
+            intent = Intent(
+                intent=IntentType.TREND_ANALYSIS,
+                machine=machine,
+                confidence=0.95,
+                utterance=utterance,
+                params={'metric': metric}
+            )
+
+            result = self._call_enms_api(intent)
+
+            if result['success']:
+                response = self.response_formatter.format_response('trend_analysis', result['data'])
+                self.speak(response)
+            else:
+                error_msg = result.get('error', None) if isinstance(result, dict) else None
+                if error_msg:
+                    self.speak(error_msg)
+                else:
+                    self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"Trend analysis handler failed: {e}")
+            import traceback
+            self.logger.error("trend_analysis_traceback", trace=traceback.format_exc())
+            self.speak_dialog("error.general")
+
+    @intent_handler(IntentBuilder('TemporalComparison').require('temporal_comparison').optionally('machine').build())
+    def handle_temporal_comparison(self, message: Message):
+        """Handle temporal comparison queries - compare two time periods (Phase 3.1)"""
+        self.log.info("=== TEMPORAL COMPARISON HANDLER CALLED ===")
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            self.last_query_text = utterance
+            self.last_query_message = message
+            self.log.info(f"Temporal comparison for: {utterance}")
+            self.logger.info("temporal_comparison_handler", utterance=utterance)
+            
+            # Extract machine if specified
+            machine_raw = message.data.get('machine')
+            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            # Parse time periods from utterance
+            # Patterns: "this week vs last week", "today compared to yesterday", "month over month"
+            time_parser = TimeRangeParser()
+            
+            # Extract current and comparison periods
+            current_period = None
+            comparison_period = None
+            metric = 'energy'  # Default to energy, can extract from utterance
+            
+            utterance_lower = utterance.lower()
+            
+            # Detect metric type
+            if any(word in utterance_lower for word in ['power', 'kw', 'kilowatt']):
+                metric = 'power'
+            
+            # Parse time period patterns
+            if 'this week' in utterance_lower and 'last week' in utterance_lower:
+                current_start, current_end = time_parser.parse('this week')
+                comparison_start, comparison_end = time_parser.parse('last week')
+                current_period = TimeRange(start=current_start, end=current_end, relative='this week')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='last week')
+            elif 'this month' in utterance_lower and 'last month' in utterance_lower:
+                current_start, current_end = time_parser.parse('this month')
+                comparison_start, comparison_end = time_parser.parse('last month')
+                current_period = TimeRange(start=current_start, end=current_end, relative='this month')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='last month')
+            elif 'today' in utterance_lower and 'yesterday' in utterance_lower:
+                current_start, current_end = time_parser.parse('today')
+                comparison_start, comparison_end = time_parser.parse('yesterday')
+                current_period = TimeRange(start=current_start, end=current_end, relative='today')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='yesterday')
+            elif 'current week' in utterance_lower and ('previous week' in utterance_lower or 'last week' in utterance_lower):
+                current_start, current_end = time_parser.parse('this week')
+                comparison_start, comparison_end = time_parser.parse('last week')
+                current_period = TimeRange(start=current_start, end=current_end, relative='this week')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='last week')
+            elif 'current month' in utterance_lower and ('previous month' in utterance_lower or 'last month' in utterance_lower):
+                current_start, current_end = time_parser.parse('this month')
+                comparison_start, comparison_end = time_parser.parse('last month')
+                current_period = TimeRange(start=current_start, end=current_end, relative='this month')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='last month')
+            elif 'week over week' in utterance_lower:
+                current_start, current_end = time_parser.parse('this week')
+                comparison_start, comparison_end = time_parser.parse('last week')
+                current_period = TimeRange(start=current_start, end=current_end, relative='this week')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='last week')
+            elif 'month over month' in utterance_lower:
+                current_start, current_end = time_parser.parse('this month')
+                comparison_start, comparison_end = time_parser.parse('last month')
+                current_period = TimeRange(start=current_start, end=current_end, relative='this month')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='last month')
+            elif 'day over day' in utterance_lower:
+                current_start, current_end = time_parser.parse('today')
+                comparison_start, comparison_end = time_parser.parse('yesterday')
+                current_period = TimeRange(start=current_start, end=current_end, relative='today')
+                comparison_period = TimeRange(start=comparison_start, end=comparison_end, relative='yesterday')
+            
+            if not current_period or not comparison_period:
+                self.speak("I couldn't understand which time periods to compare. Try asking 'compare this week to last week' or 'energy today versus yesterday'.")
+                return
+            
+            intent = Intent(
+                intent=IntentType.TEMPORAL_COMPARISON,
+                machine=machine,
+                confidence=0.95,
+                utterance=utterance,
+                params={
+                    'current_period': current_period,
+                    'comparison_period': comparison_period,
+                    'metric': metric
+                }
+            )
+            
+            result = self._call_enms_api(intent)
+            
+            if result['success']:
+                response = self.response_formatter.format_response('temporal_comparison', result['data'])
+                self.speak(response)
+            else:
+                error_msg = result.get('error') if isinstance(result, dict) else None
+                if error_msg:
+                    self.speak(error_msg)
+                else:
+                    self.speak_dialog("error.general")
+        except Exception as e:
+            self.log.error(f"Temporal comparison handler failed: {e}")
+            import traceback
+            self.logger.error("temporal_comparison_traceback", trace=traceback.format_exc())
+            self.speak_dialog("error.general")
+    
+    @intent_handler(IntentBuilder('Retry').require('retry').build())
+    def handle_retry(self, message: Message):
+        """Handle retry/repeat requests - re-process last query"""
+        try:
+            if self.last_query_message and self.last_query_text:
+                self.speak_dialog("retry")
+                # Re-send the last message to trigger intent matching again
+                self.bus.emit(self.last_query_message)
+            else:
+                self.speak("I don't have a previous command to retry. Please ask your question again.")
+        except Exception as e:
+            self.log.error(f"Retry handler failed: {e}")
+            self.speak("Sorry, I couldn't retry that command.")
+    
+    @intent_handler(IntentBuilder('Cancel').require('cancel').build())
+    def handle_cancel(self, message: Message):
+        """Handle cancel requests - acknowledge and clear last query"""
+        try:
+            self.last_query_text = None
+            self.last_query_message = None
+            self.speak_dialog("cancel")
+        except Exception as e:
+            self.log.error(f"Cancel handler failed: {e}")
             self.speak_dialog("error.general")
     
     def can_converse(self, message: Message) -> bool:

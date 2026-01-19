@@ -1,0 +1,14 @@
+compare (this|current) (week|month|day|hour) (to|with|versus|vs) (last|previous) (week|month|day|hour)
+compare (this|current) week (to|with|versus|vs) last week
+compare (this|current) month (to|with|versus|vs) last month
+energy (this|current) (week|month|day) (compared to|vs|versus) (last|previous) (week|month|day)
+power (this|current) (week|month|day) (compared to|vs|versus) (last|previous) (week|month|day)
+consumption (this|current) (week|month|day) (to|with|versus|vs) (last|previous) (week|month|day)
+how does (this|current) (week|month|day) compare (to|with) (last|previous) (week|month|day)
+difference between (this|current) (week|month|day) and (last|previous) (week|month|day)
+(energy|power|consumption) (today|this week|this month) versus (yesterday|last week|last month)
+(today|this week|this month) compared to (yesterday|last week|last month)
+show comparison (this|current) (week|month|day) (to|with|versus|vs) (last|previous) (week|month|day)
+week over week
+month over month
+day over day

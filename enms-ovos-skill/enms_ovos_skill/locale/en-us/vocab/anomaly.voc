@@ -31,6 +31,22 @@ what anomalies were detected
 critical
 critical issues
 any critical issues
+critical anomalies
+critical alerts
+severe
+severe issues
+urgent
+urgent alerts
+warning level
+warning alerts
+info level
+informational alerts
+moderate issues
+low severity
+normal severity
+high severity
+show me critical
+show critical
 do we have any
 are there any
 check for anomalies

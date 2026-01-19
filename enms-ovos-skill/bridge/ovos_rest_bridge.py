@@ -61,6 +61,7 @@ class OVOSRestBridge:
         self.bus: Optional[MessageBusClient] = None
         self.responses: Dict[str, Dict[str, Any]] = {}
         self.pdf_downloads: Dict[str, Dict[str, Any]] = {}  # NEW: Track PDF downloads
+        self.cancelled_sessions: set = set()  # Track cancelled requests
         self.response_timeout = 90  # seconds (increased for ML baseline operations)
         
     def connect_to_messagebus(self):
@@ -180,6 +181,17 @@ class OVOSRestBridge:
             while asyncio.get_event_loop().time() - start_time < self.response_timeout:
                 current_time = asyncio.get_event_loop().time()
                 
+                # Check for cancellation
+                if session_id in self.cancelled_sessions:
+                    self.cancelled_sessions.discard(session_id)
+                    logger.info(f"🚫 Query cancelled for session {session_id}")
+                    return QueryResponse(
+                        success=False,
+                        response="Request cancelled by user",
+                        timestamp=datetime.utcnow().isoformat(),
+                        session_id=session_id
+                    )
+                
                 # Check every second if we have response AND if we should continue waiting
                 if current_time - last_check_time > 1.0:
                     if self.responses[session_id]['received']:
@@ -297,6 +309,23 @@ async def health_check():
         messagebus_connected=bridge.is_connected(),
         timestamp=datetime.utcnow().isoformat()
     )
+
+
+@app.post("/cancel")
+async def cancel_query(session_id: str):
+    """
+    Cancel an in-flight query by session ID.
+    This stops the polling loop in process_query() early.
+    
+    Args:
+        session_id: Session ID to cancel
+        
+    Returns:
+        Success confirmation
+    """
+    logger.info(f"📛 Cancel request for session {session_id}")
+    bridge.cancelled_sessions.add(session_id)
+    return {"success": True, "session_id": session_id, "cancelled": True}
 
 
 @app.post("/query", response_model=QueryResponse)

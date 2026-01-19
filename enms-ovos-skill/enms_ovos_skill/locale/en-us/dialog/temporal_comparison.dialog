@@ -1,0 +1,17 @@
+{% if machine %}
+{% if percent_change > 0 %}
+{{ machine }} {{ metric }} {{ current_period_label }} is {{ percent_change|num }}% higher than {{ comparison_period_label }}, at {{ current_value|num }} {{ unit }} compared to {{ comparison_value|num }} {{ unit }}.
+{% elif percent_change < 0 %}
+{{ machine }} {{ metric }} {{ current_period_label }} is {{ (percent_change * -1)|num }}% lower than {{ comparison_period_label }}, at {{ current_value|num }} {{ unit }} compared to {{ comparison_value|num }} {{ unit }}.
+{% else %}
+{{ machine }} {{ metric }} {{ current_period_label }} is the same as {{ comparison_period_label }}, at {{ current_value|num }} {{ unit }}.
+{% endif %}
+{% else %}
+{% if percent_change > 0 %}
+Total factory {{ metric }} {{ current_period_label }} is {{ percent_change|num }}% higher than {{ comparison_period_label }}, at {{ current_value|num }} {{ unit }} compared to {{ comparison_value|num }} {{ unit }}.
+{% elif percent_change < 0 %}
+Total factory {{ metric }} {{ current_period_label }} is {{ (percent_change * -1)|num }}% lower than {{ comparison_period_label }}, at {{ current_value|num }} {{ unit }} compared to {{ comparison_value|num }} {{ unit }}.
+{% else %}
+Total factory {{ metric }} {{ current_period_label }} is the same as {{ comparison_period_label }}, at {{ current_value|num }} {{ unit }}.
+{% endif %}
+{% endif %}

@@ -116,7 +116,184 @@ class TimeRangeParser:
             
             return start, now
         
-        # Absolute date ranges: "October 27, 3 PM to October 28, 10 AM"
+        # NEW Phase 2.3: Simple date ranges without hours: "from January 1st to January 15th"
+        # Supports ordinal suffixes: 1st, 2nd, 3rd, 14th, 15th (voice recognition)
+        simple_range_pattern = r'from\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\s+to\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?'
+        match = re.match(simple_range_pattern, time_range_str)
+        
+        if match:
+            start_month_name = match.group(1)
+            start_day = int(match.group(2))
+            start_year_explicit = match.group(3)
+            
+            end_month_name = match.group(4)
+            end_day = int(match.group(5))
+            end_year_explicit = match.group(6)
+            
+            start_month = TimeRangeParser.MONTHS.get(start_month_name)
+            end_month = TimeRangeParser.MONTHS.get(end_month_name)
+            
+            if not start_month or not end_month:
+                logger.warning("invalid_month_name", 
+                             start_month=start_month_name, 
+                             end_month=end_month_name)
+                return None, None
+            
+            # SMART YEAR INFERENCE: If no year specified, infer the best year
+            # For historical energy data queries:
+            # - If month/day is in the past this year, use current year
+            # - If month/day is in the future, use last year
+            if start_year_explicit:
+                start_year = int(start_year_explicit)
+            else:
+                try:
+                    test_start = datetime(now.year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
+                    # If date is in future, use last year
+                    if test_start > now:
+                        start_year = now.year - 1
+                    else:
+                        start_year = now.year
+                except ValueError:
+                    start_year = now.year
+            
+            if end_year_explicit:
+                end_year = int(end_year_explicit)
+            else:
+                try:
+                    # For end dates, just check if the DATE (not time) is in the future
+                    test_end_date = datetime(now.year, end_month, end_day, 0, 0, 0, tzinfo=timezone.utc)
+                    # If the DATE is in future (ignoring time), use last year
+                    if test_end_date.date() > now.date():
+                        end_year = now.year - 1
+                    else:
+                        end_year = now.year
+                except ValueError:
+                    end_year = now.year
+            
+            try:
+                start_dt = datetime(start_year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
+                end_dt = datetime(end_year, end_month, end_day, 23, 59, 59, tzinfo=timezone.utc)
+                
+                logger.info("parsed_simple_date_range",
+                           start=start_dt.isoformat(),
+                           end=end_dt.isoformat())
+                
+                return start_dt, end_dt
+                
+            except ValueError as e:
+                logger.error("invalid_datetime_values", error=str(e))
+                return None, None
+        
+        # NEW Phase 2.3: Between...and pattern: "between January 5th and January 10th"
+        # Supports ordinal suffixes: 1st, 2nd, 3rd, 14th, 15th (voice recognition)
+        between_pattern = r'between\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?\s+and\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?'
+        match = re.match(between_pattern, time_range_str)
+        
+        if match:
+            start_month_name = match.group(1)
+            start_day = int(match.group(2))
+            start_year_explicit = match.group(3)
+            
+            end_month_name = match.group(4)
+            end_day = int(match.group(5))
+            end_year_explicit = match.group(6)
+            
+            start_month = TimeRangeParser.MONTHS.get(start_month_name)
+            end_month = TimeRangeParser.MONTHS.get(end_month_name)
+            
+            if not start_month or not end_month:
+                logger.warning("invalid_month_name", 
+                             start_month=start_month_name, 
+                             end_month=end_month_name)
+                return None, None
+            
+            # SMART YEAR INFERENCE: For historical energy data queries
+            # - If month/day is in the future, use last year
+            if start_year_explicit:
+                start_year = int(start_year_explicit)
+            else:
+                try:
+                    test_start = datetime(now.year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
+                    # If date is in future, use last year
+                    if test_start > now:
+                        start_year = now.year - 1
+                    else:
+                        start_year = now.year
+                except ValueError:
+                    start_year = now.year
+            
+            if end_year_explicit:
+                end_year = int(end_year_explicit)
+            else:
+                try:
+                    # For end dates, just check if the DATE (not time) is in the future
+                    test_end_date = datetime(now.year, end_month, end_day, 0, 0, 0, tzinfo=timezone.utc)
+                    # If the DATE is in future (ignoring time), use last year
+                    if test_end_date.date() > now.date():
+                        end_year = now.year - 1
+                    else:
+                        end_year = now.year
+                except ValueError:
+                    end_year = now.year
+            
+            try:
+                start_dt = datetime(start_year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
+                end_dt = datetime(end_year, end_month, end_day, 23, 59, 59, tzinfo=timezone.utc)
+                
+                logger.info("parsed_between_date_range",
+                           start=start_dt.isoformat(),
+                           end=end_dt.isoformat())
+                
+                return start_dt, end_dt
+                
+            except ValueError as e:
+                logger.error("invalid_datetime_values", error=str(e))
+                return None, None
+        
+        # NEW Phase 2.3: Single date: "on January 15" or "on January 15th"
+        single_date_pattern = r'on\s+(\w+)\s+(\d+)(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?'
+        match = re.match(single_date_pattern, time_range_str)
+        
+        if match:
+            month_name = match.group(1)
+            day = int(match.group(2))
+            year_explicit = match.group(3)
+            
+            month = TimeRangeParser.MONTHS.get(month_name)
+            
+            if not month:
+                logger.warning("invalid_month_name", month=month_name)
+                return None, None
+            
+            # SMART YEAR INFERENCE: For historical energy data
+            # - If date is in future, use last year
+            if year_explicit:
+                year = int(year_explicit)
+            else:
+                try:
+                    test_date = datetime(now.year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+                    # If date is in future, use last year
+                    if test_date > now:
+                        year = now.year - 1
+                    else:
+                        year = now.year
+                except ValueError:
+                    year = now.year
+            
+            try:
+                start_dt = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)
+                end_dt = datetime(year, month, day, 23, 59, 59, tzinfo=timezone.utc)
+                
+                logger.info("parsed_single_date",
+                           date=start_dt.date().isoformat())
+                
+                return start_dt, end_dt
+                
+            except ValueError as e:
+                logger.error("invalid_datetime_values", error=str(e))
+                return None, None
+        
+        # EXISTING: Absolute date ranges with hours: "October 27, 3 PM to October 28, 10 AM"
         # Pattern: "Month Day, Hour AM/PM to Month Day, Hour AM/PM"
         absolute_pattern = r'(\w+)\s+(\d+),?\s+(\d+)\s*(am|pm)?\s+to\s+(\w+)\s+(\d+),?\s+(\d+)\s*(am|pm)?'
         match = re.match(absolute_pattern, time_range_str)
@@ -215,5 +392,69 @@ class TimeRangeParser:
                 return datetime(now.year, month, day, 0, 0, 0, tzinfo=timezone.utc)
             except ValueError:
                 return None
+        
+        return None
+    @staticmethod
+    def extract_interval(query: str) -> Optional[str]:
+        """
+        Extract time interval from query for API calls
+        
+        Supported patterns:
+        - "hourly" / "hour" / "every hour" → "1hour"
+        - "15 minute" / "15-minute" / "fifteen minute" → "15min"
+        - "5 minute" / "5-minute" / "five minute" → "5min"
+        - "1 minute" / "one minute" / "minute" → "1min"
+        - "daily" / "day" / "every day" → "1day"
+        
+        Args:
+            query: Natural language query
+            
+        Returns:
+            API interval string (1min, 5min, 15min, 1hour, 1day) or None
+        """
+        query_lower = query.lower()
+        
+        # Number word to digit mapping
+        number_words = {
+            'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+            'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10,
+            'eleven': 11, 'twelve': 12, 'fifteen': 15, 'twenty': 20, 'thirty': 30
+        }
+        
+        # Pattern 1: "hourly" or "hour"
+        if re.search(r'\b(hourly|per hour|every hour|hour interval)\b', query_lower):
+            return "1hour"
+        
+        # Pattern 2: "15 minute" or "15-minute" or "fifteen minute"
+        minute_pattern = r'\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|thirty)[\s-]?minute'
+        match = re.search(minute_pattern, query_lower)
+        if match:
+            minute_str = match.group(1)
+            minutes = number_words.get(minute_str, None)
+            if minutes is None:
+                try:
+                    minutes = int(minute_str)
+                except ValueError:
+                    minutes = None
+            
+            if minutes:
+                # Map to valid API intervals
+                if minutes == 1:
+                    return "1min"
+                elif minutes <= 5:
+                    return "5min"
+                elif minutes <= 15:
+                    return "15min"
+                else:
+                    # For larger minute values, use hour
+                    return "1hour"
+        
+        # Pattern 3: "daily" or "day"
+        if re.search(r'\b(daily|per day|every day|day interval)\b', query_lower):
+            return "1day"
+        
+        # Pattern 4: Just "minute" without number (assume 1min)
+        if re.search(r'\bminute\b', query_lower) and not re.search(r'\d+\s*minute', query_lower):
+            return "1min"
         
         return None

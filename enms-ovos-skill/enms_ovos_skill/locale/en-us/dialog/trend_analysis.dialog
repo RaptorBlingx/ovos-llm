@@ -1,0 +1,7 @@
+{% if trend == 'up' %}
+{{ machine }} {{ metric }} is trending up by {{ percent_change|num }}% versus {{ previous_period_label }}, averaging {{ current_avg|num }} {{ unit }} compared to {{ previous_avg|num }} {{ unit }}.
+{% elif trend == 'down' %}
+{{ machine }} {{ metric }} is trending down by {{ (percent_change * -1)|num }}% versus {{ previous_period_label }}, averaging {{ current_avg|num }} {{ unit }} compared to {{ previous_avg|num }} {{ unit }}.
+{% else %}
+{{ machine }} {{ metric }} is steady compared to {{ previous_period_label }}, averaging {{ current_avg|num }} {{ unit }}.
+{% endif %}
