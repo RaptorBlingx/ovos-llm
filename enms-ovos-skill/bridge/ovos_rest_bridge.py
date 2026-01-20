@@ -37,6 +37,7 @@ class QueryRequest(BaseModel):
     text: str = Field(..., description="User query text")
     session_id: Optional[str] = Field(None, description="Session ID for context")
     user_id: Optional[str] = Field(None, description="User ID")
+    thinking_enabled: bool = Field(False, description="Enable LLM reasoning mode (slower, more accurate)")
     
 class QueryResponse(BaseModel):
     success: bool
@@ -128,7 +129,7 @@ class OVOSRestBridge:
         self.pdf_downloads[session_id] = pdf_data
         logger.info(f"📄 PDF download ready for session {session_id}: {pdf_data.get('filename')} ({pdf_data.get('file_size_kb')} KB)")
     
-    async def process_query(self, text: str, session_id: str, user_id: Optional[str] = None) -> QueryResponse:
+    async def process_query(self, text: str, session_id: str, user_id: Optional[str] = None, thinking_enabled: bool = False) -> QueryResponse:
         """
         Send query to OVOS messagebus and wait for response
         """
@@ -156,7 +157,8 @@ class OVOSRestBridge:
             context = {
                 'session_id': session_id,
                 'user_id': user_id or 'anonymous',
-                'source': 'rest_bridge'
+                'source': 'rest_bridge',
+                'thinking_enabled': thinking_enabled
             }
             
             message = Message(
@@ -166,7 +168,7 @@ class OVOSRestBridge:
             )
             
             self.bus.emit(message)
-            logger.info(f"📤 Sent query to messagebus: '{cleaned_text}' (session: {session_id})")
+            logger.info(f"📤 Sent query to messagebus: '{cleaned_text}' (session: {session_id}, thinking: {thinking_enabled})")
             
             # Detect if this is a report generation query (needs longer wait for PDF)
             is_report_query = any(kw in cleaned_text.lower() for kw in ['report', 'generate', 'create'])
@@ -348,7 +350,8 @@ async def process_query(request: QueryRequest):
         response = await bridge.process_query(
             text=request.text,
             session_id=session_id,
-            user_id=request.user_id
+            user_id=request.user_id,
+            thinking_enabled=request.thinking_enabled
         )
         return response
         

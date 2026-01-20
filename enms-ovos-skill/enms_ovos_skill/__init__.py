@@ -26,10 +26,11 @@ import re
 import threading
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 import structlog
-from ovos_workshop.decorators import intent_handler
+from ovos_workshop.decorators import intent_handler, fallback_handler
 from ovos_workshop.intents import IntentBuilder
-from ovos_workshop.skills.ovos import OVOSSkill
+from ovos_workshop.skills.fallback import FallbackSkill
 from ovos_bus_client.message import Message
 
 # Import all core modules
@@ -56,7 +57,7 @@ from .lib.event_listener import EnMSEventListener
 logger = structlog.get_logger(__name__)
 
 
-class EnmsSkill(OVOSSkill):
+class EnmsSkill(FallbackSkill):
     """
     PRODUCTION-READY OVOS Skill for Energy Management System
     
@@ -117,7 +118,8 @@ class EnmsSkill(OVOSSkill):
         Called after skill construction
         Initialize all SOTA components
         """
-        logger.info("skill_initializing", 
+        print(f"[DEBUG] EnMS initialize() called at {__file__}", flush=True)
+        self.logger.info("skill_initializing", 
                         skill_name="EnmsSkill",
                         version="1.0.0",
                         architecture="multi-tier-adaptive")
@@ -130,12 +132,12 @@ class EnmsSkill(OVOSSkill):
         # Try to load config.yaml from skill directory
         config_path = Path(__file__).parent.parent / "config.yaml"
         if config_path.exists():
-            logger.info("loading_config_yaml", path=str(config_path))
+            self.logger.info("loading_config_yaml", path=str(config_path))
             with open(config_path, 'r') as f:
                 self.config = yaml.safe_load(f)
         else:
             # Fallback to legacy environment variables and settings
-            logger.warning("config_yaml_not_found", path=str(config_path), using_fallback=True)
+            self.logger.warning("config_yaml_not_found", path=str(config_path), using_fallback=True)
             self.config = {
                 "adapter_type": "humanergy",
                 "api_base_url": self.settings.get("enms_api_base_url", "http://localhost:8001/api/v1"),
@@ -157,34 +159,45 @@ class EnmsSkill(OVOSSkill):
         self.progress_threshold_ms = self.settings.get("progress_threshold_ms", 500)
         
         # Initialize Tier 1-3: Hybrid Parser (Heuristic + Adapt + LLM)
-        logger.info("initializing_hybrid_parser")
+        self.logger.info("initializing_hybrid_parser")
         self.hybrid_parser = HybridParser()
         
+        # Initialize LLM model path from settings
+        self.llm_model_path = self.settings.get("llm_model_path", "/models/Qwen3-1.7B-Q4_K_M.gguf")
+        
+        # Start background thread to initialize and load LLM model
+        if Path(self.llm_model_path).exists():
+            self.logger.info("llm_model_found", path=self.llm_model_path)
+            threading.Thread(target=self._preload_llm, daemon=True).start()
+        else:
+            self.logger.warning("llm_model_not_found", path=self.llm_model_path, 
+                              message="Skill will work without LLM tier (Tier 1+2 only)")
+        
         # Initialize Tier 4: Validator
-        logger.info("initializing_validator")
+        self.logger.info("initializing_validator")
         self.validator = ENMSValidator(
             confidence_threshold=self.confidence_threshold,
             enable_fuzzy_matching=self.settings.get("enable_fuzzy_matching", True)
         )
         
         # Initialize Tier 5: EnMS Adapter (Priority 5 - WASABI Portability)
-        logger.info("initializing_enms_adapter", 
+        self.logger.info("initializing_enms_adapter", 
                    adapter_type=self.config.get("adapter_type", "humanergy"),
                    base_url=self.enms_api_base_url)
         
         try:
             self.adapter = AdapterFactory.create(self.config)
-            logger.info("adapter_created_successfully", 
+            self.logger.info("adapter_created_successfully", 
                        adapter_class=self.adapter.__class__.__name__)
         except Exception as e:
-            logger.error("adapter_creation_failed", error=str(e))
+            self.logger.error("adapter_creation_failed", error=str(e))
             # Fallback to legacy ENMSClient for backward compatibility
-            logger.warning("falling_back_to_legacy_client")
+            self.logger.warning("falling_back_to_legacy_client")
             self.adapter = None
         
         # Legacy API client (for machine_registry backward compatibility)
         # TODO: Update machine_registry to use adapter instead of api_client
-        logger.info("initializing_api_client", base_url=self.enms_api_base_url)
+        self.logger.info("initializing_api_client", base_url=self.enms_api_base_url)
         self.api_client = ENMSClient(
             base_url=self.enms_api_base_url,
             timeout=self.config.get("timeout", 90),
@@ -192,27 +205,27 @@ class EnmsSkill(OVOSSkill):
         )
         
         # Initialize Tier 5.5: Dynamic Machine Registry (Priority 4)
-        logger.info("initializing_machine_registry")
+        self.logger.info("initializing_machine_registry")
         self.machine_registry = DynamicMachineRegistry(
             api_client=self.api_client,
             refresh_interval=timedelta(hours=1)
         )
         
         # Initialize Tier 6: Response Formatter
-        logger.info("initializing_response_formatter")
+        self.logger.info("initializing_response_formatter")
         self.response_formatter = ResponseFormatter()
         
         # Initialize Tier 7: Conversation Context
-        logger.info("initializing_conversation_context")
+        self.logger.info("initializing_conversation_context")
         # DISABLED: Context manager causes false positives
         # self.context_manager = ConversationContextManager()
         self.context_manager = None
         
         # Initialize Tier 8: Voice Feedback
-        logger.info("initializing_voice_feedback")
+        self.logger.info("initializing_voice_feedback")
         self.voice_feedback = VoiceFeedbackManager()
         
-        logger.info("skill_initialized_successfully", 
+        self.logger.info("skill_initialized_successfully", 
                         components=["HybridParser", "Validator", "APIClient", "MachineRegistry", 
                                   "ResponseFormatter", "ConversationContext", "VoiceFeedback"],
                         enms_api=self.enms_api_base_url,
@@ -256,7 +269,7 @@ class EnmsSkill(OVOSSkill):
             name=f"{self.skill_id}_health_check"
         )
         
-        logger.info("scheduled_events_registered",
+        self.logger.info("scheduled_events_registered",
                    events=["whitelist_refresh_initial", "whitelist_refresh_daily", "conversation_cleanup", "health_check"])
         
         # WASABI: Start event listener for proactive warnings
@@ -288,18 +301,26 @@ class EnmsSkill(OVOSSkill):
         """
         try:
             time.sleep(5)  # Let critical services start first
-            self.logger.info("llm_preload_starting")
+            print(f"[LLM] _preload_llm starting, model_path={getattr(self, 'llm_model_path', 'NOT_SET')}", flush=True)
+            self.log.info(f"LLM preload starting, model_path={getattr(self, 'llm_model_path', 'NOT_SET')}")
             start = time.time()
             
-            # Access the qwen3 parser and trigger model load
-            if self.hybrid_parser and self.hybrid_parser.llm:
-                self.hybrid_parser.llm.load_model()
+            # Initialize LLM parser with model path from settings
+            if self.hybrid_parser:
+                thinking_enabled = self.settings.get("llm_thinking_enabled", False)
+                self.hybrid_parser.init_llm(
+                    self.llm_model_path, 
+                    thinking_enabled=thinking_enabled
+                )
                 elapsed = time.time() - start
-                self.logger.info("llm_preload_complete", elapsed_seconds=round(elapsed, 1))
+                print(f"[LLM] Model loaded in {elapsed:.1f}s", flush=True)
+                self.log.info(f"LLM preload complete in {elapsed:.1f}s")
             else:
-                self.logger.warning("llm_preload_skipped", reason="parser not initialized")
+                print("[LLM] ERROR: hybrid_parser not initialized", flush=True)
+                self.log.warning("LLM preload skipped: hybrid_parser not initialized")
         except Exception as e:
-            self.logger.error("llm_preload_failed", error=str(e), error_type=type(e).__name__)
+            print(f"[LLM] PRELOAD FAILED: {type(e).__name__}: {e}", flush=True)
+            self.log.error(f"LLM preload failed: {type(e).__name__}: {e}")
     
     def _start_event_listener(self):
         """Start EnMS event listener for proactive warnings."""
@@ -885,13 +906,12 @@ class EnmsSkill(OVOSSkill):
             dict with: success, response, latency_ms, tier, intent
         """
         start_time = time.time()
-        self.logger.info("⚙️ PROCESS_QUERY_START", utterance=utterance[:50])
+        self.log.info(f"_process_query START: {utterance[:50]}")
         
         try:
             # Step 1: Get conversation session
-            self.logger.info("⚙️ step1_get_session", elapsed_ms=int((time.time()-start_time)*1000))
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
-            self.logger.info("⚙️ step1_session_created", elapsed_ms=int((time.time()-start_time)*1000))
+            self.log.debug("step1_get_session")
+            session = None  # Context manager disabled - see REAL-OVOS-SKILL-DEVELOPMENT-GUIDE.md
             
             # Step 2: Voice acknowledgment (varies by expected intent)
             if expected_intent:
@@ -899,11 +919,11 @@ class EnmsSkill(OVOSSkill):
                 self.speak(ack.message, wait=False)
             
             # Step 3: Parse with HybridParser (multi-tier routing)
-            self.logger.info("⚙️ step3_parsing", elapsed_ms=int((time.time()-start_time)*1000))
+            self.log.info("step3_parsing...")
             parse_start = time.time()
             parse_result = self.hybrid_parser.parse(utterance)
             parse_latency_ms = (time.time() - parse_start) * 1000
-            self.logger.info("⚙️ step3_parsed", parse_ms=int(parse_latency_ms), elapsed_ms=int((time.time()-start_time)*1000))
+            self.log.info(f"step3_parsed: tier={parse_result.get('tier')}, intent={parse_result.get('intent')}, conf={parse_result.get('confidence')}")
             
             tier = parse_result.get("tier", RoutingTier.HEURISTIC)
             # parse_result IS the llm_output dict (contains intent, confidence, entities, etc.)
@@ -921,7 +941,7 @@ class EnmsSkill(OVOSSkill):
             
             # Step 3.5: Check for pending clarification BEFORE validation
             # If query is just a machine name answering clarification
-            if session.pending_clarification:
+            if session and session.pending_clarification:
                 # Check if query matches any machine (case-insensitive)
                 matched_machine = None
                 for valid_machine in self.validator.machine_whitelist:
@@ -941,11 +961,11 @@ class EnmsSkill(OVOSSkill):
                     llm_output['confidence'] = 0.99  # User provided clarification
             
             # Step 4: Validate
-            self.logger.info("⚙️ step4_validating", elapsed_ms=int((time.time()-start_time)*1000))
+            self.log.info("step4_validating...")
             validation_start = time.time()
             validation = self.validator.validate(llm_output)
             validation_latency_ms = (time.time() - validation_start) * 1000
-            self.logger.info("⚙️ step4_validated", valid=validation.valid, elapsed_ms=int((time.time()-start_time)*1000))
+            self.log.info(f"step4_validated: valid={validation.valid}, intent={validation.intent}")
             
             if not validation.valid:
                 errors_total.labels(error_type='validation', component='validator').inc()
@@ -953,9 +973,7 @@ class EnmsSkill(OVOSSkill):
                 if validation.suggestions:
                     error_msg += " " + validation.suggestions[0]
                 
-                self.logger.warning("validation_failed",
-                                  errors=validation.errors,
-                                  suggestions=validation.suggestions)
+                self.log.warning(f"validation_failed: errors={validation.errors}")
                 
                 # Generate friendly error with voice feedback
                 error_response = self.voice_feedback.get_error_message(
@@ -982,12 +1000,12 @@ class EnmsSkill(OVOSSkill):
                 intent = self.context_manager.resolve_context_references(utterance, intent, session)
             
             # Clear pending clarification if it was resolved early
-            if self.context_manager and session.pending_clarification and intent.machine:
+            if self.context_manager and session and session.pending_clarification and intent.machine:
                 self.logger.info("cleared_pending_clarification", machine=intent.machine)
                 session.pending_clarification = None
             
             # Step 5.5: Apply smart defaults (Phase 3.3) - DISABLED
-            if self.context_manager:
+            if self.context_manager and session:
                 intent = self.context_manager.apply_smart_defaults(intent, session)
             
             # Step 6: Check for ambiguous machines (Phase 3.2)
@@ -1032,11 +1050,11 @@ class EnmsSkill(OVOSSkill):
                     }
             
             # Step 8: Call EnMS API
-            self.logger.info("⚙️ step8_calling_api", intent=intent.intent.value, elapsed_ms=int((time.time()-start_time)*1000))
+            self.log.info(f"step8_calling_api: intent={intent.intent.value}, machine={intent.machine}")
             api_start = time.time()
             api_data = self._call_enms_api(intent)
             api_latency_ms = (time.time() - api_start) * 1000
-            self.logger.info("⚙️ step8_api_returned", success=api_data.get('success'), api_ms=int(api_latency_ms), elapsed_ms=int((time.time()-start_time)*1000))
+            self.log.info(f"step8_api_returned: success={api_data.get('success')}, api_ms={int(api_latency_ms)}")
             
             if not api_data.get('success', False):
                 errors_total.labels(error_type='api', component='api_client').inc()
@@ -1131,10 +1149,9 @@ class EnmsSkill(OVOSSkill):
             }
             
         except Exception as e:
-            self.logger.error("query_processing_failed",
-                            error=str(e),
-                            error_type=type(e).__name__,
-                            utterance=utterance)
+            self.log.error(f"Query processing failed: {type(e).__name__}: {e} | utterance={utterance}")
+            import traceback
+            self.log.error(f"Traceback: {traceback.format_exc()}")
             
             error_response = self.voice_feedback.get_error_message('api_error')
             total_latency_ms = (time.time() - start_time) * 1000
@@ -1438,13 +1455,12 @@ class EnmsSkill(OVOSSkill):
                         return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.ENERGY_QUERY:
+                # Define utterance_lower at the start of this block
+                utterance_lower = intent.utterance.lower() if intent.utterance else ''
+                
                 if intent.machine:
                     # Machine-specific energy query
-                    # Debug: Check time_range
-                    self.logger.info("debug_time_range", 
-                                   has_time_range=intent.time_range is not None,
-                                   time_range_value=intent.time_range,
-                                   relative=intent.time_range.relative if intent.time_range else None)
+                    self.log.info(f"ENERGY_QUERY: machine={intent.machine}, time_range={intent.time_range}, utterance_lower={utterance_lower[:50]}")
                     
                     # Check for multi-energy queries
                     is_energy_types = 'energy types' in utterance_lower or 'energy sources' in utterance_lower or 'what energy' in utterance_lower
@@ -1462,8 +1478,10 @@ class EnmsSkill(OVOSSkill):
                     
                     # Handle multi-energy queries
                     if is_energy_types or is_energy_summary or specific_energy_type:
+                        self.log.info(f"ENERGY_QUERY: multi-energy path - types={is_energy_types}, summary={is_energy_summary}, specific={specific_energy_type}")
                         # Lookup machine ID
                         machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        self.log.info(f"ENERGY_QUERY: list_machines returned {len(machines) if machines else 0}")
                         if not machines:
                             return {'success': False, 'error': f'Machine {intent.machine} not found'}
                         
@@ -1508,14 +1526,20 @@ class EnmsSkill(OVOSSkill):
                             return {'success': True, 'data': data, 'template': 'energy_summary'}
                         elif specific_energy_type:
                             # Specific energy type readings
-                            data = self._run_async(self.api_client.get_energy_readings(
-                                machine_id=machine_id,
-                                energy_type=specific_energy_type,
-                                hours=24
-                            ))
-                            data['machine_name'] = intent.machine
-                            data['energy_type'] = specific_energy_type
-                            return {'success': True, 'data': data, 'custom_template': 'energy_type_readings'}
+                            self.log.info(f"ENERGY_QUERY: calling get_energy_readings(machine_id={machine_id}, energy_type={specific_energy_type})")
+                            try:
+                                data = self._run_async(self.api_client.get_energy_readings(
+                                    machine_id=machine_id,
+                                    energy_type=specific_energy_type,
+                                    hours=24
+                                ))
+                                self.log.info(f"ENERGY_QUERY: get_energy_readings returned: {str(data)[:200]}")
+                                data['machine_name'] = intent.machine
+                                data['energy_type'] = specific_energy_type
+                                return {'success': True, 'data': data, 'custom_template': 'energy_type_readings'}
+                            except Exception as e:
+                                self.log.error(f"ENERGY_QUERY: get_energy_readings failed: {type(e).__name__}: {e}")
+                                # Fall through to timeseries path
                     
                     # Phase 2.4: Use extracted interval from params (replaces old hardcoded logic)
                     utterance_lower = intent.utterance.lower() if hasattr(intent, 'utterance') else ''
@@ -1523,18 +1547,15 @@ class EnmsSkill(OVOSSkill):
                     needs_timeseries = requested_interval is not None
                     
                     # Check if time range is specified (beyond "today") OR if interval keywords detected
+                    self.log.info(f"ENERGY_QUERY: time_range.relative={intent.time_range.relative if intent.time_range else None}, needs_timeseries={needs_timeseries}")
+                    
                     if intent.time_range and (intent.time_range.relative not in ["today", "now", None] or needs_timeseries):
                         # Time-series query - get energy for specific time range
-                        self.logger.info("energy_query_timeseries",
-                                       machine=intent.machine,
-                                       start=intent.time_range.start.isoformat(),
-                                       end=intent.time_range.end.isoformat(),
-                                       relative=intent.time_range.relative,
-                                       needs_timeseries=needs_timeseries,
-                                       requested_interval=requested_interval)
+                        self.log.info(f"ENERGY_QUERY: taking TIMESERIES path - start={intent.time_range.start}, end={intent.time_range.end}")
                         
                         # First get machine ID
                         machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        self.log.info(f"ENERGY_QUERY: list_machines returned {len(machines) if machines else 0} machines")
                         if not machines:
                             return {'success': False, 'error': f"Machine {intent.machine} not found"}
                         
@@ -1984,6 +2005,7 @@ class EnmsSkill(OVOSSkill):
             
             elif intent.intent == IntentType.RANKING:
                 # Top N ranking by metric (not machine list)
+                self.log.info(f"RANKING: limit={intent.limit}, ranking_metric={getattr(intent, 'ranking_metric', None)}")
                 limit = intent.limit or 5
                 ranking_metric = getattr(intent, 'ranking_metric', 'consumption')
                 
@@ -2068,9 +2090,19 @@ class EnmsSkill(OVOSSkill):
                         ranking_metric = 'consumption'
                 
                 # Standard consumption/cost ranking
-                metric = 'energy' if ranking_metric == 'consumption' else ranking_metric
-                data = self._run_async(self.api_client.get_top_consumers(limit=limit, metric=metric))
-                return {'success': True, 'data': data}
+                # Default to 'energy' if ranking_metric is None or 'consumption'
+                if not ranking_metric or ranking_metric == 'consumption':
+                    metric = 'energy'
+                else:
+                    metric = ranking_metric
+                self.log.info(f"RANKING: calling get_top_consumers(limit={limit}, metric={metric})")
+                try:
+                    data = self._run_async(self.api_client.get_top_consumers(limit=limit, metric=metric))
+                    self.log.info(f"RANKING: get_top_consumers returned: {str(data)[:200]}")
+                    return {'success': True, 'data': data}
+                except Exception as e:
+                    self.log.error(f"RANKING: get_top_consumers failed: {type(e).__name__}: {e}")
+                    return {'success': False, 'error': str(e)}
             
             elif intent.intent == IntentType.COMPARISON and intent.machines:
                 # Multi-machine energy comparison
@@ -4526,6 +4558,23 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Cancel handler failed: {e}")
             self.speak_dialog("error.general")
     
+    def can_answer(self, message: Message) -> bool:
+        """
+        Required by FallbackSkill - determines if this skill can handle the fallback.
+        
+        ALWAYS returns True - the handler (handle_llm_fallback) will gracefully degrade
+        if LLM is not ready yet. This prevents the skill from being excluded from
+        fallback candidates during LLM model loading.
+        
+        See LLM_TODO.md "CRITICAL BUG FOUND" section for forensic analysis.
+        """
+        self.logger.debug("can_answer_called", llm_ready=bool(
+            self.hybrid_parser and 
+            self.hybrid_parser.llm and 
+            self.hybrid_parser.llm.model
+        ))
+        return True  # Always accept - handler decides what to do
+    
     def can_converse(self, message: Message) -> bool:
         """
         Required by ConversationalSkill - determines if this skill should handle the utterance.
@@ -4569,43 +4618,142 @@ class EnmsSkill(OVOSSkill):
             # Check if we have active context
             session_id = self._get_session_id(message)
             has_context = False
-            if self.context_manager:
-                # DISABLED: session = self.context_manager.get_or_create_session(session_id)
-                has_context = len(session.history) > 0
+            # DISABLED: Context manager causes multi-turn issues - each query is standalone
+            # if self.context_manager:
+            #     session = self.context_manager.get_or_create_session(session_id)
+            #     has_context = len(session.history) > 0
             
-            # Only handle if it's clearly a follow-up AND we have context
-            # Otherwise, let intent handlers try first
-            if not (is_follow_up and has_context):
+            # Handle follow-up questions with context first
+            if is_follow_up and has_context:
+                result = self._process_query(utterance, session_id)
+                if result['success'] or 'error' in result:
+                    self.speak(result['response'])
+                    # For report generation, emit custom event with PDF data
+                    if result.get('pdf_base64'):
+                        self.bus.emit(Message(
+                            "enms.report.generated",
+                            {"pdf_data": result['pdf_base64'], "filename": result.get('filename', 'report.pdf')}
+                        ))
+                    return True
+            
+            # LLM FALLBACK: Try LLM tier if available (for queries Adapt won't match)
+            # This runs BEFORE Adapt, so only invoke if LLM is initialized and ready
+            if self.hybrid_parser and self.hybrid_parser.llm and self.hybrid_parser.llm.model:
+                self.logger.debug("converse_trying_llm", utterance=utterance[:50])
+                
+                # Check if thinking mode requested via message data
+                thinking_enabled = message.data.get("thinking_enabled", False)
+                original_mode = None
+                
+                # Temporarily enable thinking mode if requested
+                if thinking_enabled:
+                    original_mode = self.hybrid_parser.llm.thinking_enabled
+                    self.hybrid_parser.llm.thinking_enabled = True
+                
+                try:
+                    # Try HybridParser which includes LLM tier (Tier 1 → Tier 2 → Tier 3)
+                    parse_result = self.hybrid_parser.parse(utterance)
+                    
+                    # Check if LLM returned a valid intent (not clarification_needed)
+                    intent_type = parse_result.get('intent')
+                    confidence = parse_result.get('confidence', 0)
+                    tier = parse_result.get('tier')
+                    
+                    if intent_type and intent_type != 'clarification_needed' and confidence >= 0.7:
+                        self.logger.info("converse_llm_matched", 
+                            intent=intent_type, 
+                            confidence=confidence,
+                            tier=str(tier)
+                        )
+                        # Process the query with the LLM-determined intent
+                        result = self._process_query(utterance, session_id)
+                        self.speak(result.get('response', "I couldn't process that."))
+                        return True
+                    else:
+                        self.logger.debug("converse_llm_no_match", 
+                            intent=intent_type, 
+                            confidence=confidence
+                        )
+                except Exception as e:
+                    self.logger.error("converse_llm_error", error=str(e))
+                finally:
+                    # Restore thinking mode
+                    if thinking_enabled and original_mode is not None:
+                        self.hybrid_parser.llm.thinking_enabled = original_mode
+            
+            # No match - let Adapt intent handlers try (or timeout if nothing matches)
+            return False
+        except Exception as e:
+            self.logger.error("converse_error", error=str(e), error_type=type(e).__name__)
+            return False
+
+    @fallback_handler(priority=90)
+    def handle_llm_fallback(self, message: Message) -> bool:
+        """
+        LLM fallback handler - runs when NO Adapt intent matches.
+        
+        Uses HybridParser's LLM tier to interpret rephrased/unusual queries
+        and translate them to standard EnMS intents.
+        
+        Priority 90 = low priority (runs after most other fallbacks)
+        Returns True if handled, False to pass to next fallback.
+        
+        GRACEFUL DEGRADATION: If LLM is not ready yet (still loading),
+        returns False to allow other fallback skills to try.
+        """
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            
+            if not utterance or len(utterance.strip()) < 3:
                 return False
             
-            # Process as follow-up query with context
-            result = self._process_query(utterance, session_id)
+            self.log.info(f"LLM fallback triggered: {utterance[:60]}")
             
-            if result['success'] or 'error' in result:
-                self.speak(result['response'])
+            # GRACEFUL DEGRADATION: Check if LLM is available (moved from can_answer)
+            if not self.hybrid_parser or not self.hybrid_parser.llm:
+                self.log.warning("LLM fallback degraded: LLM not initialized (may still be loading)")
+                return False  # Pass to next fallback skill
+            
+            if not self.hybrid_parser.llm.model:
+                self.log.warning("LLM fallback degraded: Model not loaded (preload in progress)")
+                return False  # Pass to next fallback skill
+            
+            # Use HybridParser which routes through Heuristic → Adapt → LLM tiers
+            parse_result = self.hybrid_parser.parse(utterance)
+            
+            intent_type = parse_result.get('intent')
+            confidence = parse_result.get('confidence', 0)
+            tier = parse_result.get('tier')
+            
+            self.log.info(f"LLM fallback parse: intent={intent_type}, confidence={confidence:.3f}, tier={tier}")
+            
+            # Accept LLM result if confidence >= 0.6 and valid intent
+            if intent_type and intent_type != 'clarification_needed' and confidence >= 0.6:
+                self.log.info(f"LLM fallback accepted: intent={intent_type}, confidence={confidence:.3f}")
                 
-                # For report generation, emit custom event with PDF data
+                # Process the query with the LLM-determined intent
+                session_id = self._get_session_id(message)
+                result = self._process_query(utterance, session_id)
+                
+                response = result.get('response', "I couldn't process that query.")
+                self.speak(response)
+                
+                # Handle PDF reports if generated
                 if result.get('pdf_base64'):
                     self.bus.emit(Message(
                         "enms.report.generated",
-                        {
-                            "pdf_base64": result['pdf_base64'],
-                            "filename": result.get('pdf_filename', 'report.pdf')
-                        },
-                        {"session_id": session_id}
+                        {"pdf_data": result['pdf_base64'], "filename": result.get('filename', 'report.pdf')}
                     ))
                 
                 return True
-            
-            return False
-            
+            else:
+                self.log.info(f"LLM fallback rejected: low confidence ({confidence:.3f}) or clarification")
+                return False
+                
         except Exception as e:
-            self.logger.error("converse_crash", 
-                            error=str(e), 
-                            error_type=type(e).__name__,
-                            utterance=message.data.get("utterances", [""])[0])
-            return False  # Let intent handlers try instead
-    
+            self.log.error(f"LLM fallback error: {type(e).__name__}: {e}")
+            return False
+
     def shutdown(self):
         """Clean shutdown of skill components"""
         # Cancel all scheduled events to prevent callbacks on dead instance

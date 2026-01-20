@@ -1057,11 +1057,38 @@ class HybridParser:
         self.stats = {
             'heuristic': 0,
             'adapt': 0,
+            'llm': 0,  # Tier 3: LLM fallback
             'clarification': 0,
             'total': 0
         }
         
-        self.logger.info("hybrid_parser_initialized", tiers=["heuristic", "adapt"])
+        # LLM parser (Tier 3) - initialized via init_llm()
+        self.llm = None
+        
+        self.logger.info("hybrid_parser_initialized", tiers=["heuristic", "adapt", "llm"])
+    
+    def init_llm(self, model_path: str, thinking_enabled: bool = False):
+        """
+        Initialize LLM parser (Tier 3) for deep NLU fallback.
+        
+        This should be called from a background thread during startup
+        to avoid blocking the main skill initialization.
+        
+        Args:
+            model_path: Path to GGUF model file (e.g., /models/Qwen3-1.7B-Q4_K_M.gguf)
+            thinking_enabled: Enable reasoning mode (slower but more accurate)
+        """
+        try:
+            from .llm_parser import Qwen3Parser
+            
+            self.logger.info("llm_init_starting", model_path=model_path, thinking=thinking_enabled)
+            self.llm = Qwen3Parser(model_path, thinking_enabled=thinking_enabled)
+            self.llm.load_model()
+            self.logger.info("llm_init_complete", model_loaded=True)
+            
+        except Exception as e:
+            self.logger.error("llm_init_failed", error=str(e))
+            self.llm = None
     
     def parse(self, utterance: str) -> Dict:
         """
@@ -1086,14 +1113,42 @@ class HybridParser:
             
             # Tier 2: Adapt (Fast pattern matching)
             if not result:
-                result = self.adapt.parse(utterance)
+                adapt_result = self.adapt.parse(utterance)
                 
-                if result:
+                # Check raw Adapt confidence before time parsing (which boosts confidence)
+                raw_adapt_confidence = adapt_result.get('confidence', 0) if adapt_result else 0
+                
+                # Only accept Adapt if raw confidence >= 0.3 (low-medium threshold)
+                # Very low confidence Adapt matches (< 0.3) should fall through to LLM
+                if adapt_result and raw_adapt_confidence >= 0.3:
+                    result = adapt_result
                     tier_used = RoutingTier.ADAPT
                     self.stats['adapt'] += 1
+                elif adapt_result:
+                    self.logger.debug("adapt_low_confidence_rejected",
+                                    confidence=raw_adapt_confidence,
+                                    intent=adapt_result.get('intent'),
+                                    reason="falling_back_to_llm")
             
-            # Fallback: Return clarification intent for unmatched queries
-            if not result or (result and result.get('confidence', 0) < 0.7):
+            # Tier 3: LLM (Deep NLU fallback)
+            if not result and self.llm and hasattr(self.llm, 'model') and self.llm.model:
+                self.logger.info("llm_fallback_activated", utterance=utterance)
+                result = self.llm.parse(
+                    utterance,
+                    machines=self.heuristic.MACHINES,
+                    intents=[intent_type.value for intent_type in IntentType]
+                )
+                
+                if result and result.get('confidence', 0) >= 0.5:  # Lower threshold for LLM (0.5 vs 0.7)
+                    tier_used = RoutingTier.LLM
+                    self.stats['llm'] += 1
+                    self.logger.info("llm_intent_matched",
+                                   intent=result.get('intent'),
+                                   confidence=result.get('confidence'),
+                                   machine=result.get('machine'))
+            
+            # Fallback: Return clarification intent for unmatched queries (ONLY if ALL tiers fail)
+            if not result or (result and result.get('confidence', 0) < 0.5):  # Lowered threshold to match LLM
                 self.logger.info("clarification_needed",
                                 utterance=utterance,
                                 confidence=result.get('confidence', 0) if result else 0)

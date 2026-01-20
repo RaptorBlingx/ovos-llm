@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     git \
     curl \
+    wget \
     supervisor \
     swig \
     libfann-dev \
@@ -45,7 +46,30 @@ COPY requirements.txt /app/requirements.txt
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu && \
     pip install --no-cache-dir -r /app/requirements.txt
+
+# Download Qwen3-1.7B model (Q4_K_M quantization, ~1.28GB)
+# HuggingFace direct download from bartowski repo (no authentication required)
+# NOTE: Filename is Qwen_Qwen3-1.7B-Q4_K_M.gguf (with underscore)
+RUN echo "Downloading Qwen3-1.7B-Q4_K_M model..." && \
+    wget --progress=bar:force:noscroll \
+         --timeout=600 \
+         --tries=3 \
+         -O /models/Qwen3-1.7B-Q4_K_M.gguf \
+         "https://huggingface.co/bartowski/Qwen_Qwen3-1.7B-GGUF/resolve/main/Qwen_Qwen3-1.7B-Q4_K_M.gguf" && \
+    echo "Model downloaded successfully" && \
+    ls -lh /models/Qwen3-1.7B-Q4_K_M.gguf || \
+    echo "WARNING: Model download failed. Skill will work without LLM tier."
+
+# Verify model size (should be ~1.28GB)
+RUN MODEL_SIZE=$(stat -c%s /models/Qwen3-1.7B-Q4_K_M.gguf 2>/dev/null || echo 0) && \
+    if [ "$MODEL_SIZE" -lt 1200000000 ]; then \
+        echo "WARNING: Model file too small ($MODEL_SIZE bytes). Download may have failed."; \
+        echo "Skill will work with Tier 1+2 only (Heuristic + Adapt parsers)."; \
+    else \
+        echo "Model verified: $MODEL_SIZE bytes"; \
+    fi
 
 # Copy OVOS configuration
 COPY ovos.conf /config/ovos.conf
