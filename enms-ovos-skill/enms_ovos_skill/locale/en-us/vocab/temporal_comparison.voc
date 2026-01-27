@@ -1,3 +1,9 @@
+compare today energy
+compare today's energy
+today energy versus yesterday
+today's energy versus yesterday
+today energy to yesterday
+today's energy to yesterday
 compare (this|current) (week|month|day|hour) (to|with|versus|vs) (last|previous) (week|month|day|hour)
 compare (this|current) week (to|with|versus|vs) last week
 compare (this|current) month (to|with|versus|vs) last month
@@ -8,7 +14,25 @@ how does (this|current) (week|month|day) compare (to|with) (last|previous) (week
 difference between (this|current) (week|month|day) and (last|previous) (week|month|day)
 (energy|power|consumption) (today|this week|this month) versus (yesterday|last week|last month)
 (today|this week|this month) compared to (yesterday|last week|last month)
+compare (today|today's|todays) (energy|power|consumption) (to|with|versus|vs) (yesterday|yesterday's|yesterdays)
+compare (this week|this week's|this weeks) (energy|power|consumption) (to|with|versus|vs) (last week|last week's|last weeks)
+compare (this month|this month's|this months) (energy|power|consumption) (to|with|versus|vs) (last month|last month's|last months)
+(today|today's|todays) (energy|power|consumption) (to|with|versus|vs|compared to) (yesterday|yesterday's|yesterdays)
+(this week|this week's|this weeks) (energy|power|consumption) (to|with|versus|vs|compared to) (last week|last week's|last weeks)
 show comparison (this|current) (week|month|day) (to|with|versus|vs) (last|previous) (week|month|day)
 week over week
 month over month
 day over day
+this week versus last week
+this week vs last week
+this month versus last month
+this month vs last month
+this week to last week
+this month to last month
+this week compared to last week
+this month compared to last month
+compare this week versus last week for
+compare this week vs last week for
+compare this week to last week for
+compare this month versus last month for
+compare this month to last month for

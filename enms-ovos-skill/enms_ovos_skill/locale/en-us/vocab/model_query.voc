@@ -1,21 +1,12 @@
-model
 models
-available
-does
-have a baseline model
-has a baseline
-how accurate is the model
-model accuracy
-when was the baseline last trained
-last trained
-show me the regression analysis
-regression analysis
 list baseline models
 list models
 show models
 show baseline models
 baseline models for
 list all baseline models
+all baseline models
+baseline models in the system
 show details for model
 show me details for
 show me details for model
@@ -26,6 +17,9 @@ explain model
 explain baseline model
 model details
 model explanation
-list all baseline models in the system
-all baseline models
-baseline models in the system
+model version
+version
+model accuracy
+accuracy
+how accurate
+what's the accuracy

@@ -73,14 +73,43 @@ class TimeRangeParser:
             start = start.replace(hour=0, minute=0, second=0, microsecond=0)
             return start, now
         
+        elif time_range_str == "next week":
+            # Next Monday to next Sunday
+            days_until_next_monday = 7 - now.weekday()
+            next_monday = now + timedelta(days=days_until_next_monday)
+            next_monday = next_monday.replace(hour=0, minute=0, second=0, microsecond=0)
+            next_sunday = next_monday + timedelta(days=6)
+            next_sunday = next_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return next_monday, next_sunday
+        
         elif time_range_str == "last week":
-            # 7 days ago to now
-            start = now - timedelta(days=7)
-            return start, now
+            # Previous Monday to previous Sunday
+            days_since_monday = now.weekday()  # Monday=0, Sunday=6
+            last_monday = now - timedelta(days=days_since_monday + 7)
+            last_monday = last_monday.replace(hour=0, minute=0, second=0, microsecond=0)
+            last_sunday = last_monday + timedelta(days=6)
+            last_sunday = last_sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return last_monday, last_sunday
         
         elif time_range_str == "this month":
             start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             return start, now
+        
+        elif time_range_str == "next month":
+            # First day of next month to last day of next month
+            if now.month == 12:
+                first_next_month = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            else:
+                first_next_month = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+            
+            # Calculate last day of next month
+            if first_next_month.month == 12:
+                first_month_after_next = first_next_month.replace(year=first_next_month.year + 1, month=1, day=1)
+            else:
+                first_month_after_next = first_next_month.replace(month=first_next_month.month + 1, day=1)
+            last_next_month = first_month_after_next - timedelta(days=1)
+            last_next_month = last_next_month.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return first_next_month, last_next_month
         
         elif time_range_str == "last month":
             # First day of last month to last day of last month
@@ -139,36 +168,21 @@ class TimeRangeParser:
                              end_month=end_month_name)
                 return None, None
             
-            # SMART YEAR INFERENCE: If no year specified, infer the best year
-            # For historical energy data queries:
-            # - If month/day is in the past this year, use current year
-            # - If month/day is in the future, use last year
+            # YEAR INFERENCE LOGIC:
+            # Default to current year unless explicitly specified
+            # This matches user expectation: "January 1st to January 15th" means current year (2026)
+            # Only use different year if user explicitly says "december 1st 2025"
             if start_year_explicit:
                 start_year = int(start_year_explicit)
             else:
-                try:
-                    test_start = datetime(now.year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
-                    # If date is in future, use last year
-                    if test_start > now:
-                        start_year = now.year - 1
-                    else:
-                        start_year = now.year
-                except ValueError:
-                    start_year = now.year
+                # Always default to current year
+                start_year = now.year
             
             if end_year_explicit:
                 end_year = int(end_year_explicit)
             else:
-                try:
-                    # For end dates, just check if the DATE (not time) is in the future
-                    test_end_date = datetime(now.year, end_month, end_day, 0, 0, 0, tzinfo=timezone.utc)
-                    # If the DATE is in future (ignoring time), use last year
-                    if test_end_date.date() > now.date():
-                        end_year = now.year - 1
-                    else:
-                        end_year = now.year
-                except ValueError:
-                    end_year = now.year
+                # Always default to current year
+                end_year = now.year
             
             try:
                 start_dt = datetime(start_year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
@@ -207,34 +221,19 @@ class TimeRangeParser:
                              end_month=end_month_name)
                 return None, None
             
-            # SMART YEAR INFERENCE: For historical energy data queries
-            # - If month/day is in the future, use last year
+            # YEAR INFERENCE LOGIC:
+            # Default to current year unless explicitly specified
             if start_year_explicit:
                 start_year = int(start_year_explicit)
             else:
-                try:
-                    test_start = datetime(now.year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
-                    # If date is in future, use last year
-                    if test_start > now:
-                        start_year = now.year - 1
-                    else:
-                        start_year = now.year
-                except ValueError:
-                    start_year = now.year
+                # Always default to current year
+                start_year = now.year
             
             if end_year_explicit:
                 end_year = int(end_year_explicit)
             else:
-                try:
-                    # For end dates, just check if the DATE (not time) is in the future
-                    test_end_date = datetime(now.year, end_month, end_day, 0, 0, 0, tzinfo=timezone.utc)
-                    # If the DATE is in future (ignoring time), use last year
-                    if test_end_date.date() > now.date():
-                        end_year = now.year - 1
-                    else:
-                        end_year = now.year
-                except ValueError:
-                    end_year = now.year
+                # Always default to current year
+                end_year = now.year
             
             try:
                 start_dt = datetime(start_year, start_month, start_day, 0, 0, 0, tzinfo=timezone.utc)
@@ -265,20 +264,13 @@ class TimeRangeParser:
                 logger.warning("invalid_month_name", month=month_name)
                 return None, None
             
-            # SMART YEAR INFERENCE: For historical energy data
-            # - If date is in future, use last year
+            # YEAR INFERENCE LOGIC:
+            # Default to current year unless explicitly specified
             if year_explicit:
                 year = int(year_explicit)
             else:
-                try:
-                    test_date = datetime(now.year, month, day, 0, 0, 0, tzinfo=timezone.utc)
-                    # If date is in future, use last year
-                    if test_date > now:
-                        year = now.year - 1
-                    else:
-                        year = now.year
-                except ValueError:
-                    year = now.year
+                # Always default to current year
+                year = now.year
             
             try:
                 start_dt = datetime(year, month, day, 0, 0, 0, tzinfo=timezone.utc)

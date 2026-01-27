@@ -1,5 +1,10 @@
-{% if models is defined and models|length > 0 %}
-Found {{ models|length }} baseline models for {{ seu_name }}. Active model: version {{ active_version }}, R-squared {{ active_r_squared }}, trained on {{ active_samples }} samples.
+{% if all_machines is defined and all_machines %}
+{# List all machines with baseline models #}
+{% if models|length > 0 %}Found {{ models|length }} machine{{ 's' if models|length > 1 else '' }} with trained baseline models: {% for model in models %}{{ model.seu_name }} (version {{ model.model_version }}, {{ (model.r_squared * 100)|round(1) }}% accuracy){% if not loop.last %}, {% endif %}{% endfor %}.{% else %}No machines have trained baseline models yet.{% endif %}
+{% elif models is defined and models|length > 0 %}
+{# Single machine models #}
+Found {{ models|length }} baseline model{{ 's' if models|length > 1 else '' }} for {{ seu_name }}. Active model: version {{ active_version }}, R-squared {{ active_r_squared }}, trained on {{ active_samples }} samples.
 {% else %}
-No baseline models found for {{ seu_name }}.
+{# No models #}
+No baseline models found{% if seu_name is defined %} for {{ seu_name }}{% endif %}.
 {% endif %}

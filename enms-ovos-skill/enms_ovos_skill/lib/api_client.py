@@ -153,7 +153,7 @@ class ENMSClient:
         year: int = 2025
     ) -> Dict[str, Any]:
         """
-        Train baseline model for SEU
+        Train baseline model for SEU (uses same endpoint as web UI)
         
         Args:
             seu_name: SEU name (e.g., "Compressor-1")
@@ -164,13 +164,32 @@ class ENMSClient:
         Returns:
             Training result with success, message, accuracy metrics
         """
+        # First, resolve machine_id from seu_name
+        machines = await self.list_machines(search=seu_name)
+        if not machines:
+            return {'success': False, 'error': f'Machine {seu_name} not found'}
+        
+        machine_id = str(machines[0]['id'])  # Ensure it's a string UUID
+        
+        # Use same date range logic as web UI: full year
+        from datetime import datetime
+        start_date = f"{year}-01-01T00:00:00Z"
+        end_date = f"{year}-12-31T23:59:59Z"
+        
+        # Web UI uses /baseline/train endpoint (not /baseline/train-seu)
+        # This endpoint requires machine_id (UUID), start/end dates, and drivers
         payload = {
-            "seu_name": seu_name,
-            "energy_source": energy_source,
-            "features": features or [],
-            "year": year
+            "machine_id": machine_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "drivers": features  # None = auto-select
         }
-        return await self._request("POST", "/baseline/train-seu", json=payload)
+        
+        try:
+            result = await self._request("POST", "/baseline/train", json=payload)
+            return result
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
     
     async def aggregated_stats(
         self,
@@ -256,7 +275,7 @@ class ENMSClient:
             interval: Time bucket (1min, 5min, 15min, 1hour, 1day)
             
         Returns:
-            Time-series energy data with aggregated values
+            Time-series energy data with aggregated values including total_kwh
         """
         params = {
             "machine_id": machine_id,
@@ -264,7 +283,14 @@ class ENMSClient:
             "end_time": end_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
             "interval": interval
         }
-        return await self._request("GET", "/timeseries/energy", params=params)
+        result = await self._request("GET", "/timeseries/energy", params=params)
+        
+        # Calculate total_kwh from data_points if not present
+        if 'data_points' in result and 'total_kwh' not in result:
+            total_kwh = sum(point.get('value', 0) for point in result['data_points'])
+            result['total_kwh'] = total_kwh
+        
+        return result
     
     async def get_power_timeseries(
         self,
@@ -273,14 +299,25 @@ class ENMSClient:
         end_time: datetime,
         interval: str = "1hour"
     ) -> Dict[str, Any]:
-        """Get power demand time-series data"""
+        """Get power demand time-series data with avg_power_kw calculated"""
         params = {
             "machine_id": machine_id,
             "start_time": start_time.isoformat(),
             "end_time": end_time.isoformat(),
             "interval": interval
         }
-        return await self._request("GET", "/timeseries/power", params=params)
+        result = await self._request("GET", "/timeseries/power", params=params)
+        
+        # Calculate avg_power_kw from data_points if not present
+        if 'data_points' in result and 'avg_power_kw' not in result:
+            data_points = result['data_points']
+            if data_points:
+                avg_power_kw = sum(point.get('value', 0) for point in data_points) / len(data_points)
+                result['avg_power_kw'] = avg_power_kw
+            else:
+                result['avg_power_kw'] = 0
+        
+        return result
     
     async def get_latest_reading(self, machine_id: str) -> Dict[str, Any]:
         """Get most recent sensor reading for machine"""

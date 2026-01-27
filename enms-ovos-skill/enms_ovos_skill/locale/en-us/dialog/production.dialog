@@ -1,5 +1,16 @@
-{% if production_today is defined %}
-{{ machine_name }} produced {{ production_today.units_produced | int }} units today{% if production_today.quality_percent is defined %} with {{ production_today.quality_percent | round(1) }}% quality{% endif %}{% if production_today.oee_percent is defined %} and {{ production_today.oee_percent | round(1) }}% OEE{% endif %}.
+{% if production_today is defined and production_today %}
+{% if 'boiler' in machine_name|lower %}
+{{ machine_name }} produced {{ production_today.units_produced | default(0) | int }} kilograms of steam today{% if production_today.quality_percent is defined %} with {{ production_today.quality_percent | round(1) }}% quality rating{% endif %}.
 {% else %}
-Production data not available for {{ machine_name }}.
+{{ machine_name }} produced {{ production_today.units_produced | default(0) | int }} units today{% if production_today.quality_percent is defined %} with {{ production_today.quality_percent | round(1) }}% quality{% endif %}{% if production_today.oee_percent is defined %} and {{ production_today.oee_percent | round(1) }}% OEE{% endif %}.
 {% endif %}
+{% elif machine_type in ['boiler', 'hvac', 'lighting'] %}
+{% if today_stats and today_stats.total_energy %}
+{{ machine_name }} consumed {{ today_stats.total_energy | round(1) }} kilowatt hours today{% if today_stats.peak_power %}, with a peak power of {{ today_stats.peak_power | round(1) }} kilowatts{% endif %}.
+{% else %}
+{{ machine_name }} is an energy-consuming device. Production metrics are not applicable, but you can ask about its energy consumption.
+{% endif %}
+{% else %}
+Production data is not available for {{ machine_name }} at this time.
+{% endif %}
+

@@ -95,6 +95,15 @@ class HeuristicRouter:
             re.compile(r'\bhistory\s+of.*?baseline\s+models?', re.IGNORECASE),
         ],
         
+        # NEW: Train baseline model
+        'train_baseline': [
+            re.compile(r'\btrain\s+(?:a\s+)?(?:new\s+)?(?:baseline\s+)?model', re.IGNORECASE),
+            re.compile(r'\bcreate\s+(?:a\s+)?(?:new\s+)?(?:baseline\s+)?model', re.IGNORECASE),
+            re.compile(r'\btrain\s+baseline', re.IGNORECASE),
+            re.compile(r'\bretrain\s+(?:the\s+)?(?:baseline\s+)?model', re.IGNORECASE),
+            re.compile(r'\bbuild\s+(?:a\s+)?model\s+for', re.IGNORECASE),
+        ],
+        
         # NEW: Forecast (future prediction) - MUST come before KPI to catch temporal queries
         'forecast': [
             re.compile(r'\b(?:when|what\s+time).*?(?:peak|demand).*?(?:tomorrow|next|tonight)', re.IGNORECASE),
@@ -197,6 +206,18 @@ class HeuristicRouter:
             re.compile(r'\bhow\s+many\s+(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)', re.IGNORECASE),
         ],
         
+        # NEW: Cost Analysis (MUST come before factory_overview to match first)
+        'cost_analysis': [
+            # Cost queries (factory-wide aggregate)
+            re.compile(r'\b(?:how\s+much|what).*?(?:is|are).*?(?:energy|electricity|power)?\s*cost', re.IGNORECASE),
+            re.compile(r'\bcost(?:ing|s)?\s+(?:us|today|this\s+month)', re.IGNORECASE),
+            re.compile(r'\btotal\s+(?:energy\s+)?cost', re.IGNORECASE),
+            re.compile(r'\benergy\s+(?:cost|expense|bill)', re.IGNORECASE),
+            re.compile(r'\belectricity\s+(?:cost|bill|expense)', re.IGNORECASE),
+            re.compile(r'\bhow\s+much\s+(?:are\s+we|have\s+we)\s+(?:spending|spent)', re.IGNORECASE),
+            re.compile(r'\bcost\s+(?:analysis|breakdown|today|this\s+(?:week|month))', re.IGNORECASE),
+        ],
+        
         # Factory-wide queries
         'factory_overview': [
             re.compile(r'\bfactory\s+(?:overview|status|summary)\b', re.IGNORECASE),
@@ -212,13 +233,6 @@ class HeuristicRouter:
             re.compile(r'\b(?:what|how\s+much).*?carbon\b', re.IGNORECASE),
             re.compile(r'\bCO2\s+emissions?\b', re.IGNORECASE),
             re.compile(r'\bemissions?\s+(?:total|today)\b', re.IGNORECASE),
-            # NEW: Cost queries (factory-wide aggregate)
-            re.compile(r'\b(?:how\s+much|what).*?(?:is|are).*?(?:energy|electricity|power)?\s*cost', re.IGNORECASE),
-            re.compile(r'\bcost(?:ing|s)?\s+(?:us|today|this\s+month)', re.IGNORECASE),
-            re.compile(r'\btotal\s+(?:energy\s+)?cost', re.IGNORECASE),
-            re.compile(r'\benergy\s+(?:cost|expense|bill)', re.IGNORECASE),
-            re.compile(r'\belectricity\s+(?:cost|bill|expense)', re.IGNORECASE),
-            re.compile(r'\bhow\s+much\s+(?:are\s+we|have\s+we)\s+(?:spending|spent)', re.IGNORECASE),
             # NEW: Active/offline machine queries
             re.compile(r'\b(?:show|list|what).*?(?:active|online|running).*?(?:machines?|equipment)', re.IGNORECASE),
             re.compile(r'\b(?:show|list|what).*?(?:inactive|offline|stopped).*?(?:machines?|equipment)', re.IGNORECASE),
@@ -836,6 +850,16 @@ class HeuristicRouter:
                 
                 return {
                     'intent': 'factory_overview',
+                    'confidence': 0.95,
+                    'machine': machine
+                }
+            
+            elif intent_type == 'cost_analysis':
+                # Cost analysis - factory-wide or machine-specific
+                machine = self._extract_machine_fuzzy(utterance)
+                
+                return {
+                    'intent': 'cost_analysis',
                     'confidence': 0.95,
                     'machine': machine
                 }

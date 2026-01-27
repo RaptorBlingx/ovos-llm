@@ -1,4 +1,12 @@
+{% if time_range and time_range not in ['today', 'now', None] %}
+{# Time range query - use total_energy_kwh #}
+The factory consumed {{total_energy_kwh|round(1)}} kilowatt-hours {{time_range}}.
+Factory-wide energy consumption {{time_range}} was {{total_energy_kwh|round(1)}} kilowatt-hours across {{machine_count}} machines.
+Total energy usage {{time_range}}: {{total_energy_kwh|round(1)}} kilowatt-hours.
+{% else %}
+{# Today query - use total_kwh_today #}
 The factory consumed {{total_kwh_today|round(1)}} kilowatt-hours today, costing ${{total_cost_usd|round(2)}}. {{machines_active}} of {{machines_total}} machines are currently active.
 Factory-wide energy consumption today is {{total_kwh_today|round(1)}} kilowatt-hours. Total cost: ${{total_cost_usd|round(2)}}.
 Today's total energy usage across all machines is {{total_kwh_today|round(1)}} kilowatt-hours, costing approximately ${{total_cost_usd|round(2)}}.
 The entire facility has consumed {{total_kwh_today|round(1)}} kilowatt-hours today with {{machines_active}} machines running.
+{% endif %}

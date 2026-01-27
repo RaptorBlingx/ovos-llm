@@ -2,6 +2,12 @@
 {{ machine_name }}'s cost today: {{ today_stats.cost_usd | round(2) }} dollars.
 {%- elif machine %}
 {{ machine }} cost: €{{ cost_eur|round(2) }}{% if time_range %} {{ time_range | voice_time }}{% endif %}.
+{% elif total_cost is defined and time_range_label %}
+Total factory energy cost {{ time_range_label }}: ${{ total_cost|round(2) }}.
+{% elif total_cost is defined %}
+Total factory energy cost today: ${{ total_cost|round(2) }}.
+{% elif estimated_cost is defined and time_range_label %}
+Factory energy cost {{ time_range_label }} is ${{ estimated_cost|round(2) }}.
 {% elif estimated_cost is defined %}
-Total energy cost is ${{ estimated_cost|round(2) }}. Daily cost rate is ${{ cost_per_day|round(2) }}.
+Factory energy cost today is ${{ estimated_cost|round(2) }}.
 {% endif %}

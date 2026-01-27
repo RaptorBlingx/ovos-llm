@@ -99,7 +99,7 @@ class ResponseFormatter:
             context: Optional conversation context
             
         Returns:
-            Voice-optimized response string
+            Voice-optimized response string (one random variation from template)
             
         Example:
             >>> formatter.format_response(
@@ -117,14 +117,49 @@ class ResponseFormatter:
             data = {**(context or {}), **api_data}
             
             # Render template
-            response = template.render(**data)
+            response = template.render(**data).strip()
+            
+            # DEBUG: Log raw rendered response before line selection
+            logger.info("template_rendered_raw", 
+                       intent=intent_type,
+                       raw_response=response,
+                       line_count=len(response.split('\n')))
+            
+            # OVOS dialog files can have:
+            # 1. Multiple VARIATIONS (pick one random line) - e.g., "I found X" / "There are X"
+            # 2. Multi-line DATA responses (keep all lines) - e.g., comparison tables, lists
+            #
+            # Heuristic: If lines start with numbers (1. 2. 3.) or dashes (- - -),
+            # it's formatted DATA, not variations. Keep all lines.
+            import random
+            lines = [line.strip() for line in response.split('\n') if line.strip()]
+            
+            # Check if this looks like formatted multi-line data
+            is_formatted_data = False
+            if len(lines) > 1:
+                # Check for numbered lists (1. 2. 3.) or bullet points (- - -)
+                # May have a header line first, so check if MAJORITY of lines are formatted
+                numbered_lines = [line for line in lines if line and line[0].isdigit() and '. ' in line]
+                bullet_lines = [line for line in lines if line and (line.startswith('-') or line.startswith('•'))]
+                
+                # If 50%+ of lines are numbered/bulleted, it's formatted data
+                is_formatted_data = len(numbered_lines) >= len(lines) * 0.5 or len(bullet_lines) >= len(lines) * 0.5
+            
+            if is_formatted_data:
+                # Multi-line data response - keep all lines
+                selected_response = '\n'.join(lines)
+            else:
+                # Multiple variations - pick one random line
+                selected_response = random.choice(lines) if lines else response
             
             logger.info("response_generated", 
                        intent=intent_type,
                        template=template_name,
-                       length=len(response))
+                       variations=len(lines),
+                       is_data=is_formatted_data,
+                       length=len(selected_response))
             
-            return response.strip()
+            return selected_response
             
         except Exception as e:
             logger.error("template_error", 

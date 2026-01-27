@@ -1,16 +1,10 @@
 power
-power consumption
-consumption
-energy consumption
-kilowatt
+current power
+real-time power
+instantaneous power
+power draw
 kilowatts
 kw
-kwh
-kilowatt hours
-kilowatt-hours
-energy used
-energy usage
-total energy
 peak power
 peak
 maximum power
@@ -18,6 +12,9 @@ max power
 highest power
 power today
 peak today
+power right now
+power at the moment
+power currently
 peak power today
 maximum power today
 average power

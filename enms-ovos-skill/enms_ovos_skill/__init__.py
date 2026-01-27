@@ -1859,16 +1859,18 @@ class EnmsSkill(FallbackSkill):
                     ))
                     return {'success': True, 'data': data, 'template': 'action_plan'}
                 
-                # Define health keywords for health check detection
-                health_keywords = ['health', 'status', 'alive', 'running', 'online', 'api status', 'system status', 'database']
+                # Check for summary FIRST (before health keywords)
+                if 'summary' in utterance or 'overall status' in utterance:
+                    # Factory summary - comprehensive overview
+                    data = self._run_async(self.api_client.factory_summary())
+                    return {'success': True, 'data': data, 'template': 'factory_summary'}
+                
+                # Define health keywords for health check detection (more specific)
+                health_keywords = ['health check', 'system health', 'api health', 'alive', 'online', 'api status', 'system status', 'database']
                 if any(keyword in utterance for keyword in health_keywords):
                     # Health check query - use /health endpoint
                     data = self._run_async(self.api_client.health_check())
                     return {'success': True, 'data': data}
-                elif 'summary' in utterance:
-                    # Factory summary - comprehensive overview
-                    data = self._run_async(self.api_client.factory_summary())
-                    return {'success': True, 'data': data, 'template': 'factory_summary'}
                 elif 'significant energy' in utterance or 'list seus' in utterance or 'energy uses' in utterance:
                     # List SEUs (significant energy uses)
                     # Check if filtering by energy source
@@ -2161,6 +2163,8 @@ class EnmsSkill(FallbackSkill):
                     return {'success': False, 'error': f"Comparison failed: {str(e)}"}
             
             elif intent.intent == IntentType.COST_ANALYSIS:
+                self.logger.info("💰 COST_ANALYSIS_HANDLER_START", machine=intent.machine, time_range=intent.time_range)
+                
                 # Extract machine if not provided by Adapt parser
                 machine = intent.machine
                 if not machine:
@@ -2177,16 +2181,128 @@ class EnmsSkill(FallbackSkill):
                     data = self._run_async(self.api_client.get_machine_status(machine))
                     return {'success': True, 'data': data}
                 else:
-                    # Factory-wide cost - use system_stats which has cost data
-                    data = self._run_async(self.api_client.system_stats())
-                    # Extract cost information for cost_analysis template
-                    cost_data = {
-                        'estimated_cost': data.get('estimated_cost', 0),
-                        'cost_per_day': data.get('cost_per_day', 0),
-                        'total_energy': data.get('total_energy', 0),
-                        'energy_per_hour': data.get('energy_per_hour', 0)
-                    }
-                    return {'success': True, 'data': cost_data}
+                    # Factory-wide cost
+                    # NOTE: Machine status API only provides today_stats, not week/month stats
+                    # For "this week" or "this month", we'll scale today's cost as an estimate
+                    if intent.time_range and hasattr(intent.time_range, 'relative'):
+                        relative_period = intent.time_range.relative.lower()
+                        
+                        # Use today_stats from all machines
+                        machines_list = self._run_async(self.api_client.list_machines())
+                        total_today_cost = 0
+                        
+                        self.logger.info("cost_factory_calculation_start", 
+                                       machines_count=len(machines_list), 
+                                       period=relative_period)
+                        
+                        for machine_obj in machines_list:
+                            machine_name = machine_obj.get('name', 'Unknown')
+                            try:
+                                status = self._run_async(self.api_client.get_machine_status(machine_name))
+                                today_stats = status.get('today_stats', {})
+                                machine_cost = today_stats.get('cost_usd', 0)
+                                total_today_cost += machine_cost
+                                self.logger.info("cost_machine_added", 
+                                               machine=machine_name, 
+                                               cost=machine_cost, 
+                                               total_so_far=total_today_cost)
+                            except Exception as e:
+                                self.logger.warning("cost_machine_failed", machine=machine_name, error=str(e))
+                        
+                        # Scale based on time period
+                        if relative_period in ['this week', 'current week', 'week']:
+                            # Calculate days elapsed this week (Monday = 0)
+                            from datetime import datetime, timezone
+                            now = datetime.now(timezone.utc)
+                            days_elapsed = now.weekday() + 1  # Monday=1, Sunday=7
+                            total_cost = total_today_cost * days_elapsed
+                            self.logger.info("cost_weekly_estimate", 
+                                           today_cost=total_today_cost,
+                                           days_elapsed=days_elapsed,
+                                           estimated_week_cost=total_cost)
+                        elif relative_period in ['this month', 'current month', 'month']:
+                            # Calculate days elapsed this month
+                            from datetime import datetime, timezone
+                            now = datetime.now(timezone.utc)
+                            days_elapsed = now.day
+                            total_cost = total_today_cost * days_elapsed
+                            self.logger.info("cost_monthly_estimate", 
+                                           today_cost=total_today_cost,
+                                           days_elapsed=days_elapsed,
+                                           estimated_month_cost=total_cost)
+                        else:
+                            # For "today" or unknown, just use today's cost
+                            total_cost = total_today_cost
+                        
+                        self.logger.info("cost_factory_calculation_complete", total_cost=total_cost)
+                        
+                        cost_data = {
+                            'estimated_cost': total_cost,
+                            'time_range_label': relative_period  # For template rendering
+                        }
+                        return {'success': True, 'data': cost_data}
+                    
+                    # For absolute date ranges, use timeseries data
+                    if intent.time_range and hasattr(intent.time_range, 'start') and hasattr(intent.time_range, 'end'):
+                        # Sum costs for all machines in time range
+                        machines_list = self._run_async(self.api_client.list_machines())
+                        total_cost = 0
+                        
+                        for machine_obj in machines_list:
+                            machine_name = machine_obj.get('name', 'Unknown')
+                            machine_id = machine_obj.get('id') or machine_obj.get('machine_id')
+                            try:
+                                # Get energy timeseries for the period
+                                energy_data = self._run_async(self.api_client.get_energy_timeseries(
+                                    machine_id=machine_id,
+                                    start_time=intent.time_range.start,
+                                    end_time=intent.time_range.end
+                                ))
+                                
+                                # Calculate cost from energy (assuming $0.12/kWh default rate)
+                                energy_kwh = energy_data.get('total_kwh', 0)
+                                total_cost += energy_kwh * 0.12
+                            except Exception as e:
+                                self.logger.warning("cost_machine_failed", machine=machine_name, error=str(e))
+                        
+                        # Format time range label for response
+                        time_range_label = getattr(intent.time_range, 'relative', None)
+                        if not time_range_label:
+                            # Format dates as readable string
+                            time_range_label = f"from {intent.time_range.start.strftime('%B %d')} to {intent.time_range.end.strftime('%B %d')}"
+                        
+                        cost_data = {
+                            'total_cost': total_cost,
+                            'time_range_label': time_range_label
+                        }
+                        return {'success': True, 'data': cost_data}
+                    else:
+                        # Default: today's cost - sum all machines from status
+                        machines_list = self._run_async(self.api_client.list_machines())
+                        total_cost = 0
+                        
+                        self.logger.info("cost_factory_calculation_start", machines_count=len(machines_list))
+                        
+                        for machine_obj in machines_list:
+                            machine_name = machine_obj.get('name', 'Unknown')
+                            try:
+                                status = self._run_async(self.api_client.get_machine_status(machine_name))
+                                machine_cost = status.get('today_stats', {}).get('cost_usd', 0)
+                                total_cost += machine_cost
+                                self.logger.info("cost_machine_added", machine=machine_name, cost=machine_cost, total_so_far=total_cost)
+                            except Exception as e:
+                                self.logger.warning("cost_machine_failed", machine=machine_name, error=str(e))
+                        
+                        self.logger.info("cost_factory_calculation_complete", total_cost=total_cost)
+                        
+                        # DEBUG: File log the result
+                        with open('/tmp/cost_calc_result.txt', 'a') as f:
+                            f.write(f"total_cost={total_cost}, machines_count={len(machines_list)}\n")
+                        
+                        cost_data = {
+                            'estimated_cost': total_cost
+                        }
+                        return {'success': True, 'data': cost_data}
             
             elif intent.intent == IntentType.ANOMALY_DETECTION:
                 self.logger.info("🔍 ANOMALY_HANDLER_START", machine=intent.machine)
@@ -2298,35 +2414,68 @@ class EnmsSkill(FallbackSkill):
                     return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.BASELINE_MODELS:
-                # List baseline models for a machine
-                if not intent.machine:
-                    return {'success': False, 'error': 'Machine name required for baseline models'}
-                
+                # List baseline models - can be for a specific machine or all machines
                 # Phase 2.5: Extract energy source
                 utterance = getattr(intent, 'utterance', '') if hasattr(intent, 'utterance') else ''
                 energy_source = intent.energy_source or self._extract_energy_source(utterance) or 'electricity'
                 
-                self.logger.info("baseline_models_query", machine=intent.machine, energy_source=energy_source)
-                
-                # Call list_baseline_models API
-                response = self._run_async(
-                    self.api_client.list_baseline_models(
-                        seu_name=intent.machine,
-                        energy_source=energy_source
+                if intent.machine:
+                    # List models for specific machine
+                    self.logger.info("baseline_models_query", machine=intent.machine, energy_source=energy_source)
+                    
+                    response = self._run_async(
+                        self.api_client.list_baseline_models(
+                            seu_name=intent.machine,
+                            energy_source=energy_source
+                        )
                     )
-                )
-                
-                # Process response to extract active model and summary
-                models = response.get('models', [])
-                active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
-                
-                data = {
-                    'seu_name': response.get('seu_name', intent.machine),
-                    'models': models,
-                    'active_version': active_model.get('model_version') if active_model else None,
-                    'active_r_squared': active_model.get('r_squared') if active_model else None,
-                    'active_samples': active_model.get('training_samples') if active_model else None
-                }
+                    
+                    # Process response to extract active model and summary
+                    models = response.get('models', [])
+                    active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+                    
+                    data = {
+                        'seu_name': response.get('seu_name', intent.machine),
+                        'models': models,
+                        'active_version': active_model.get('model_version') if active_model else None,
+                        'active_r_squared': active_model.get('r_squared') if active_model else None,
+                        'active_samples': active_model.get('training_samples') if active_model else None
+                    }
+                else:
+                    # List all baseline models across all machines
+                    self.logger.info("baseline_models_query_all", energy_source=energy_source)
+                    
+                    # Get all machines and their models
+                    machines = self._run_async(self.api_client.list_machines())
+                    all_models = []
+                    
+                    for machine in machines:
+                        try:
+                            response = self._run_async(
+                                self.api_client.list_baseline_models(
+                                    seu_name=machine['name'],
+                                    energy_source=energy_source
+                                )
+                            )
+                            models = response.get('models', [])
+                            if models:
+                                active_model = next((m for m in models if m.get('is_active')), models[0])
+                                all_models.append({
+                                    'seu_name': machine['name'],
+                                    'model_version': active_model.get('model_version'),
+                                    'r_squared': active_model.get('r_squared'),
+                                    'trained_at': active_model.get('trained_at')
+                                })
+                        except Exception as e:
+                            # Skip machines without models
+                            self.logger.debug(f"No models for {machine['name']}: {e}")
+                            continue
+                    
+                    data = {
+                        'all_machines': True,
+                        'models': all_models,
+                        'total_machines_with_models': len(all_models)
+                    }
                 
                 return {'success': True, 'data': data}
             
@@ -2476,50 +2625,54 @@ class EnmsSkill(FallbackSkill):
                 return {'success': True, 'data': prediction}
             
             elif intent.intent == IntentType.KPI:
-                # KPI query - get all KPIs for a machine
+                # KPI query - factory-wide or machine-specific
                 machine = intent.machine
                 
-                if not machine:
-                    return {'success': False, 'error': 'Which machine? Please specify a machine name for KPIs.', 'needs_clarification': True}
-                
-                self.logger.info("kpi_query", machine=machine, time_range=intent.time_range)
-                
-                try:
-                    # Get time range (default to today)
-                    if intent.time_range and intent.time_range.start:
-                        start_time = intent.time_range.start
-                        end_time = intent.time_range.end if intent.time_range.end else datetime.now(timezone.utc)
-                    else:
-                        start_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-                        end_time = datetime.now(timezone.utc)
+                if machine:
+                    # Machine-specific KPIs
+                    self.logger.info("kpi_query_machine", machine=machine, time_range=intent.time_range)
                     
-                    self.log.info(f"KPI time range: {start_time} to {end_time}")
-                    
-                    # Get machine ID
-                    machines = self._run_async(self.api_client.list_machines(search=machine))
-                    if not machines or len(machines) == 0:
-                        return {'success': False, 'error': f'Machine {machine} not found'}
-                    
-                    machine_id = machines[0]['id']
-                    self.log.info(f"Found machine ID: {machine_id}")
-                    
-                    # Call KPI API (note: API expects 'start' and 'end' as ISO strings, not 'start_time'/'end_time')
-                    kpis = self._run_async(
-                        self.api_client.get_all_kpis(
-                            machine_id=machine_id,
-                            start=start_time.isoformat(),
-                            end=end_time.isoformat()
+                    try:
+                        # Get time range (default to today)
+                        if intent.time_range and intent.time_range.start:
+                            start_time = intent.time_range.start
+                            end_time = intent.time_range.end if intent.time_range.end else datetime.now(timezone.utc)
+                        else:
+                            start_time = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                            end_time = datetime.now(timezone.utc)
+                        
+                        self.log.info(f"KPI time range: {start_time} to {end_time}")
+                        
+                        # Get machine ID
+                        machines = self._run_async(self.api_client.list_machines(search=machine))
+                        if not machines or len(machines) == 0:
+                            return {'success': False, 'error': f'Machine {machine} not found'}
+                        
+                        machine_id = machines[0]['id']
+                        self.log.info(f"Found machine ID: {machine_id}")
+                        
+                        # Call KPI API (note: API expects 'start' and 'end' as ISO strings, not 'start_time'/'end_time')
+                        kpis = self._run_async(
+                            self.api_client.get_all_kpis(
+                                machine_id=machine_id,
+                                start=start_time.isoformat(),
+                                end=end_time.isoformat()
+                            )
                         )
-                    )
-                    
-                    self.log.info(f"KPI API returned: {type(kpis)}, keys={list(kpis.keys()) if isinstance(kpis, dict) else 'N/A'}")
-                    
-                    return {'success': True, 'data': kpis}
-                except Exception as e:
-                    self.log.error(f"KPI API call failed: {e}")
-                    import traceback
-                    self.log.error(f"Traceback: {traceback.format_exc()}")
-                    return {'success': False, 'error': f'Failed to get KPIs: {str(e)}'}
+                        
+                        self.log.info(f"KPI API returned: {type(kpis)}, keys={list(kpis.keys()) if isinstance(kpis, dict) else 'N/A'}")
+                        
+                        return {'success': True, 'data': kpis}
+                    except Exception as e:
+                        self.log.error(f"KPI API call failed: {e}")
+                        import traceback
+                        self.log.error(f"Traceback: {traceback.format_exc()}")
+                        return {'success': False, 'error': f'Failed to get KPIs: {str(e)}'}
+                else:
+                    # Factory-wide KPIs - use summary endpoint
+                    self.logger.info("kpi_query_factory_wide")
+                    data = self._run_async(self.api_client.get_factory_summary())
+                    return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.PERFORMANCE:
                 # Performance analysis - analyze SEU performance vs baseline
@@ -2530,23 +2683,31 @@ class EnmsSkill(FallbackSkill):
                 
                 self.logger.info("performance_query", machine=machine)
                 
-                # Use "energy" as default energy source (works for most machines)
-                # Boiler-1 would need "electricity" but that's an edge case
-                energy_source = "energy"
+                # Use "electricity" as default energy source for all machines
+                energy_source = "electricity"
                 
                 # Get analysis date (default to today)
-                analysis_date = datetime.now(timezone.utc).date().isoformat()
+                try:
+                    from datetime import datetime as dt, timezone as tz
+                    analysis_date = dt.now(tz.utc).date().isoformat()
+                except Exception as e:
+                    # Fallback to simple date
+                    import datetime
+                    analysis_date = datetime.date.today().isoformat()
                 
                 # Call performance API
-                performance = self._run_async(
-                    self.api_client.analyze_performance(
-                        seu_name=machine,
-                        energy_source=energy_source,
-                        analysis_date=analysis_date
+                try:
+                    performance = self._run_async(
+                        self.api_client.analyze_performance(
+                            seu_name=machine,
+                            energy_source=energy_source,
+                            analysis_date=analysis_date
+                        )
                     )
-                )
-                
-                return {'success': True, 'data': performance}
+                    return {'success': True, 'data': performance}
+                except Exception as e:
+                    self.logger.error("performance_api_failed", error=str(e))
+                    return {'success': False, 'error': f'Performance analysis failed: {str(e)}', 'error_type': 'api_error'}
             
             elif intent.intent == IntentType.FORECAST:
                 # Forecast - get future energy prediction
@@ -2642,13 +2803,30 @@ class EnmsSkill(FallbackSkill):
                 if intent.machine:
                     machines.append(intent.machine)
                 
-                # Try to find additional machines in utterance
+                # Try to find additional machines in utterance using validator's normalization
+                # This handles: "eu one" → "EU-1", "eu1" → "EU-1", etc.
                 all_machine_names = self.validator.machine_whitelist
+                utterance_lower = intent.utterance.lower()
+                
                 for machine in all_machine_names:
-                    machine_lower = machine.lower()
-                    intent_machine_lower = intent.machine.lower() if intent.machine else ""
-                    if machine_lower in intent.utterance.lower() and machine_lower != intent_machine_lower:
-                        machines.append(machine)
+                    # Skip if this is the already-matched machine
+                    if intent.machine and machine.lower() == intent.machine.lower():
+                        continue
+                    
+                    # Check if machine name (or its variations) appears in utterance
+                    # Use validator's normalize_machine_name for each word sequence in utterance
+                    words = utterance_lower.split()
+                    for i in range(len(words)):
+                        for j in range(i+1, min(i+5, len(words)+1)):  # Check up to 4-word sequences
+                            word_sequence = ' '.join(words[i:j])
+                            normalized = self.validator.normalize_machine_name(word_sequence)
+                            if normalized and normalized.lower() == machine.lower():
+                                machines.append(machine)
+                                break
+                        if machine in machines:  # Already found this machine
+                            break
+                
+                self.log.info(f"🔍 COMPARISON: Found {len(machines)} machines: {machines}")
                 
                 # If only one machine found, get top consumers for comparison
                 if len(machines) < 2:
@@ -2700,35 +2878,48 @@ class EnmsSkill(FallbackSkill):
                 if not factory_id:
                     return {'success': False, 'error': 'Could not determine factory ID'}
                 
-                # Call opportunities API
+                # Call opportunities API (API doesn't support SEU filtering - filter client-side if needed)
                 data = self._run_async(
                     self.api_client.get_performance_opportunities(
                         factory_id=factory_id,
-                        period='week',
-                        seu_name=machine if machine else None
+                        period='week'
                     )
                 )
+                
+                # Client-side filtering if specific machine requested
+                if machine and 'opportunities' in data:
+                    filtered_opportunities = [
+                        opp for opp in data.get('opportunities', [])
+                        if opp.get('seu_name', '').lower() == machine.lower()
+                    ]
+                    if filtered_opportunities:
+                        data['opportunities'] = filtered_opportunities
+                        data['total_opportunities'] = len(filtered_opportunities)
+                        data['total_potential_savings_kwh'] = sum(
+                            opp.get('potential_savings_kwh', 0) for opp in filtered_opportunities
+                        )
+                        data['total_potential_savings_usd'] = sum(
+                            opp.get('potential_savings_usd', 0) for opp in filtered_opportunities
+                        )
+                
                 return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.ISO50001:
                 # ISO 50001 queries - ENPI reports, action plans
+                # Note: These endpoints are not yet implemented in the API
                 utterance = getattr(intent, 'utterance', '').lower()
                 
                 if 'action plan' in utterance:
-                    if 'create' in utterance:
-                        # Create action plan (not yet implemented)
-                        return {'success': False, 'error': 'Creating action plans via voice is not yet supported'}
-                    elif 'update' in utterance or 'progress' in utterance:
-                        # Update action plan (not yet implemented)
-                        return {'success': False, 'error': 'Updating action plans via voice is not yet supported'}
-                    else:
-                        # List action plans
-                        data = self._run_async(self.api_client.list_iso_action_plans())
-                        return {'success': True, 'data': data}
+                    return {
+                        'success': False, 
+                        'error': 'ISO 50001 action plan queries are not yet available. The feature is under development.'
+                    }
                 else:
                     # ENPI report
-                    data = self._run_async(self.api_client.get_enpi_report())
-                    return {'success': True, 'data': data}
+                    return {
+                        'success': False,
+                        'error': 'ISO 50001 energy performance indicator reports are not yet available. The feature is under development.'
+                    }
             
             elif intent.intent == IntentType.ALERTS:
                 # Alert subscription
@@ -2811,6 +3002,8 @@ class EnmsSkill(FallbackSkill):
 
             elif intent.intent == IntentType.TREND_ANALYSIS:
                 # Trend analysis over last 4 weeks (current 2 weeks vs prior 2 weeks)
+                from datetime import datetime as dt, timezone as tz, timedelta
+                
                 metric = intent.params.get('metric', 'energy') if intent.params else 'energy'
                 machine = intent.machine
                 if not machine:
@@ -2821,25 +3014,32 @@ class EnmsSkill(FallbackSkill):
                     return {'success': False, 'error': f"Machine {machine} not found"}
                 
                 machine_id = machines[0]['id']
-                now = datetime.now(timezone.utc)
+                now = dt.now(tz.utc)
                 end_time = now
                 mid_time = now - timedelta(days=14)
                 start_time = now - timedelta(days=28)
                 interval = '1day'
                 api_method = self.api_client.get_power_timeseries if metric == 'power' else self.api_client.get_energy_timeseries
                 
-                current_data = self._run_async(api_method(
-                    machine_id=machine_id,
-                    start_time=mid_time,
-                    end_time=end_time,
-                    interval=interval
-                ))
-                previous_data = self._run_async(api_method(
-                    machine_id=machine_id,
-                    start_time=start_time,
-                    end_time=mid_time,
-                    interval=interval
-                ))
+                try:
+                    current_data = self._run_async(api_method(
+                        machine_id=machine_id,
+                        start_time=mid_time,
+                        end_time=end_time,
+                        interval=interval
+                    ))
+                    previous_data = self._run_async(api_method(
+                        machine_id=machine_id,
+                        start_time=start_time,
+                        end_time=mid_time,
+                        interval=interval
+                    ))
+                except Exception as e:
+                    error_str = str(e)
+                    if '404' in error_str or 'Not Found' in error_str:
+                        return {'success': False, 'error': f"I don't have enough historical data to analyze trends for {machine}. I need at least 28 days of continuous data."}
+                    else:
+                        return {'success': False, 'error': f"Failed to retrieve trend data: {error_str}"}
                 
                 def _totals(payload):
                     points = payload.get('data_points', []) if isinstance(payload, dict) else []
@@ -2886,29 +3086,169 @@ class EnmsSkill(FallbackSkill):
                 if not current_period or not comparison_period:
                     return {'success': False, 'error': 'Could not parse time periods for comparison'}
                 
+                self.logger.info("temporal_comparison_periods",
+                               current=f"{current_period.start.isoformat()} to {current_period.end.isoformat()}",
+                               comparison=f"{comparison_period.start.isoformat()} to {comparison_period.end.isoformat()}",
+                               machine=intent.machine)
+                
                 # Determine API method based on metric
                 api_method = self.api_client.get_power_timeseries if metric == 'power' else self.api_client.get_energy_timeseries
                 
+                # For "today" comparisons, use machine status API which has real-time data
+                # Timeseries uses continuous aggregates which may be delayed
+                use_machine_status = (current_period and current_period.relative == 'today') or (comparison_period and comparison_period.relative in ('today', 'yesterday'))
+                
                 if intent.machine:
-                    # Machine-specific comparison (use machine_id)
-                    machines = self._run_async(self.api_client.list_machines(search=intent.machine))
-                    if not machines:
-                        return {'success': False, 'error': f"Machine {intent.machine} not found"}
-                    machine_id = machines[0].get('id') or machines[0].get('machine_id')
-                    
-                    current_data = self._run_async(api_method(
-                        machine_id=machine_id,
-                        start_time=current_period.start,
-                        end_time=current_period.end
-                    ))
-                    comparison_data = self._run_async(api_method(
-                        machine_id=machine_id,
-                        start_time=comparison_period.start,
-                        end_time=comparison_period.end
-                    ))
+                    # Machine-specific comparison
+                    if use_machine_status:
+                        # Use machine status for today/yesterday (has real-time data)
+                        current_status = self._run_async(self.api_client.get_machine_status(intent.machine))
+                        comparison_status = self._run_async(self.api_client.get_machine_status(intent.machine))
+                        
+                        if metric == 'power':
+                            current_value = current_status.get('today_stats', {}).get('avg_power_kw', 0)
+                            # Yesterday data not available in status API, use timeseries
+                            machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                            if machines:
+                                machine_id = machines[0].get('id') or machines[0].get('machine_id')
+                                comparison_data = self._run_async(api_method(
+                                    machine_id=machine_id,
+                                    start_time=comparison_period.start,
+                                    end_time=comparison_period.end
+                                ))
+                                comparison_value = comparison_data.get('avg_power_kw', 0)
+                            else:
+                                comparison_value = 0
+                        else:
+                            current_value = current_status.get('today_stats', {}).get('energy_kwh', 0)
+                            # For yesterday, we need to calculate from machine status or timeseries
+                            # Since machine status only has today, use timeseries for comparison
+                            machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                            if machines:
+                                machine_id = machines[0].get('id') or machines[0].get('machine_id')
+                                comparison_data = self._run_async(api_method(
+                                    machine_id=machine_id,
+                                    start_time=comparison_period.start,
+                                    end_time=comparison_period.end
+                                ))
+                                comparison_value = comparison_data.get('total_kwh', 0)
+                            else:
+                                comparison_value = 0
+                        
+                        current_data = {'total_kwh': current_value, 'avg_power_kw': current_value}
+                        comparison_data = {'total_kwh': comparison_value, 'avg_power_kw': comparison_value}
+                    else:
+                        # Use timeseries for other time ranges
+                        machines = self._run_async(self.api_client.list_machines(search=intent.machine))
+                        if not machines:
+                            return {'success': False, 'error': f"Machine {intent.machine} not found"}
+                        machine_id = machines[0].get('id') or machines[0].get('machine_id')
+                        
+                        current_data = self._run_async(api_method(
+                            machine_id=machine_id,
+                            start_time=current_period.start,
+                            end_time=current_period.end
+                        ))
+                        comparison_data = self._run_async(api_method(
+                            machine_id=machine_id,
+                            start_time=comparison_period.start,
+                            end_time=comparison_period.end
+                        ))
                 else:
-                    # Factory-wide comparisons are heavy; ask for a machine
-                    return {'success': False, 'error': 'Factory-wide temporal comparisons can be slow. Please specify a machine (e.g., "compare Compressor-1 this week to last week").'}
+                    # Factory-wide comparison
+                    if use_machine_status:
+                        # Use machine status for today's factory total (real-time data)
+                        machines_list = self._run_async(self.api_client.list_machines())
+                        
+                        current_total = 0
+                        comparison_total = 0
+                        
+                        for machine in machines_list:
+                            machine_name = machine.get('name', 'Unknown')
+                            try:
+                                # Today's data from status
+                                status = self._run_async(self.api_client.get_machine_status(machine_name))
+                                if metric == 'power':
+                                    current_total += status.get('today_stats', {}).get('avg_power_kw', 0)
+                                else:
+                                    current_total += status.get('today_stats', {}).get('energy_kwh', 0)
+                                
+                                # Yesterday/comparison data from timeseries
+                                machine_id = machine.get('id') or machine.get('machine_id')
+                                comp_data = self._run_async(api_method(
+                                    machine_id=machine_id,
+                                    start_time=comparison_period.start,
+                                    end_time=comparison_period.end
+                                ))
+                                if metric == 'power':
+                                    comparison_total += comp_data.get('avg_power_kw', 0)
+                                else:
+                                    comparison_total += comp_data.get('total_kwh', 0)
+                            except Exception as e:
+                                self.logger.warning("temporal_comparison_machine_failed", machine=machine_name, error=str(e))
+                        
+                        current_data = {'total_kwh': current_total, 'avg_power_kw': current_total}
+                        comparison_data = {'total_kwh': comparison_total, 'avg_power_kw': comparison_total}
+                    else:
+                        # Use timeseries for non-today comparisons (OPTIMIZED with asyncio.gather)
+                        import asyncio
+                        machines_list = self._run_async(self.api_client.list_machines())
+                        
+                        self.logger.info("temporal_comparison_machines_count", count=len(machines_list))
+                        
+                        # Fetch data for all machines in parallel using asyncio.gather
+                        async def fetch_all_machine_data():
+                            tasks = []
+                            for machine in machines_list:
+                                machine_id = machine.get('id') or machine.get('machine_id')
+                                # Create tasks for both periods
+                                tasks.append(api_method(machine_id=machine_id, start_time=current_period.start, end_time=current_period.end))
+                                tasks.append(api_method(machine_id=machine_id, start_time=comparison_period.start, end_time=comparison_period.end))
+                            return await asyncio.gather(*tasks, return_exceptions=True)
+                        
+                        # Execute all API calls in parallel
+                        results = self._run_async(fetch_all_machine_data())
+                        
+                        current_total = 0
+                        comparison_total = 0
+                        
+                        # Process results (pairs of current/comparison for each machine)
+                        for i, machine in enumerate(machines_list):
+                            machine_name = machine.get('name', 'Unknown')
+                            current_idx = i * 2
+                            comparison_idx = i * 2 + 1
+                            
+                            current_machine_data = results[current_idx] if current_idx < len(results) else None
+                            comparison_machine_data = results[comparison_idx] if comparison_idx < len(results) else None
+                            
+                            # Skip if API call failed
+                            if isinstance(current_machine_data, Exception) or isinstance(comparison_machine_data, Exception):
+                                self.logger.warning("temporal_comparison_machine_failed", 
+                                                   machine=machine_name,
+                                                   error=str(current_machine_data if isinstance(current_machine_data, Exception) else comparison_machine_data))
+                                continue
+                            
+                            if metric == 'power':
+                                curr_val = current_machine_data.get('avg_power_kw', 0) if current_machine_data else 0
+                                comp_val = comparison_machine_data.get('avg_power_kw', 0) if comparison_machine_data else 0
+                            else:
+                                curr_val = current_machine_data.get('total_kwh', 0) if current_machine_data else 0
+                                comp_val = comparison_machine_data.get('total_kwh', 0) if comparison_machine_data else 0
+                            
+                            current_total += curr_val
+                            comparison_total += comp_val
+                            
+                            self.logger.info("temporal_comparison_machine_data",
+                                           machine=machine_name,
+                                           current_value=curr_val,
+                                           comparison_value=comp_val)
+                        
+                        self.logger.info("temporal_comparison_totals",
+                                       current_total=current_total,
+                                       comparison_total=comparison_total)
+                        
+                        current_data = {'total_kwh': current_total, 'avg_power_kw': current_total}
+                        comparison_data = {'total_kwh': comparison_total, 'avg_power_kw': comparison_total}
                 
                 # Calculate delta and percentage change
                 if metric == 'power':
@@ -3022,6 +3362,12 @@ class EnmsSkill(FallbackSkill):
                         year=year,
                         error=data.get('error')
                     ).strip()
+            
+            # Special handling for KPI intent - use factory_summary template for factory-wide queries
+            if intent.intent == IntentType.KPI and not intent.machine:
+                self.logger.info("kpi_factory_wide_formatting", template="factory_summary")
+                template = self.response_formatter.env.get_template('factory_summary.dialog')
+                return template.render(**api_data).strip()
             
             return self.response_formatter.format_response(
                 intent_type=intent.intent.value,
@@ -3236,6 +3582,8 @@ class EnmsSkill(FallbackSkill):
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
+            self.log.info(f"🔍 FACTORY_OVERVIEW HANDLER CALLED: utterance='{utterance}'")
+            
             # Build intent object
             intent = Intent(
                 intent=IntentType.FACTORY_OVERVIEW,
@@ -3245,10 +3593,14 @@ class EnmsSkill(FallbackSkill):
             
             # Call existing service layer
             result = self._call_enms_api(intent)
+            self.log.info(f"🔍 API RESULT: success={result.get('success')}, template={result.get('template')}, data_keys={list(result.get('data', {}).keys()) if isinstance(result.get('data'), dict) else 'N/A'}")
             
             # Speak result
             if result['success']:
-                response = self.response_formatter.format_response('factory_overview', result['data'])
+                # Use template from API result if provided, otherwise use default
+                template_name = result.get('template', 'factory_overview')
+                response = self.response_formatter.format_response(template_name, result['data'])
+                self.log.info(f"🔍 FORMATTED RESPONSE: '{response}'")
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -3689,28 +4041,37 @@ class EnmsSkill(FallbackSkill):
             
             self.logger.info("train_baseline_request", machine=machine, energy_source=energy_source)
             
-            # Call API to train baseline
+            # Call API to train baseline (uses /baseline/train like web UI)
             result = self._run_async(self.api_client.train_baseline(
                 seu_name=machine,
                 energy_source=energy_source,
-                features=[],  # Auto-select features for best accuracy
+                features=None,  # None = auto-select features for best accuracy
                 year=2025
             ))
             
+            # Handle response from /baseline/train endpoint
             if result.get('success'):
-                # Use the voice-friendly message from API
-                message_text = result.get('message', f"Baseline trained successfully for {machine}")
-                self.speak(message_text)
-                self.logger.info("baseline_trained", machine=machine, r_squared=result.get('r_squared'))
-            else:
-                error_msg = result.get('error') or result.get('message', 'Training failed')
+                # Response format: {success: true, model_id, version, r_squared, rmse, mae, ...}
+                r_squared = result.get('r_squared', 0)
+                version = result.get('version', 1)
+                accuracy_pct = round(r_squared * 100, 1)
+                
+                self.speak(f"Baseline trained successfully for {machine}. Model version {version}, {accuracy_pct} percent accuracy.")
+                self.logger.info("baseline_trained", machine=machine, version=version, r_squared=r_squared)
+            elif result.get('error'):
+                # Error from API client (machine not found, etc.)
+                error_msg = result.get('error', 'Training failed')
                 self.speak(f"Could not train baseline for {machine}. {error_msg}")
                 self.logger.error("baseline_training_failed", machine=machine, error=error_msg)
+            else:
+                # Unexpected response format
+                self.speak(f"Training completed for {machine}, but response format unexpected")
+                self.logger.warning("baseline_training_unexpected_response", machine=machine, result=result)
         except Exception as e:
             self.log.error(f"Train baseline handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('BaselineModels').require('baseline').require('machine').require('model_query').build())
+    @intent_handler(IntentBuilder('BaselineModels').optionally('baseline').require('machine').require('model_query').build())
     def handle_baseline_models(self, message: Message):
         """Handle baseline models listing - OVOS interface layer (Phase 3.1: with context)"""
         try:
@@ -3857,7 +4218,12 @@ class EnmsSkill(FallbackSkill):
             
             if result['success']:
                 self.log.info(f"Formatting response for KPI data")
-                response = self.response_formatter.format_response('kpi', result['data'])
+                # Use different template for factory-wide vs machine-specific
+                if machine:
+                    response = self.response_formatter.format_response('kpi', result['data'])
+                else:
+                    # Factory-wide KPIs use factory_summary template
+                    response = self.response_formatter.format_response('factory_summary', result['data'])
                 self.log.info(f"Generated response: {response[:100]}...")
                 self.speak(response)
                 
@@ -3881,12 +4247,16 @@ class EnmsSkill(FallbackSkill):
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
+            self.log.info(f"Performance handler called: {utterance}")
+            
             # Get or create session context
             # DISABLED: session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            self.log.info(f"Extracted machine: {machine}")
             
             # Use context if no machine specified
             # DISABLED: if not machine and session.last_machine:
@@ -3900,19 +4270,27 @@ class EnmsSkill(FallbackSkill):
                 utterance=utterance
             )
             
+            self.log.info(f"Calling API for performance: machine={machine}")
             result = self._call_enms_api(intent)
             
-            if result['success']:
+            self.log.info(f"API result: success={result.get('success')}, keys={list(result.keys())}")
+            
+            if result.get('success'):
+                self.log.info(f"Data keys: {list(result['data'].keys()) if 'data' in result else 'NO DATA'}")
                 response = self.response_formatter.format_response('performance', result['data'])
+                self.log.info(f"Formatted response: {response[:100]}")
                 self.speak(response)
                 
                 # Update context for next query
                 # DISABLED: session.add_turn(utterance, intent, response, result['data'])
                 self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
+                self.log.error(f"API call failed: {result.get('error')}")
                 self.speak_dialog("error.general")
         except Exception as e:
             self.log.error(f"Performance handler failed: {e}")
+            import traceback
+            self.log.error(f"Traceback: {traceback.format_exc()}")
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('Production').require('production_query').require('machine').build())
@@ -4255,10 +4633,13 @@ class EnmsSkill(FallbackSkill):
     @intent_handler(IntentBuilder('Opportunities').require('opportunities').optionally('machine').build())
     def handle_opportunities(self, message: Message):
         """Handle energy saving opportunities queries"""
+        self.log.info("=== OPPORTUNITIES HANDLER CALLED ===")
         try:
             utterance = message.data.get("utterances", [""])[0]
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            
+            self.log.info(f"Opportunities for machine: {machine}")
             
             intent = Intent(
                 intent=IntentType.OPPORTUNITIES,
@@ -4269,20 +4650,29 @@ class EnmsSkill(FallbackSkill):
             
             result = self._call_enms_api(intent)
             
+            self.log.info(f"Opportunities result: success={result.get('success')}, keys={list(result.get('data', {}).keys() if result.get('data') else [])}")
+            
             if result['success']:
                 response = self.response_formatter.format_response('opportunities', result['data'])
+                self.log.info(f"Opportunities response: {response[:100]}...")
                 self.speak(response)
             else:
+                error = result.get('error', 'Unknown error')
+                self.log.error(f"Opportunities failed: {error}")
                 self.speak_dialog("error.general")
         except Exception as e:
             self.log.error(f"Opportunities handler failed: {e}")
+            import traceback
+            self.log.error(traceback.format_exc())
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('ISO50001').require('iso50001').build())
     def handle_iso50001(self, message: Message):
         """Handle ISO 50001 compliance queries"""
+        self.log.info("=== ISO50001 HANDLER CALLED ===")
         try:
             utterance = message.data.get("utterances", [""])[0]
+            self.log.info(f"ISO50001 utterance: {utterance}")
             
             intent = Intent(
                 intent=IntentType.ISO50001,
@@ -4291,14 +4681,21 @@ class EnmsSkill(FallbackSkill):
             )
             
             result = self._call_enms_api(intent)
+            self.log.info(f"ISO50001 result: success={result.get('success')}, error={result.get('error')}")
             
             if result['success']:
                 response = self.response_formatter.format_response('iso50001', result['data'])
                 self.speak(response)
             else:
-                self.speak_dialog("error.general")
+                # Speak the custom error message instead of generic error
+                error = result.get('error', 'Unknown error')
+                self.log.error(f"ISO50001 failed: {error}")
+                self.speak(error)
         except Exception as e:
             self.log.error(f"ISO50001 handler failed: {e}")
+            import traceback
+            self.log.error(traceback.format_exc())
+            self.speak_dialog("error.general")
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('Alerts').require('alerts').build())
@@ -4386,7 +4783,10 @@ class EnmsSkill(FallbackSkill):
             self.logger.error("model_query_traceback", trace=traceback.format_exc())
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('TrendAnalysis').require('trend_analysis').optionally('machine').build())
+    @intent_handler(IntentBuilder('TrendAnalysis')
+                    .require('trend_direction')
+                    .require('machine')
+                    .build())
     def handle_trend_analysis(self, message: Message):
         """Handle trend analysis queries - detects direction vs prior period"""
         self.log.info("=== TREND ANALYSIS HANDLER CALLED ===")
@@ -4503,6 +4903,10 @@ class EnmsSkill(FallbackSkill):
             if not current_period or not comparison_period:
                 self.speak("I couldn't understand which time periods to compare. Try asking 'compare this week to last week' or 'energy today versus yesterday'.")
                 return
+            
+            self.log.info(f"=== TIME PERIODS PARSED ===")
+            self.log.info(f"Current period: {current_period.start} to {current_period.end}")
+            self.log.info(f"Comparison period: {comparison_period.start} to {comparison_period.end}")
             
             intent = Intent(
                 intent=IntentType.TEMPORAL_COMPARISON,
