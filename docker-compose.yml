@@ -50,7 +50,7 @@ services:
       resources:
         limits:
           memory: 4G  # 1.28GB model + 500MB OVOS + 2.2GB buffer
-          cpus: '1.5' # Reduced for 2-CPU system (leave 0.5 for host)
+          cpus: '0.9' # Reduced for 2-CPU system (leave 0.5 for host)
         reservations:
           memory: 2G  # Minimum required
       
