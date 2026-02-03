@@ -1,0 +1,58 @@
+Testing EP1.3: "check if the system is working"
+  ⏱️  TIMEOUT
+Testing EP1.4: "is everything operational"
+  ⏱️  TIMEOUT
+
+Testing EP2.4: "how many machines are active"
+  ❌ ERROR
+Testing EP2.5: "peak power today"
+  ❌ ERROR
+Testing EP2.6: "carbon footprint"
+  ⏱️  TIMEOUT
+
+Testing EP2.8: "how much have we spent on energy"
+  ⏱️  TIMEOUT
+
+Testing EP4.1: "list all machines" & Testing EP4.3: "what machines do we have" (marked as PASS while the intent is wrong, it shows Rank)
+
+Testing EP4.6: "machines with high power"
+  ❌ ERROR
+Testing EP4.7: "show running machines"
+  ❌ ERROR
+Testing EP4.8: "which machines are offline"
+  ❌ ERROR
+
+Testing EP6.8: "is HVAC-EU-North operating normally"
+  ⏱️  TIMEOUT
+
+Testing EP10.4: "average power for Compressor-EU-1 yesterday"
+  ⏱️  TIMEOUT
+Testing EP10.5: "peak power of Injection-Molding-1 last 6 hours"
+  ⏱️  TIMEOUT
+
+Testing EP11.3: "current reading of HVAC-Main"
+  ⏱️  TIMEOUT
+Testing EP13.5: "find anomalies in Injection-Molding-1"
+  ⏱️  TIMEOUT
+Testing EP16.2: "find anomalies between December 1 and December 15"
+  ⏱️  TIMEOUT
+Testing EP18.2: "expected energy for Boiler-1"
+  ❌ ERROR 
+Testing EP21.3: "key indicators for HVAC-Main"
+  ⏱️  TIMEOUT
+Testing EP21.4: "all KPIs for Compressor-EU-1"
+  ⏱️  TIMEOUT
+Testing EP25.2: "what can we optimize"
+  ⏱️  TIMEOUT
+"energy saving opportunities" & "show me ways to reduce consumption" has wrong answers, because they are working here as a multi-turn. (I think we have to cancel the multi-turn and the context manger from OVOS)
+
+Testing EP31.2: "which machines use most energy"
+  ❌ ERROR
+Testing EP31.4: "rank machines by consumption"
+  ❌ ERROR
+Testing EP34.1: "electricity consumption of Compressor-1"
+  ❌ ERROR
+Testing EP34.2: "gas usage by Boiler-1"
+  ❌ ERROR
+Testing EP34.3: "steam consumption for HVAC-Main"
+  ❌ ERROR

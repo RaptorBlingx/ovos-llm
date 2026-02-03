@@ -11,15 +11,13 @@ All SEUs have baseline models trained.
 No SEUs have baseline models yet.
 {%- endif -%}
 {%- elif total_count is defined -%}
-{%- if seus and seus|length > 0 -%}
+I found {{ total_count }} significant energy use{% if total_count != 1 %}s{% endif %}{% if filtered_by %} for {{ filtered_by | replace('_', ' ') }}{% endif %}.
+{% if seus and seus|length > 0 -%}
+The SEUs are: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
 {% set seus_with_baseline = seus | selectattr('has_baseline', 'equalto', true) | list -%}
 {% set seus_without_baseline = seus | rejectattr('has_baseline', 'equalto', true) | list -%}
-We have {{ total_count }} significant energy user{% if total_count != 1 %}s{% endif %}: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}. {{ seus_with_baseline|length }} {% if seus_with_baseline|length == 1 %}has{% else %}have{% endif %} baseline models{% if seus_without_baseline|length > 0 %}, and {{ seus_without_baseline|length }} {% if seus_without_baseline|length == 1 %}needs{% else %}need{% endif %} baselines{% endif %}.
-The factory has {{ total_count }} SEUs: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}. Baseline status: {{ seus_with_baseline|length }} trained{% if seus_without_baseline|length > 0 %}, {{ seus_without_baseline|length }} pending{% endif %}.
-I found {{ total_count }} significant energy use{% if total_count != 1 %}s{% endif %}: {% for seu in seus %}{{ seu.name }}{% if not loop.last %}, {% endif %}{% endfor %}. {{ seus_with_baseline|length }} already {% if seus_with_baseline|length == 1 %}has{% else %}have{% endif %} baseline models trained{% if seus_without_baseline|length > 0 %}, {{ seus_without_baseline|length }} still {% if seus_without_baseline|length == 1 %}needs{% else %}need{% endif %} one{% endif %}.
-{%- else -%}
-No significant energy uses found.
-{%- endif -%}
+{{ seus_with_baseline|length }} {% if seus_with_baseline|length == 1 %}has{% else %}have{% endif %} baseline models trained{% if seus_without_baseline|length > 0 %}, and {{ seus_without_baseline|length }} need{% if seus_without_baseline|length == 1 %}s{% endif %} baselines{% endif %}.
+{% endif %}
 {%- else -%}
 No significant energy uses found.
 {%- endif %}

@@ -95,15 +95,6 @@ class HeuristicRouter:
             re.compile(r'\bhistory\s+of.*?baseline\s+models?', re.IGNORECASE),
         ],
         
-        # NEW: Train baseline model
-        'train_baseline': [
-            re.compile(r'\btrain\s+(?:a\s+)?(?:new\s+)?(?:baseline\s+)?model', re.IGNORECASE),
-            re.compile(r'\bcreate\s+(?:a\s+)?(?:new\s+)?(?:baseline\s+)?model', re.IGNORECASE),
-            re.compile(r'\btrain\s+baseline', re.IGNORECASE),
-            re.compile(r'\bretrain\s+(?:the\s+)?(?:baseline\s+)?model', re.IGNORECASE),
-            re.compile(r'\bbuild\s+(?:a\s+)?model\s+for', re.IGNORECASE),
-        ],
-        
         # NEW: Forecast (future prediction) - MUST come before KPI to catch temporal queries
         'forecast': [
             re.compile(r'\b(?:when|what\s+time).*?(?:peak|demand).*?(?:tomorrow|next|tonight)', re.IGNORECASE),
@@ -206,18 +197,6 @@ class HeuristicRouter:
             re.compile(r'\bhow\s+many\s+(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)', re.IGNORECASE),
         ],
         
-        # NEW: Cost Analysis (MUST come before factory_overview to match first)
-        'cost_analysis': [
-            # Cost queries (factory-wide aggregate)
-            re.compile(r'\b(?:how\s+much|what).*?(?:is|are).*?(?:energy|electricity|power)?\s*cost', re.IGNORECASE),
-            re.compile(r'\bcost(?:ing|s)?\s+(?:us|today|this\s+month)', re.IGNORECASE),
-            re.compile(r'\btotal\s+(?:energy\s+)?cost', re.IGNORECASE),
-            re.compile(r'\benergy\s+(?:cost|expense|bill)', re.IGNORECASE),
-            re.compile(r'\belectricity\s+(?:cost|bill|expense)', re.IGNORECASE),
-            re.compile(r'\bhow\s+much\s+(?:are\s+we|have\s+we)\s+(?:spending|spent)', re.IGNORECASE),
-            re.compile(r'\bcost\s+(?:analysis|breakdown|today|this\s+(?:week|month))', re.IGNORECASE),
-        ],
-        
         # Factory-wide queries
         'factory_overview': [
             re.compile(r'\bfactory\s+(?:overview|status|summary)\b', re.IGNORECASE),
@@ -233,6 +212,13 @@ class HeuristicRouter:
             re.compile(r'\b(?:what|how\s+much).*?carbon\b', re.IGNORECASE),
             re.compile(r'\bCO2\s+emissions?\b', re.IGNORECASE),
             re.compile(r'\bemissions?\s+(?:total|today)\b', re.IGNORECASE),
+            # NEW: Cost queries (factory-wide aggregate)
+            re.compile(r'\b(?:how\s+much|what).*?(?:is|are).*?(?:energy|electricity|power)?\s*cost', re.IGNORECASE),
+            re.compile(r'\bcost(?:ing|s)?\s+(?:us|today|this\s+month)', re.IGNORECASE),
+            re.compile(r'\btotal\s+(?:energy\s+)?cost', re.IGNORECASE),
+            re.compile(r'\benergy\s+(?:cost|expense|bill)', re.IGNORECASE),
+            re.compile(r'\belectricity\s+(?:cost|bill|expense)', re.IGNORECASE),
+            re.compile(r'\bhow\s+much\s+(?:are\s+we|have\s+we)\s+(?:spending|spent)', re.IGNORECASE),
             # NEW: Active/offline machine queries
             re.compile(r'\b(?:show|list|what).*?(?:active|online|running).*?(?:machines?|equipment)', re.IGNORECASE),
             re.compile(r'\b(?:show|list|what).*?(?:inactive|offline|stopped).*?(?:machines?|equipment)', re.IGNORECASE),
@@ -854,16 +840,6 @@ class HeuristicRouter:
                     'machine': machine
                 }
             
-            elif intent_type == 'cost_analysis':
-                # Cost analysis - factory-wide or machine-specific
-                machine = self._extract_machine_fuzzy(utterance)
-                
-                return {
-                    'intent': 'cost_analysis',
-                    'confidence': 0.95,
-                    'machine': machine
-                }
-            
             elif intent_type == 'machine_status':
                 # Extract machine name from match
                 machine = match.group(1)
@@ -1081,38 +1057,11 @@ class HybridParser:
         self.stats = {
             'heuristic': 0,
             'adapt': 0,
-            'llm': 0,  # Tier 3: LLM fallback
             'clarification': 0,
             'total': 0
         }
         
-        # LLM parser (Tier 3) - initialized via init_llm()
-        self.llm = None
-        
-        self.logger.info("hybrid_parser_initialized", tiers=["heuristic", "adapt", "llm"])
-    
-    def init_llm(self, model_path: str, thinking_enabled: bool = False):
-        """
-        Initialize LLM parser (Tier 3) for deep NLU fallback.
-        
-        This should be called from a background thread during startup
-        to avoid blocking the main skill initialization.
-        
-        Args:
-            model_path: Path to GGUF model file (e.g., /models/Qwen3-1.7B-Q4_K_M.gguf)
-            thinking_enabled: Enable reasoning mode (slower but more accurate)
-        """
-        try:
-            from .llm_parser import Qwen3Parser
-            
-            self.logger.info("llm_init_starting", model_path=model_path, thinking=thinking_enabled)
-            self.llm = Qwen3Parser(model_path, thinking_enabled=thinking_enabled)
-            self.llm.load_model()
-            self.logger.info("llm_init_complete", model_loaded=True)
-            
-        except Exception as e:
-            self.logger.error("llm_init_failed", error=str(e))
-            self.llm = None
+        self.logger.info("hybrid_parser_initialized", tiers=["heuristic", "adapt"])
     
     def parse(self, utterance: str) -> Dict:
         """
@@ -1137,42 +1086,14 @@ class HybridParser:
             
             # Tier 2: Adapt (Fast pattern matching)
             if not result:
-                adapt_result = self.adapt.parse(utterance)
+                result = self.adapt.parse(utterance)
                 
-                # Check raw Adapt confidence before time parsing (which boosts confidence)
-                raw_adapt_confidence = adapt_result.get('confidence', 0) if adapt_result else 0
-                
-                # Only accept Adapt if raw confidence >= 0.3 (low-medium threshold)
-                # Very low confidence Adapt matches (< 0.3) should fall through to LLM
-                if adapt_result and raw_adapt_confidence >= 0.3:
-                    result = adapt_result
+                if result:
                     tier_used = RoutingTier.ADAPT
                     self.stats['adapt'] += 1
-                elif adapt_result:
-                    self.logger.debug("adapt_low_confidence_rejected",
-                                    confidence=raw_adapt_confidence,
-                                    intent=adapt_result.get('intent'),
-                                    reason="falling_back_to_llm")
             
-            # Tier 3: LLM (Deep NLU fallback)
-            if not result and self.llm and hasattr(self.llm, 'model') and self.llm.model:
-                self.logger.info("llm_fallback_activated", utterance=utterance)
-                result = self.llm.parse(
-                    utterance,
-                    machines=self.heuristic.MACHINES,
-                    intents=[intent_type.value for intent_type in IntentType]
-                )
-                
-                if result and result.get('confidence', 0) >= 0.5:  # Lower threshold for LLM (0.5 vs 0.7)
-                    tier_used = RoutingTier.LLM
-                    self.stats['llm'] += 1
-                    self.logger.info("llm_intent_matched",
-                                   intent=result.get('intent'),
-                                   confidence=result.get('confidence'),
-                                   machine=result.get('machine'))
-            
-            # Fallback: Return clarification intent for unmatched queries (ONLY if ALL tiers fail)
-            if not result or (result and result.get('confidence', 0) < 0.5):  # Lowered threshold to match LLM
+            # Fallback: Return clarification intent for unmatched queries
+            if not result or (result and result.get('confidence', 0) < 0.7):
                 self.logger.info("clarification_needed",
                                 utterance=utterance,
                                 confidence=result.get('confidence', 0) if result else 0)

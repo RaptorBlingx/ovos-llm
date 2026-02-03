@@ -41,7 +41,7 @@ class ENMSClient:
     
     def __init__(
         self,
-        base_url: str = "http://localhost:8001/api/v1",
+        base_url: str = "http://10.33.10.104:8001/api/v1",
         timeout: float = 90.0,
         max_retries: int = 3
     ):
@@ -145,52 +145,6 @@ class ENMSClient:
         """Get comprehensive factory summary with status, energy, costs, machines, anomalies"""
         return await self._request("GET", "/factory/summary")
     
-    async def train_baseline(
-        self,
-        seu_name: str,
-        energy_source: str = "electricity",
-        features: Optional[List[str]] = None,
-        year: int = 2025
-    ) -> Dict[str, Any]:
-        """
-        Train baseline model for SEU (uses same endpoint as web UI)
-        
-        Args:
-            seu_name: SEU name (e.g., "Compressor-1")
-            energy_source: Energy source type (default: "electricity")
-            features: List of feature names (default: [] for auto-select)
-            year: Training year (default: 2025)
-        
-        Returns:
-            Training result with success, message, accuracy metrics
-        """
-        # First, resolve machine_id from seu_name
-        machines = await self.list_machines(search=seu_name)
-        if not machines:
-            return {'success': False, 'error': f'Machine {seu_name} not found'}
-        
-        machine_id = str(machines[0]['id'])  # Ensure it's a string UUID
-        
-        # Use same date range logic as web UI: full year
-        from datetime import datetime
-        start_date = f"{year}-01-01T00:00:00Z"
-        end_date = f"{year}-12-31T23:59:59Z"
-        
-        # Web UI uses /baseline/train endpoint (not /baseline/train-seu)
-        # This endpoint requires machine_id (UUID), start/end dates, and drivers
-        payload = {
-            "machine_id": machine_id,
-            "start_date": start_date,
-            "end_date": end_date,
-            "drivers": features  # None = auto-select
-        }
-        
-        try:
-            result = await self._request("POST", "/baseline/train", json=payload)
-            return result
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-    
     async def aggregated_stats(
         self,
         start_time: datetime,
@@ -275,7 +229,7 @@ class ENMSClient:
             interval: Time bucket (1min, 5min, 15min, 1hour, 1day)
             
         Returns:
-            Time-series energy data with aggregated values including total_kwh
+            Time-series energy data with aggregated values
         """
         params = {
             "machine_id": machine_id,
@@ -283,14 +237,7 @@ class ENMSClient:
             "end_time": end_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
             "interval": interval
         }
-        result = await self._request("GET", "/timeseries/energy", params=params)
-        
-        # Calculate total_kwh from data_points if not present
-        if 'data_points' in result and 'total_kwh' not in result:
-            total_kwh = sum(point.get('value', 0) for point in result['data_points'])
-            result['total_kwh'] = total_kwh
-        
-        return result
+        return await self._request("GET", "/timeseries/energy", params=params)
     
     async def get_power_timeseries(
         self,
@@ -299,25 +246,14 @@ class ENMSClient:
         end_time: datetime,
         interval: str = "1hour"
     ) -> Dict[str, Any]:
-        """Get power demand time-series data with avg_power_kw calculated"""
+        """Get power demand time-series data"""
         params = {
             "machine_id": machine_id,
             "start_time": start_time.isoformat(),
             "end_time": end_time.isoformat(),
             "interval": interval
         }
-        result = await self._request("GET", "/timeseries/power", params=params)
-        
-        # Calculate avg_power_kw from data_points if not present
-        if 'data_points' in result and 'avg_power_kw' not in result:
-            data_points = result['data_points']
-            if data_points:
-                avg_power_kw = sum(point.get('value', 0) for point in data_points) / len(data_points)
-                result['avg_power_kw'] = avg_power_kw
-            else:
-                result['avg_power_kw'] = 0
-        
-        return result
+        return await self._request("GET", "/timeseries/power", params=params)
     
     async def get_latest_reading(self, machine_id: str) -> Dict[str, Any]:
         """Get most recent sensor reading for machine"""
@@ -439,12 +375,9 @@ class ENMSClient:
         
         return await self._request("GET", "/anomaly/recent", params=params)
     
-    async def get_active_anomalies(self, severity: Optional[str] = None) -> Dict[str, Any]:
+    async def get_active_anomalies(self) -> Dict[str, Any]:
         """Get currently unresolved anomalies requiring attention"""
-        params = {}
-        if severity:
-            params["severity"] = severity
-        return await self._request("GET", "/anomaly/active", params=params)
+        return await self._request("GET", "/anomaly/active")
     
     async def search_anomalies(
         self,
@@ -730,10 +663,6 @@ class ENMSClient:
         """
         Predict baseline energy consumption
         
-        HYBRID APPROACH (Fixed Dec 24, 2025):
-        1. Try SEU name lookup (works for machines in SEUs table)
-        2. Fallback to machine_id lookup (works for all machines with baselines)
-        
         Args:
             seu_name: Machine/SEU name
             energy_source: Energy source type
@@ -749,27 +678,7 @@ class ENMSClient:
             "features": features or {},
             "include_message": include_message
         }
-        
-        try:
-            # Try SEU name first
-            return await self._request("POST", "/baseline/predict", json=payload)
-        except Exception as e:
-            # If SEU not found, try machine_id lookup
-            error_msg = str(e).lower()
-            if "seu_not_found" in error_msg or "not found" in error_msg:
-                # Lookup machine by name
-                machines = await self.list_machines(search=seu_name)
-                if machines and len(machines) > 0:
-                    machine_id = machines[0]['id']
-                    # Retry with machine_id
-                    payload_with_id = {
-                        "machine_id": machine_id,
-                        "features": features or {},
-                        "include_message": include_message
-                    }
-                    return await self._request("POST", "/baseline/predict", json=payload_with_id)
-            # Re-raise if not SEU_NOT_FOUND or machine lookup failed
-            raise
+        return await self._request("POST", "/baseline/predict", json=payload)
     
     async def get_forecast(
         self,
@@ -795,32 +704,6 @@ class ENMSClient:
             params["machine_id"] = machines[0]["id"]
         
         return await self._request("GET", "/forecast/short-term", params=params)
-    
-    # KPI Endpoints
-    
-    async def get_all_kpis(
-        self,
-        machine_id: str,
-        start: str,
-        end: str
-    ) -> Dict[str, Any]:
-        """
-        Get all KPIs for a machine in a time period
-        
-        Args:
-            machine_id: Machine UUID
-            start: Start time (ISO 8601)
-            end: End time (ISO 8601)
-            
-        Returns:
-            All KPIs (SEC, peak demand, load factor, energy cost, carbon)
-        """
-        params = {
-            "machine_id": machine_id,
-            "start": start,
-            "end": end
-        }
-        return await self._request("GET", "/kpi/all", params=params)
     
     # ISO 50001 Compliance
     
@@ -1002,85 +885,6 @@ class ENMSClient:
                 'year': year,
                 'month': month
             }
-    
-    async def generate_report_v2(
-        self,
-        factory_id: str,
-        report_type: str = "monthly",
-        year: int = None,
-        month: int = None
-    ) -> Dict[str, Any]:
-        """
-        Generate V2 PDF report (9.5/10 SOTA quality, production-ready)
-        
-        Args:
-            factory_id: Factory UUID (required for V2)
-            report_type: "monthly" or "weekly"
-            year: Report year (defaults to current year)
-            month: Report month 1-12 (defaults to current month)
-            
-        Returns:
-            Dict with report_id, file_path, file_size_kb, generation_time_seconds
-            {
-                "success": true,
-                "report_id": "fc97f2e2-fb02-4100-ba5e-30b76ae21334",
-                "file_path": "/tmp/enms_report_v2_fc97f2e2.pdf",
-                "file_size_kb": 251.3,
-                "generation_time_seconds": 6.8,
-                "timestamp": "2025-12-29T07:41:00.000Z"
-            }
-        """
-        # Default to current month/year if not specified
-        if year is None:
-            year = datetime.now().year
-        if month is None:
-            month = datetime.now().month
-        
-        payload = {
-            "factory_id": factory_id,
-            "report_type": report_type,
-            "year": year,
-            "month": month,
-            "include_sections": [
-                "executive_summary",
-                "energy_overview",
-                "machine_profiles",
-                "cost_analysis",
-                "carbon_analysis"
-            ]
-        }
-        
-        logger.info("report_v2_generate_request", payload=payload)
-        
-        try:
-            result = await self._request("POST", "/reports/v2/generate", json=payload)
-            logger.info("report_v2_generate_success", 
-                       report_id=result.get('report_id'),
-                       file_size_kb=result.get('file_size_kb'),
-                       generation_time_seconds=result.get('generation_time_seconds'))
-            return result
-            
-        except Exception as e:
-            logger.error("report_v2_generate_error", error=str(e))
-            raise
-    
-    def get_report_download_url(self, report_id: str) -> str:
-        """
-        Construct download URL for generated V2 report
-        
-        Args:
-            report_id: Report UUID from generate_report_v2() response
-            
-        Returns:
-            Full download URL
-            
-        Example:
-            >>> client = ENMSClient("http://localhost:8080/api/analytics/api/v1")
-            >>> url = client.get_report_download_url("fc97f2e2-fb02-4100-ba5e-30b76ae21334")
-            >>> # Returns: "http://localhost:8080/api/analytics/api/v1/reports/v2/download/fc97f2e2..."
-        """
-        # Note: base_url already includes /api/v1
-        return f"{self.base_url}/reports/v2/download/{report_id}"
 
 
 # Context manager support

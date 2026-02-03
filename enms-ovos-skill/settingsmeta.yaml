@@ -6,8 +6,8 @@ skillMetadata:
         - name: enms_api_base_url
           type: text
           label: EnMS API Base URL
-          value: http://enms-analytics:8001/api/v1
-          placeholder: http://enms-analytics:8001/api/v1
+          value: http://10.33.10.104:8001/api/v1
+          placeholder: http://your-server/api/analytics/api/v1
           
     - name: LLM Configuration
       fields:

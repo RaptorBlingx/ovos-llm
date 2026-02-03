@@ -13,8 +13,7 @@ services:
       - "5000:5000"    # REST API Bridge
       - "8181:8181"    # OVOS Messagebus (internal, can be exposed for debugging)
     environment:
-      # EnMS API - Always use container name when on same Docker network
-      # .env can have SERVER_IP for reference, but we override here
+      # EnMS API (use container name since containers on same network)
       - ENMS_API_URL=${ENMS_API_URL:-http://enms-analytics:8001/api/v1}
       
       # Bridge configuration
@@ -30,9 +29,6 @@ services:
       # Skill development - mount for hot reload (comment out in production)
       - ./enms-ovos-skill:/opt/ovos/skills/enms-ovos-skill:rw
       
-      # LLM models (persisted across container restarts)
-      - ovos-models:/models:rw
-      
       # OVOS logs
       - ovos-logs:/var/log/ovos
       
@@ -45,14 +41,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-    
-    deploy:
-      resources:
-        limits:
-          memory: 4G  # 1.28GB model + 500MB OVOS + 2.2GB buffer
-          cpus: '0.9' # Reduced for 2-CPU system (leave 0.5 for host)
-        reservations:
-          memory: 2G  # Minimum required
       
     networks:
       - enms-network
@@ -65,8 +53,6 @@ volumes:
   ovos-logs:
     driver: local
   supervisor-logs:
-    driver: local
-  ovos-models:
     driver: local
 
 networks:

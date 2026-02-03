@@ -437,12 +437,12 @@ class AdaptParser:
             return None
         
         # Build result (convert enum to string for validator compatibility)
-        # Return RAW confidence - let HybridParser decide if it's acceptable
-        # (Previously boosted to 0.85, but this prevented LLM fallback for low-confidence matches)
+        # Boost confidence to meet validator threshold (Adapt's calculation is conservative)
+        boosted_confidence = max(confidence, 0.85)
         
         result = {
             'intent': mapped_intent.value if hasattr(mapped_intent, 'value') else str(mapped_intent),
-            'confidence': confidence,  # Use RAW confidence, not boosted
+            'confidence': boosted_confidence,
             'entities': entities
         }
         

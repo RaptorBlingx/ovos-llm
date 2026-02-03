@@ -7,13 +7,7 @@
 {%- elif forecast_type is defined and forecast_type == "single_machine" -%}
 {{ machine_name }}'s forecast for tomorrow is {{ predicted_energy_kwh | round(1) }} kilowatt hours, costing ${{ predicted_cost_usd | round(2) }}. Peak power of {{ predicted_peak_power_kw | round(1) }} kilowatts expected at {{ predicted_peak_time }} with {{ (confidence * 100) | round(0) }}% confidence.
 {%- elif forecast_type is defined and forecast_type == "factory_wide" -%}
-  {%- if periods_requested is defined and periods_requested > 1 -%}
-    {%- set unit_label = time_unit if time_unit is defined else 'day' -%}
-    {%- set plural_s = 's' if periods_requested > 1 else '' -%}
-For the {{ periods_requested }} {{ unit_label }}{{ plural_s }} forecast, I can show tomorrow's prediction. Multi-day forecasts require model training. Tomorrow's factory-wide energy forecast is {{ total_predicted_energy_kwh | round(1) }} kilowatt hours, costing ${{ total_predicted_cost_usd | round(2) }}. Peak demand of {{ predicted_peak_demand_kw | round(1) }} kilowatts expected at {{ predicted_peak_time }} from {{ peak_machine }}.
-  {%- else -%}
 Tomorrow's factory-wide energy forecast is {{ total_predicted_energy_kwh | round(1) }} kilowatt hours, costing ${{ total_predicted_cost_usd | round(2) }}. Peak demand of {{ predicted_peak_demand_kw | round(1) }} kilowatts expected at {{ predicted_peak_time }} from {{ peak_machine }}.
-  {%- endif -%}
 {%- elif predictions is defined and predictions|length > 0 -%}
   {%- set total = predictions | sum(attribute='predicted_energy_kwh') | round(1) -%}
 The energy forecast for the next {{ predictions|length }} hours is {{ total }} kilowatt hours{% if seu_name is defined %} for {{ seu_name }}{% endif %}.

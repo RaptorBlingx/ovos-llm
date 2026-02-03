@@ -75,5 +75,3 @@ temp/
 # EXCEPT these essential ones
 !README.md
 !documentation/TECHNICAL_DOCUMENTATION.md
-
-.env

@@ -13,7 +13,6 @@ class IntentType(str, Enum):
     ENERGY_QUERY = "energy_query"
     POWER_QUERY = "power_query"
     MACHINE_STATUS = "machine_status"
-    MACHINE_LIST = "machine_list"
     FACTORY_OVERVIEW = "factory_overview"
     COMPARISON = "comparison"
     RANKING = "ranking"
@@ -30,15 +29,6 @@ class IntentType(str, Enum):
     REPORT = "report"  # PDF report generation
     HELP = "help"
     HEALTH = "health"  # System health check
-    OPPORTUNITIES = "opportunities"  # Energy saving opportunities
-    ISO50001 = "iso50001"  # ISO 50001 compliance queries
-    ALERTS = "alerts"  # Alert subscription
-    ENERGY_TYPES = "energy_types"  # Multi-energy type queries
-    LOAD_FACTOR = "load_factor"  # Load factor queries
-    TRAIN_BASELINE = "train_baseline"  # Train baseline model
-    MODEL_QUERY = "model_query"  # Query baseline model details
-    TEMPORAL_COMPARISON = "temporal_comparison"  # Compare two time periods
-    TREND_ANALYSIS = "trend_analysis"  # Trend direction over recent periods
     UNKNOWN = "unknown"
 
 

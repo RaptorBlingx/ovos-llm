@@ -1,43 +1,16 @@
 baseline
+baselines
+baseline model
+baseline models
+predicted
+prediction
+predict
 expected
 expected energy
-expected energy for
 expected consumption
-predicted
-predicted energy
-predicted consumption
-forecast
-forecasted
-normal consumption
-typical consumption
-should be using
-supposed to use
-baseline consumption
-baseline energy
-what's the expected energy
-predict energy consumption for
-predict energy consumption for
-baseline prediction for
-when was
-when was the baseline
-predict energy at
-predict energy for
-predict consumption at
-predict consumption with
-expected energy at
-expected energy with
-at degrees
-with temperature
-with pressure
-at bar
-at load factor
-at percent load
-with units production
-natural gas
-steam
-compressed air
-electricity
-electrical
-electric power
-gas consumption
-steam usage
+expected usage
+normal
+train baseline
+train model
+baseline prediction
+model prediction
