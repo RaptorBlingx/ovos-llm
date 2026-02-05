@@ -75,3 +75,5 @@ temp/
 # EXCEPT these essential ones
 !README.md
 !documentation/TECHNICAL_DOCUMENTATION.md
+# Environment-specific configuration - managed separately per server
+enms-ovos-skill/settings.docker.json
