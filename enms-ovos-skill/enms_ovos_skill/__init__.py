@@ -29,6 +29,7 @@ from datetime import datetime, timezone, timedelta
 import structlog
 from ovos_workshop.decorators import intent_handler
 from ovos_workshop.intents import IntentBuilder
+from ovos_workshop.skills.fallback import FallbackSkill
 from ovos_workshop.skills.ovos import OVOSSkill
 from ovos_bus_client.message import Message
 
@@ -55,7 +56,7 @@ from .lib.observability import (
 logger = structlog.get_logger(__name__)
 
 
-class EnmsSkill(OVOSSkill):
+class EnmsSkill(FallbackSkill):
     """
     PRODUCTION-READY OVOS Skill for Energy Management System
     
@@ -68,9 +69,9 @@ class EnmsSkill(OVOSSkill):
     - Graceful degradation
     - <200ms P50 latency
     
-    NOTE: Changed from ConversationalSkill to OVOSSkill to prevent converse() from
-    blocking Adapt intent handlers. ConversationalSkill intercepts ALL utterances before
-    intent matchers run, causing timeouts even when converse() returns False.
+    NOTE: Uses FallbackSkill (not ConversationalSkill) to register a fallback handler
+    for unmatched queries (Tier 3 LLM). FallbackSkill only fires AFTER all intent
+    matchers fail, unlike ConversationalSkill which intercepts ALL utterances.
     """
 
     def __init__(self, bus=None, skill_id="", **kwargs):
@@ -144,14 +145,20 @@ class EnmsSkill(OVOSSkill):
         
         # Extract commonly used settings
         self.enms_api_base_url = self.config.get("api_base_url", "http://10.33.10.104:8001/api/v1")
-        self.llm_model_path = self.settings.get("llm_model_path", "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf")
+        _llm_path = self.settings.get("llm_model_path", "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf")
+        # Resolve relative model path against skill root directory
+        from pathlib import Path
+        _llm_path_obj = Path(_llm_path)
+        if not _llm_path_obj.is_absolute():
+            _llm_path_obj = Path(__file__).parent.parent / _llm_path
+        self.llm_model_path = str(_llm_path_obj)
         self.confidence_threshold = self.settings.get("confidence_threshold", 0.85)
         self.enable_progress_feedback = self.settings.get("enable_progress_feedback", True)
         self.progress_threshold_ms = self.settings.get("progress_threshold_ms", 500)
         
         # Initialize Tier 1-3: Hybrid Parser (Heuristic + Adapt + LLM)
         logger.info("initializing_hybrid_parser")
-        self.hybrid_parser = HybridParser()
+        self.hybrid_parser = HybridParser(llm_model_path=self.llm_model_path)
         
         # Initialize Tier 4: Validator
         logger.info("initializing_validator")
@@ -197,17 +204,20 @@ class EnmsSkill(OVOSSkill):
         
         # Initialize Tier 7: Conversation Context
         logger.info("initializing_conversation_context")
-        # DISABLED: Context manager causes false positives
-        # self.context_manager = ConversationContextManager()
-        self.context_manager = None
+        self.context_manager = ConversationContextManager()
         
         # Initialize Tier 8: Voice Feedback
         logger.info("initializing_voice_feedback")
         self.voice_feedback = VoiceFeedbackManager()
         
+        # Register fallback handler for unmatched queries (Tier 3 - LLM)
+        # Priority 90 = fallback_low, fires only when ALL intent matchers fail
+        self.register_fallback(self._handle_fallback, priority=90)
+        
         logger.info("skill_initialized_successfully", 
                         components=["HybridParser", "Validator", "APIClient", "MachineRegistry", 
-                                  "ResponseFormatter", "ConversationContext", "VoiceFeedback"],
+                                  "ResponseFormatter", "ConversationContext", "VoiceFeedback",
+                                  "FallbackHandler"],
                         enms_api=self.enms_api_base_url,
                         confidence_threshold=self.confidence_threshold,
                         converse_mode=True)
@@ -282,12 +292,13 @@ class EnmsSkill(OVOSSkill):
             start = time.time()
             
             # Access the qwen3 parser and trigger model load
-            if self.hybrid_parser and self.hybrid_parser.llm:
-                self.hybrid_parser.llm.load_model()
+            llm_parser = getattr(self.hybrid_parser, 'llm', None) if self.hybrid_parser else None
+            if llm_parser:
+                llm_parser.load_model()
                 elapsed = time.time() - start
                 self.logger.info("llm_preload_complete", elapsed_seconds=round(elapsed, 1))
             else:
-                self.logger.warning("llm_preload_skipped", reason="parser not initialized")
+                self.logger.warning("llm_preload_skipped", reason="llm parser not configured")
         except Exception as e:
             self.logger.error("llm_preload_failed", error=str(e), error_type=type(e).__name__)
     
@@ -638,7 +649,7 @@ class EnmsSkill(OVOSSkill):
         try:
             # Step 1: Get conversation session
             self.logger.info("⚙️ step1_get_session", elapsed_ms=int((time.time()-start_time)*1000))
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             self.logger.info("⚙️ step1_session_created", elapsed_ms=int((time.time()-start_time)*1000))
             
             # Step 2: Voice acknowledgment (varies by expected intent)
@@ -1912,7 +1923,7 @@ class EnmsSkill(OVOSSkill):
                 
                 # If no machine specified, try conversation context
                 if not machine and not machines and self.context_manager:
-                    # DISABLED: session = self.context_manager.get_or_create_session("default_user")
+                    session = self.context_manager.get_or_create_session("default_user") if self.context_manager else None
                     machine = session.get_last_machine()
                     if machine:
                         self.logger.info("baseline_using_context", machine=machine)
@@ -1983,7 +1994,7 @@ class EnmsSkill(OVOSSkill):
                 
                 # Update conversation context with this machine
                 if self.context_manager:
-                    # DISABLED: session = self.context_manager.get_or_create_session("default_user")
+                    session = self.context_manager.get_or_create_session("default_user") if self.context_manager else None
                     session.update_machine(machine)
                 
                 return {'success': True, 'data': prediction}
@@ -2330,14 +2341,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2432,7 +2443,7 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context - use add_turn which is the proper method
-                # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+                session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
                 session.add_turn(
                     query=utterance,
                     intent=intent,
@@ -2515,14 +2526,16 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = None
+            if self.context_manager:
+                session = self.context_manager.get_or_create_session(session_id)
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2544,8 +2557,9 @@ class EnmsSkill(OVOSSkill):
                 self.speak(response)
                 
                 # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
-                self.logger.info("context_updated", session_id=session_id, machine=machine)
+                if session:
+                    session.add_turn(utterance, intent, response, result['data'])
+                    self.logger.info("context_updated", session_id=session_id, machine=machine)
             else:
                 self.speak_dialog("error.general")
         except Exception as e:
@@ -2591,7 +2605,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine
             machine_raw = message.data.get('machine')
@@ -2632,7 +2646,7 @@ class EnmsSkill(OVOSSkill):
             self.logger.info("cost_handler_start", utterance=utterance, session_id=session_id)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             self.logger.info("cost_session_retrieved", session_id=session_id)
             
             # Extract machine (or use context)
@@ -2640,7 +2654,7 @@ class EnmsSkill(OVOSSkill):
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2683,14 +2697,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2728,14 +2742,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified and required
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2773,14 +2787,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2814,14 +2828,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2878,14 +2892,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2919,14 +2933,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -2960,14 +2974,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -3010,14 +3024,14 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             
             # Get or create session context
-            # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
             
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
             
             # Use context if no machine specified
-            if not machine and session.last_machine:
+            if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
             
@@ -3112,6 +3126,66 @@ class EnmsSkill(OVOSSkill):
             self.log.error(f"Help handler failed: {e}")
             self.speak("I can help you with energy monitoring, machine status, anomaly detection, KPIs, forecasting, and more. Try asking about a specific machine or factory overview.")
     
+    def _handle_fallback(self, message: Message) -> bool:
+        """
+        Fallback handler (Tier 3) — catches queries that no intent matcher could handle.
+        
+        Fires at fallback_low priority (90) AFTER all adapt/padatious matchers fail.
+        Routes through HybridParser which includes LLM for complex/typo queries.
+        
+        Returns:
+            True if we handled the utterance, False to let other fallback skills try
+        """
+        try:
+            utterance = message.data.get("utterances", [""])[0]
+            if not utterance or len(utterance.strip()) < 3:
+                return False
+            
+            self.logger.info("fallback_handler_triggered",
+                           utterance=utterance[:80],
+                           reason="no_intent_match")
+            
+            session_id = self._get_session_id(message)
+            result = self._process_query(utterance, session_id)
+            
+            if result.get('success'):
+                self.speak(result['response'])
+                
+                # For report generation, emit custom event with PDF data
+                if result.get('pdf_base64'):
+                    self.bus.emit(Message(
+                        "enms.report.generated",
+                        {
+                            "pdf_base64": result['pdf_base64'],
+                            "filename": result.get('pdf_filename', 'report.pdf')
+                        },
+                        {"session_id": session_id}
+                    ))
+                return True
+            
+            # If HybridParser returned clarification_needed, speak the suggestion
+            response = result.get('response', '')
+            if response:
+                self.speak(response)
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error("fallback_handler_error",
+                            error=str(e),
+                            error_type=type(e).__name__,
+                            utterance=message.data.get("utterances", [""])[0][:80])
+            return False
+    
+    def can_answer(self, message: Message) -> bool:
+        """Required by FallbackSkill — determines if we can handle this fallback query.
+        
+        We always return True because our _handle_fallback will route through
+        HybridParser (with LLM) or return a clarification response.
+        """
+        return True
+    
     def can_converse(self, message: Message) -> bool:
         """
         Required by ConversationalSkill - determines if this skill should handle the utterance.
@@ -3156,7 +3230,7 @@ class EnmsSkill(OVOSSkill):
             session_id = self._get_session_id(message)
             has_context = False
             if self.context_manager:
-                # DISABLED: session = self.context_manager.get_or_create_session(session_id)
+                session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
                 has_context = len(session.history) > 0
             
             # Only handle if it's clearly a follow-up AND we have context

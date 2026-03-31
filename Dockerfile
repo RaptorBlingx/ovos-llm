@@ -44,11 +44,14 @@ RUN useradd -m -u 1000 ovos && \
 COPY requirements.txt /app/requirements.txt
 
 # Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+# NOTE: OVOS plugin manager still imports pkg_resources, removed in setuptools>=81
+RUN pip install --no-cache-dir --upgrade pip "setuptools<81" wheel && \
     pip install --no-cache-dir -r /app/requirements.txt
 
-# Copy OVOS configuration
-COPY ovos.conf /config/ovos.conf
+# Copy OVOS configuration to the path ovos_config resolves at runtime
+# Expected user config location: /config/mycroft/mycroft.conf
+RUN mkdir -p /config/mycroft
+COPY ovos.conf /config/mycroft/mycroft.conf
 ENV XDG_CONFIG_HOME=/config
 
 # Copy skill source (for installation)
@@ -77,7 +80,7 @@ ENV ENMS_API_URL=http://host.docker.internal:8001/api/v1
 ENV OVOS_BRIDGE_PORT=5000
 ENV OVOS_TTS_ENABLED=true
 ENV LOG_LEVEL=INFO
-ENV OVOS_CONFIG_PATH=/config/ovos.conf
+ENV OVOS_CONFIG_PATH=/config/mycroft/mycroft.conf
 
 # Expose ports
 EXPOSE 5000 8181

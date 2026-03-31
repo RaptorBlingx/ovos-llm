@@ -20,6 +20,12 @@ import structlog
 from .models import Intent, IntentType
 from .adapt_parser import AdaptParser
 from .time_parser import TimeRangeParser
+
+try:
+    from .llm_parser import Qwen3Parser
+    LLM_AVAILABLE = True
+except ImportError:
+    LLM_AVAILABLE = False
 from .observability import (
     tier_routing,
     query_latency,
@@ -509,6 +515,32 @@ class HeuristicRouter:
                 if m.lower() in utterance_lower:
                     machines_found.append(m)
         
+        # If still no match, try fuzzy matching for typos (e.g., "compresor" → "Compressor-1")
+        if not machines_found:
+            try:
+                from rapidfuzz import fuzz
+                # Extract candidate words that look like machine references
+                # Split by common prepositions and pick multi-word segments
+                words = utterance_lower.split()
+                for i, word in enumerate(words):
+                    # Build candidate: word alone and word+next (e.g., "compresor 1")
+                    candidates = [word]
+                    if i + 1 < len(words):
+                        candidates.append(f"{word} {words[i+1]}")
+                    
+                    for candidate in candidates:
+                        for m in self.MACHINES:
+                            # Compare against simplified machine name (e.g., "compressor 1" from "Compressor-1")
+                            m_simple = m.lower().replace('-', ' ').replace('_', ' ')
+                            score = fuzz.ratio(candidate, m_simple)
+                            if score >= 75:  # 75% similarity threshold
+                                machines_found.append(m)
+                                break
+                    if machines_found:
+                        break
+            except ImportError:
+                pass
+        
         return machines_found
     
     def _extract_machine_groups(self, utterance: str) -> List[str]:
@@ -827,17 +859,21 @@ class HeuristicRouter:
             
             elif intent_type == 'factory_overview':
                 # Factory overview - may include machine name for filtering (e.g., opportunities for Compressor-1)
-                machine = None
-                utterance_lower = utterance.lower()
-                for m in self.MACHINES:
-                    if m.lower() in utterance_lower:
-                        machine = m
-                        break
+                machines = self._extract_multiple_machines(utterance)
+                machine = machines[0] if machines else None
+                
+                # If a machine was found (even via fuzzy matching), this is likely an energy_query, not factory_overview 
+                if machine:
+                    return {
+                        'intent': 'energy_query',
+                        'confidence': 0.90,
+                        'machine': machine
+                    }
                 
                 return {
                     'intent': 'factory_overview',
                     'confidence': 0.95,
-                    'machine': machine
+                    'machine': None
                 }
             
             elif intent_type == 'machine_status':
@@ -1045,7 +1081,7 @@ class HybridParser:
     Performance Target: P50 < 200ms (weighted average)
     """
     
-    def __init__(self):
+    def __init__(self, llm_model_path: str = "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf"):
         """Initialize hybrid parser with all tiers"""
         self.logger = logger.bind(component="hybrid_parser")
         
@@ -1053,15 +1089,31 @@ class HybridParser:
         self.heuristic = HeuristicRouter()
         self.adapt = AdaptParser()
         
+        # Initialize LLM parser (Tier 3) — optional, gracefully degrades
+        self.llm = None
+        if LLM_AVAILABLE:
+            try:
+                self.llm = Qwen3Parser(model_path=llm_model_path)
+                self.logger.info("llm_parser_initialized", model_path=llm_model_path)
+            except Exception as e:
+                self.logger.warning("llm_parser_init_failed", error=str(e),
+                                   reason="LLM tier disabled, will use clarification fallback")
+        else:
+            self.logger.warning("llm_not_available", reason="llama-cpp-python not installed")
+        
         # Routing stats
         self.stats = {
             'heuristic': 0,
             'adapt': 0,
+            'llm': 0,
             'clarification': 0,
             'total': 0
         }
         
-        self.logger.info("hybrid_parser_initialized", tiers=["heuristic", "adapt"])
+        tiers = ["heuristic", "adapt"]
+        if self.llm:
+            tiers.append("llm")
+        self.logger.info("hybrid_parser_initialized", tiers=tiers)
     
     def parse(self, utterance: str) -> Dict:
         """
@@ -1092,8 +1144,28 @@ class HybridParser:
                     tier_used = RoutingTier.ADAPT
                     self.stats['adapt'] += 1
             
-            # Fallback: Return clarification intent for unmatched queries
+            # Tier 3: LLM (Complex NLU - handles typos, rephrasing, ambiguity)
             if not result or (result and result.get('confidence', 0) < 0.7):
+                if self.llm and self.llm.model:
+                    self.logger.info("trying_llm_tier",
+                                    utterance=utterance,
+                                    reason="no_match" if not result else "low_confidence")
+                    try:
+                        valid_intents = [it.value for it in IntentType if it != IntentType.UNKNOWN]
+                        llm_result = self.llm.parse(
+                            utterance=utterance,
+                            machines=self.heuristic.MACHINES,
+                            intents=valid_intents
+                        )
+                        if llm_result and llm_result.get('confidence', 0) >= 0.5:
+                            result = llm_result
+                            tier_used = RoutingTier.LLM
+                            self.stats['llm'] += 1
+                    except Exception as e:
+                        self.logger.warning("llm_tier_failed", error=str(e))
+            
+            # Final fallback: Return clarification intent for unmatched queries
+            if not result or (result and result.get('confidence', 0) < 0.5):
                 self.logger.info("clarification_needed",
                                 utterance=utterance,
                                 confidence=result.get('confidence', 0) if result else 0)
