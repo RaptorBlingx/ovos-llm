@@ -22,7 +22,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       
       # OVOS configuration
-      - OVOS_CONFIG_PATH=/config/ovos.conf
+      - OVOS_CONFIG_PATH=/config/mycroft/mycroft.conf
       - XDG_CONFIG_HOME=/config
       
     volumes:
