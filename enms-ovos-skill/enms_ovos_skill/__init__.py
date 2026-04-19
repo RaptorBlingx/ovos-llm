@@ -849,7 +849,9 @@ class EnmsSkill(FallbackSkill):
                 'latency_ms': round(total_latency_ms, 2),
                 'tier': tier,
                 'intent': intent.intent,
+                'confidence': intent.confidence,
                 'machine': intent.machine,
+                'data': api_data['data'],
                 'breakdown': {
                     'parse_ms': round(parse_latency_ms, 2),
                     'validation_ms': round(validation_latency_ms, 2),
@@ -2321,6 +2323,484 @@ class EnmsSkill(FallbackSkill):
         
         else:
             return "I retrieved the data successfully"
+
+    def _json_safe_value(self, value: Any) -> Any:
+        """Convert nested skill data into JSON-safe values for messagebus events."""
+        if isinstance(value, datetime):
+            return value.isoformat()
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._json_safe_value(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, list):
+            return [self._json_safe_value(item) for item in value]
+
+        if isinstance(value, tuple):
+            return [self._json_safe_value(item) for item in value]
+
+        if hasattr(value, 'value') and not isinstance(value, (str, bytes)):
+            return getattr(value, 'value')
+
+        return value
+
+    def _safe_float(self, value: Any, precision: int = 1) -> Optional[float]:
+        """Safely round a numeric value for widget summaries."""
+        try:
+            if value is None:
+                return None
+            return round(float(value), precision)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_widget_metric(self, label: str, value: Any, unit: Optional[str] = None, tone: str = 'neutral') -> Optional[Dict[str, Any]]:
+        """Create a compact summary metric for the widget side panel."""
+        if value is None:
+            return None
+
+        return {
+            'label': label,
+            'value': value,
+            'unit': unit,
+            'tone': tone
+        }
+
+    def _build_widget_badge(self, label: str, tone: str = 'neutral') -> Dict[str, str]:
+        """Create a status badge for the widget side panel."""
+        return {
+            'label': label,
+            'tone': tone
+        }
+
+    def _build_widget_spotlight(
+        self,
+        kicker: str,
+        title: Any,
+        detail: Optional[str] = None,
+        tone: str = 'info'
+    ) -> Optional[Dict[str, Any]]:
+        """Create a high-emphasis spotlight block for the widget side panel."""
+        if title is None or title == '':
+            return None
+
+        return {
+            'kicker': kicker,
+            'title': title,
+            'detail': detail,
+            'tone': tone
+        }
+
+    def _build_response_snapshot(self, api_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Keep a lightweight, JSON-safe snapshot of raw data for the portal response."""
+        if not isinstance(api_data, dict):
+            return None
+
+        snapshot: Dict[str, Any] = {}
+        list_limits = {
+            'ranking': 5,
+            'anomalies': 8,
+            'timeseries_data': 8,
+            'data_points': 8,
+            'affected_machines': 8
+        }
+        excluded_keys = {'pdf_base64', 'audio_base64'}
+
+        for key, value in api_data.items():
+            if key in excluded_keys:
+                continue
+
+            if isinstance(value, list) and key in list_limits:
+                snapshot[key] = self._json_safe_value(value[:list_limits[key]])
+                snapshot[f'{key}_truncated'] = len(value) > list_limits[key]
+                continue
+
+            snapshot[key] = self._json_safe_value(value)
+
+        return snapshot
+
+    def _build_widget_insights(
+        self,
+        intent_name: Optional[str],
+        api_data: Optional[Dict[str, Any]],
+        utterance: str = '',
+        machine: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Build a curated side-panel payload for selected operational replies."""
+        if not intent_name or not isinstance(api_data, dict):
+            return None
+
+        normalized_intent = intent_name.value if hasattr(intent_name, 'value') else str(intent_name)
+        utterance_lower = (utterance or '').lower()
+
+        if normalized_intent in (
+            IntentType.MACHINE_STATUS.value,
+            IntentType.ENERGY_QUERY.value,
+            IntentType.POWER_QUERY.value
+        ):
+            if api_data.get('factory_wide') or {'total_kwh_today', 'current_power_kw', 'machines_active'} & set(api_data.keys()):
+                metrics = [
+                    self._build_widget_metric('Energy Today', self._safe_float(api_data.get('total_kwh_today'), 1), 'kWh', 'neutral'),
+                    self._build_widget_metric('Current Power', self._safe_float(api_data.get('current_power_kw'), 1), 'kW', 'info'),
+                    self._build_widget_metric('Active Machines', api_data.get('machines_active'), None, 'good'),
+                    self._build_widget_metric('Cost Today', self._safe_float(api_data.get('total_cost_usd'), 2), 'USD', 'warning')
+                ]
+                metrics = [metric for metric in metrics if metric]
+
+                lines = []
+                if api_data.get('machines_active') is not None and api_data.get('machines_total') is not None:
+                    lines.append(f"{api_data.get('machines_active')} of {api_data.get('machines_total')} machines are active right now.")
+
+                return {
+                    'panel_type': 'factory_overview',
+                    'title': 'Factory energy snapshot',
+                    'subtitle': 'Live operational context',
+                    'summary_metrics': metrics,
+                    'status_badges': [
+                        self._build_widget_badge('Live data', 'good'),
+                        self._build_widget_badge('Energy summary', 'neutral')
+                    ],
+                    'secondary_lines': lines or ['Factory-wide energy totals are available for this request.'],
+                    'links': [
+                        {'label': 'Open reports', 'href': '/reports.html'}
+                    ]
+                }
+
+            machine_name = api_data.get('machine_name') or api_data.get('machine') or machine
+            current_status = api_data.get('current_status') or {}
+            today_stats = api_data.get('today_stats') or {}
+            recent_anomalies = api_data.get('recent_anomalies') or {}
+
+            if machine_name and (current_status or today_stats or recent_anomalies):
+                status_value = (current_status.get('status') or 'unknown').lower()
+                status_tone = {
+                    'running': 'good',
+                    'idle': 'warning',
+                    'stopped': 'neutral'
+                }.get(status_value, 'neutral')
+
+                metrics = [
+                    self._build_widget_metric('Power', self._safe_float(current_status.get('power_kw'), 1), 'kW', 'info'),
+                    self._build_widget_metric('Energy Today', self._safe_float(today_stats.get('energy_kwh'), 1), 'kWh', 'neutral'),
+                    self._build_widget_metric('Uptime', self._safe_float(today_stats.get('uptime_percent'), 1), '%', 'good'),
+                    self._build_widget_metric('Cost Today', self._safe_float(today_stats.get('cost_usd'), 2), 'USD', 'warning')
+                ]
+                metrics = [metric for metric in metrics if metric]
+
+                anomaly_count = recent_anomalies.get('count')
+                critical_count = recent_anomalies.get('critical')
+                warning_count = recent_anomalies.get('warnings')
+
+                badges = [self._build_widget_badge(status_value.title(), status_tone)]
+                if anomaly_count == 0:
+                    badges.append(self._build_widget_badge('No anomalies today', 'good'))
+                elif critical_count:
+                    badges.append(self._build_widget_badge(f'{critical_count} critical', 'danger'))
+                elif warning_count:
+                    badges.append(self._build_widget_badge(f'{warning_count} warnings', 'warning'))
+
+                lines = []
+                if status_value != 'unknown':
+                    lines.append(f"{machine_name} is currently {status_value}.")
+
+                peak_power = self._safe_float(today_stats.get('peak_power_kw'), 1)
+                if peak_power is not None:
+                    lines.append(f"Peak power today reached {peak_power} kW.")
+
+                latest_anomaly = recent_anomalies.get('latest') or {}
+                if latest_anomaly.get('description'):
+                    lines.append(f"Latest anomaly: {latest_anomaly['description']}.")
+                elif anomaly_count == 0:
+                    lines.append('No anomalies were recorded for this machine today.')
+
+                if 'energy' in utterance_lower and today_stats.get('energy_kwh') is not None:
+                    lines.insert(0, f"Energy today is {today_stats.get('energy_kwh')} kWh for {machine_name}.")
+
+                return {
+                    'panel_type': 'machine_status',
+                    'title': machine_name,
+                    'subtitle': 'Live machine context',
+                    'summary_metrics': metrics,
+                    'status_badges': badges,
+                    'secondary_lines': lines[:4],
+                    'links': [
+                        {'label': 'Open reports', 'href': '/reports.html'}
+                    ]
+                }
+
+        if normalized_intent == IntentType.FACTORY_OVERVIEW.value:
+            energy = api_data.get('energy') or {}
+            costs = api_data.get('costs') or {}
+            machines = api_data.get('machines') or {}
+            anomalies = api_data.get('anomalies') or {}
+            top_consumer = api_data.get('top_consumer') or {}
+            latest_anomaly = api_data.get('latest_anomaly') or {}
+
+            total_energy = energy.get('total_kwh_today')
+            if total_energy is None:
+                total_energy = api_data.get('total_energy')
+
+            live_rate = energy.get('current_power_kw')
+            if live_rate is None:
+                live_rate = api_data.get('energy_per_hour')
+
+            active_machines = machines.get('active')
+            if active_machines is None:
+                active_machines = api_data.get('active_machines_today')
+
+            critical_alerts = anomalies.get('critical')
+            if critical_alerts is None:
+                critical_alerts = api_data.get('critical')
+            if critical_alerts is None:
+                critical_alerts = 0
+
+            total_alerts = anomalies.get('total')
+            if total_alerts is None:
+                total_alerts = api_data.get('total_anomalies')
+            if total_alerts is None:
+                total_alerts = 0
+
+            estimated_cost = costs.get('total_usd_today')
+            if estimated_cost is None:
+                estimated_cost = api_data.get('estimated_cost')
+
+            cost_per_day = costs.get('cost_per_day')
+            if cost_per_day is None:
+                cost_per_day = api_data.get('cost_per_day')
+
+            peak_power = energy.get('peak_power_kw')
+            if peak_power is None:
+                peak_power = api_data.get('peak_power')
+
+            avg_power = energy.get('avg_power_kw')
+            if avg_power is None:
+                avg_power = api_data.get('avg_power')
+
+            carbon_footprint = api_data.get('carbon_footprint')
+            readings_per_minute = api_data.get('readings_per_minute')
+            total_readings = api_data.get('total_readings')
+            uptime_percent = api_data.get('uptime_percent')
+
+            metrics = [
+                self._build_widget_metric('Total Energy', self._safe_float(total_energy, 1), 'kWh', 'neutral'),
+                self._build_widget_metric('Live Rate', self._safe_float(live_rate, 1), 'kWh/h', 'info'),
+                self._build_widget_metric('Active Today', active_machines, None, 'good'),
+                self._build_widget_metric('Estimated Cost', self._safe_float(estimated_cost, 2), 'USD', 'warning')
+            ]
+            metrics = [metric for metric in metrics if metric]
+
+            badges = [self._build_widget_badge(str(api_data.get('status', 'operational')).replace('_', ' ').title(), 'good')]
+            if active_machines is not None:
+                badges.append(self._build_widget_badge(f"{active_machines} active machines", 'info'))
+            if total_alerts:
+                badges.append(self._build_widget_badge(f"{total_alerts} alerts logged", 'warning' if total_alerts and not critical_alerts else 'danger'))
+            elif total_alerts == 0:
+                badges.append(self._build_widget_badge('No active alerts', 'good'))
+            if uptime_percent is not None:
+                badges.append(self._build_widget_badge(f"{uptime_percent}% uptime", 'neutral'))
+
+            spotlight = None
+            if top_consumer.get('machine_name'):
+                spotlight = self._build_widget_spotlight(
+                    'Top consumer',
+                    top_consumer.get('machine_name'),
+                    (
+                        f"{top_consumer.get('energy_kwh', 0)} kWh"
+                        f" · {top_consumer.get('percent_of_total', 0)}% of facility total"
+                    ),
+                    'warning'
+                )
+            elif live_rate is not None:
+                detail_parts = []
+                if active_machines is not None:
+                    detail_parts.append(f"{active_machines} active machines")
+                if total_alerts is not None:
+                    detail_parts.append(f"{total_alerts} alerts tracked")
+                if cost_per_day is not None:
+                    detail_parts.append(f"${cost_per_day}/day est.")
+
+                spotlight = self._build_widget_spotlight(
+                    'Factory pulse',
+                    f"{self._safe_float(live_rate, 1)} kWh/h",
+                    ' · '.join(detail_parts) if detail_parts else None,
+                    'danger' if critical_alerts else 'info'
+                )
+
+            lines = []
+            if peak_power is not None or avg_power is not None:
+                peak_text = f"Peak power reached {peak_power} kW" if peak_power is not None else None
+                avg_text = f"average power held at {avg_power} kW" if avg_power is not None else None
+                lines.append('. '.join(part for part in [peak_text, avg_text] if part) + '.')
+            if cost_per_day is not None or estimated_cost is not None:
+                cost_parts = []
+                if estimated_cost is not None:
+                    cost_parts.append(f"Estimated spend is ${estimated_cost}")
+                if cost_per_day is not None:
+                    cost_parts.append(f"roughly ${cost_per_day} per day")
+                lines.append(' with '.join(cost_parts) + '.')
+            if carbon_footprint is not None:
+                lines.append(f"Carbon footprint estimate is {carbon_footprint} kilograms.")
+            if total_readings is not None or readings_per_minute is not None:
+                readings_parts = []
+                if total_readings is not None:
+                    readings_parts.append(f"{total_readings} readings captured")
+                if readings_per_minute is not None:
+                    readings_parts.append(f"{readings_per_minute} readings per minute")
+                lines.append('Telemetry stream processed ' + ' at '.join(readings_parts) + '.')
+            if latest_anomaly.get('machine_name'):
+                lines.append(
+                    f"Latest anomaly: {latest_anomaly.get('severity', 'info')} alert on {latest_anomaly['machine_name']}."
+                )
+            if not lines:
+                lines.append('Factory-wide summary is available for this request.')
+
+            return {
+                'panel_type': 'factory_overview',
+                'title': 'Factory overview',
+                'subtitle': 'Operational pulse',
+                'spotlight': spotlight,
+                'summary_metrics': metrics,
+                'status_badges': badges,
+                'secondary_lines': lines[:4],
+                'links': [
+                    {'label': 'Open reports', 'href': '/reports.html'}
+                ]
+            }
+
+        if normalized_intent == IntentType.RANKING.value and isinstance(api_data.get('ranking'), list):
+            ranking = api_data.get('ranking', [])[:3]
+            if not ranking:
+                return None
+
+            metric_label = api_data.get('metric_label') or 'Top consumers'
+            top_entry = ranking[0]
+            metrics = [
+                self._build_widget_metric('Top Value', top_entry.get('value'), api_data.get('unit'), 'info'),
+                self._build_widget_metric('Leader Share', self._safe_float(top_entry.get('percentage'), 1), '%', 'good'),
+                self._build_widget_metric('Machines', api_data.get('machines_analyzed'), None, 'neutral'),
+                self._build_widget_metric('Total', api_data.get('total_value'), api_data.get('unit'), 'warning')
+            ]
+            metrics = [metric for metric in metrics if metric]
+
+            spotlight = self._build_widget_spotlight(
+                'Top consumer',
+                top_entry.get('machine_name') or 'Unknown machine',
+                (
+                    f"{top_entry.get('value')} {api_data.get('unit', '').strip()}"
+                    f" · {top_entry.get('percentage', 0)}% of tracked load"
+                ),
+                'info'
+            )
+
+            lines = [
+                f"{entry.get('rank')}. {entry.get('machine_name', 'Unknown')} - {entry.get('value')} {api_data.get('unit', '').strip()} ({entry.get('percentage', 0)}%)"
+                for entry in ranking
+            ]
+
+            return {
+                'panel_type': 'ranking',
+                'title': metric_label,
+                'subtitle': 'Current ranking snapshot',
+                'spotlight': spotlight,
+                'summary_metrics': metrics,
+                'status_badges': [
+                    self._build_widget_badge(str(api_data.get('metric', 'ranking')).replace('_', ' ').title(), 'neutral')
+                ],
+                'secondary_lines': lines,
+                'links': [
+                    {'label': 'Open reports', 'href': '/reports.html'}
+                ]
+            }
+
+        if normalized_intent == IntentType.ANOMALY_DETECTION.value:
+            by_severity = api_data.get('by_severity') or {}
+            anomalies = api_data.get('anomalies') or []
+            total_count = api_data.get('total_count')
+            if total_count is None:
+                total_count = len(anomalies)
+
+            affected_machines = api_data.get('affected_machines') or []
+            if not affected_machines and anomalies:
+                affected_machines = sorted({
+                    anomaly.get('machine_name')
+                    for anomaly in anomalies
+                    if anomaly.get('machine_name')
+                })
+
+            latest = anomalies[0] if anomalies else {}
+            metrics = [
+                self._build_widget_metric('Total Alerts', total_count, None, 'danger' if total_count else 'good'),
+                self._build_widget_metric('Critical', by_severity.get('critical') or api_data.get('critical') or 0, None, 'danger'),
+                self._build_widget_metric('Warnings', by_severity.get('warning') or api_data.get('warnings') or 0, None, 'warning'),
+                self._build_widget_metric('Machines', len(affected_machines), None, 'neutral')
+            ]
+            metrics = [metric for metric in metrics if metric]
+
+            badges = []
+            if api_data.get('is_active'):
+                badges.append(self._build_widget_badge('Active alerts', 'danger' if total_count else 'good'))
+            elif api_data.get('is_detection'):
+                badges.append(self._build_widget_badge('Detection run', 'info'))
+            else:
+                badges.append(self._build_widget_badge('Recent anomalies', 'warning' if total_count else 'good'))
+
+            lines = []
+            if latest.get('machine_name'):
+                lines.append(
+                    f"Most recent anomaly: {latest.get('severity', 'info')} on {latest.get('machine_name')}"
+                    f" for {latest.get('metric_name') or latest.get('anomaly_type', 'operational drift')}."
+                )
+            elif total_count == 0:
+                lines.append('No anomalies matched this request.')
+
+            if affected_machines:
+                lines.append(f"Affected machines: {', '.join(affected_machines[:3])}.")
+
+            return {
+                'panel_type': 'anomaly_summary',
+                'title': api_data.get('machine_name') or 'Anomaly overview',
+                'subtitle': 'Alert context',
+                'summary_metrics': metrics,
+                'status_badges': badges,
+                'secondary_lines': lines[:4] or ['Recent anomaly information is available for this request.'],
+                'links': [
+                    {'label': 'Open reports', 'href': '/reports.html'}
+                ]
+            }
+
+        return None
+
+    def _emit_structured_response(
+        self,
+        session_id: str,
+        intent_name: Optional[str],
+        api_data: Optional[Dict[str, Any]] = None,
+        confidence: Optional[float] = None,
+        utterance: str = '',
+        machine: Optional[str] = None
+    ) -> None:
+        """Emit structured response data so the widget can show extra contextual panels."""
+        if not self.bus or not session_id:
+            return
+
+        normalized_intent = intent_name.value if hasattr(intent_name, 'value') else str(intent_name) if intent_name else None
+        insights = self._build_widget_insights(normalized_intent, api_data, utterance=utterance, machine=machine)
+        data_snapshot = self._build_response_snapshot(api_data)
+
+        if not normalized_intent and not insights and not data_snapshot:
+            return
+
+        self.bus.emit(Message(
+            'enms.skill.response',
+            {
+                'intent': normalized_intent,
+                'confidence': confidence,
+                'data': data_snapshot,
+                'insights': insights
+            },
+            {'session_id': session_id}
+        ))
     
     # ========== EXISTING MACHINE-SPECIFIC HANDLERS (UPDATED FOR PRIORITY 3) ==========
     
@@ -2381,15 +2861,39 @@ class EnmsSkill(FallbackSkill):
                     self.logger.info("factory_energy_speaking", data=result['data'])
                     try:
                         response_text = f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today"
+                        self._emit_structured_response(
+                            session_id,
+                            intent.intent,
+                            result.get('data'),
+                            confidence=intent.confidence,
+                            utterance=utterance,
+                            machine=machine
+                        )
                         self.speak_dialog("factory_energy", result['data'])
                     except Exception as dialog_error:
                         self.logger.error("factory_energy_dialog_failed", error=str(dialog_error), data=result['data'])
                         # Fallback to simple response
                         response_text = f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today"
+                        self._emit_structured_response(
+                            session_id,
+                            intent.intent,
+                            result.get('data'),
+                            confidence=intent.confidence,
+                            utterance=utterance,
+                            machine=machine
+                        )
                         self.speak(response_text)
                 else:
                     # Machine-specific: use formatter
                     response_text = self.response_formatter.format_response('energy_query', result['data'])
+                    self._emit_structured_response(
+                        session_id,
+                        intent.intent,
+                        result.get('data'),
+                        confidence=intent.confidence,
+                        utterance=utterance,
+                        machine=machine
+                    )
                     self.speak(response_text)
                 
                 # Update context for next query
@@ -2484,6 +2988,14 @@ class EnmsSkill(FallbackSkill):
             # Speak result
             if result['success']:
                 response = self.response_formatter.format_response('machine_status', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance,
+                    machine=machine
+                )
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2511,6 +3023,13 @@ class EnmsSkill(FallbackSkill):
             # Speak result
             if result['success']:
                 response = self.response_formatter.format_response('factory_overview', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance
+                )
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2554,6 +3073,14 @@ class EnmsSkill(FallbackSkill):
             
             if result['success']:
                 response = self.response_formatter.format_response('anomaly_detection', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance,
+                    machine=machine
+                )
                 self.speak(response)
                 
                 # Update context for next query
@@ -2572,6 +3099,7 @@ class EnmsSkill(FallbackSkill):
         try:
             limit = message.data.get('limit', '5')
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
             
             # Convert limit to int if it's a string number
             try:
@@ -2590,6 +3118,13 @@ class EnmsSkill(FallbackSkill):
             
             if result['success']:
                 response = self.response_formatter.format_response('ranking', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance
+                )
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -3059,10 +3594,26 @@ class EnmsSkill(FallbackSkill):
                 if not machine:
                     # Factory-wide: use speak_dialog with data
                     response_text = f"Current power is {result['data'].get('current_power_kw', 0):.1f} kilowatts"
+                    self._emit_structured_response(
+                        session_id,
+                        intent.intent,
+                        result.get('data'),
+                        confidence=intent.confidence,
+                        utterance=utterance,
+                        machine=machine
+                    )
                     self.speak_dialog("factory_power", result['data'])
                 else:
                     # Machine-specific: use formatter
                     response_text = self.response_formatter.format_response('power_query', result['data'])
+                    self._emit_structured_response(
+                        session_id,
+                        intent.intent,
+                        result.get('data'),
+                        confidence=intent.confidence,
+                        utterance=utterance,
+                        machine=machine
+                    )
                     self.speak(response_text)
                 
                 # Update context for next query
@@ -3149,6 +3700,14 @@ class EnmsSkill(FallbackSkill):
             result = self._process_query(utterance, session_id)
             
             if result.get('success'):
+                self._emit_structured_response(
+                    session_id,
+                    result.get('intent'),
+                    result.get('data'),
+                    confidence=result.get('confidence'),
+                    utterance=utterance,
+                    machine=result.get('machine')
+                )
                 self.speak(result['response'])
                 
                 # For report generation, emit custom event with PDF data
@@ -3242,6 +3801,15 @@ class EnmsSkill(FallbackSkill):
             result = self._process_query(utterance, session_id)
             
             if result['success'] or 'error' in result:
+                if result.get('success'):
+                    self._emit_structured_response(
+                        session_id,
+                        result.get('intent'),
+                        result.get('data'),
+                        confidence=result.get('confidence'),
+                        utterance=utterance,
+                        machine=result.get('machine')
+                    )
                 self.speak(result['response'])
                 
                 # For report generation, emit custom event with PDF data
