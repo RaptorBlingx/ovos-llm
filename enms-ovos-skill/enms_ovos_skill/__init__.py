@@ -5,7 +5,7 @@ Integration with Energy Management System (EnMS) API
 Architecture:
 - Tier 1 (Heuristic): Ultra-fast regex patterns (<5ms) - 80% queries
 - Tier 2 (Adapt): Fast pattern matching (<10ms) - 10% queries  
-- Tier 3 (LLM): Qwen3-1.7B for complex NLU (300-500ms) - 10% queries
+- Tier 3 (LLM): Qwen3.5-2B GGUF for complex NLU fallback - 10% queries
 - Tier 4 (Validator): Zero-trust hallucination prevention
 - Tier 5 (API): EnMS REST client with circuit breakers
 - Tier 6 (Response): Voice-optimized Jinja2 templates
@@ -145,7 +145,7 @@ class EnmsSkill(FallbackSkill):
         
         # Extract commonly used settings
         self.enms_api_base_url = self.config.get("api_base_url", "http://10.33.10.104:8001/api/v1")
-        _llm_path = self.settings.get("llm_model_path", "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf")
+        _llm_path = self.settings.get("llm_model_path", "./models/Qwen3.5-2B-Q4_K_M.gguf")
         # Resolve relative model path against skill root directory
         from pathlib import Path
         _llm_path_obj = Path(_llm_path)
@@ -570,7 +570,14 @@ class EnmsSkill(FallbackSkill):
         Returns:
             Canonical machine name from whitelist, or None if no match
         """
-        if not raw_machine or not self.validator:
+        if not raw_machine:
+            return raw_machine
+
+        if self._is_generic_machine_reference(raw_machine):
+            self.logger.debug("generic_machine_reference_ignored", raw=raw_machine)
+            return None
+
+        if not self.validator:
             return raw_machine
         
         # Use validator's normalization logic
@@ -581,7 +588,84 @@ class EnmsSkill(FallbackSkill):
                            raw=raw_machine,
                            normalized=normalized)
         
-        return normalized if normalized else raw_machine
+        return normalized
+
+    def _is_generic_machine_reference(self, raw_machine: Optional[str]) -> bool:
+        """Return True when Adapt matched a generic placeholder instead of a real machine."""
+        if not raw_machine:
+            return False
+
+        normalized = raw_machine.strip().lower()
+        generic_references = {
+            "machine",
+            "machines",
+            "unit",
+            "units",
+            "equipment",
+            "system",
+            "systems",
+            "all machines",
+            "all the machines",
+        }
+        return normalized in generic_references
+
+    def _looks_like_ranking_query(self, utterance: str) -> bool:
+        """Detect ranking language that should not stay on the power-query handler path."""
+        utterance_lower = utterance.lower()
+        has_ranking_signal = any(word in utterance_lower for word in [
+            "top",
+            "most",
+            "highest",
+            "least",
+            "lowest",
+            "rank",
+            "consumer",
+        ])
+        has_machine_group = any(phrase in utterance_lower for phrase in [
+            "which machines",
+            "what machines",
+            "machines are",
+            "machines use",
+            "machines consume",
+            "all machines",
+        ])
+        has_metric_signal = any(word in utterance_lower for word in [
+            "electricity",
+            "energy",
+            "power",
+            "consumption",
+            "cost",
+            "alert",
+        ])
+        return has_ranking_signal and has_machine_group and has_metric_signal
+
+    def _extract_ranking_limit(self, utterance: str) -> int:
+        """Extract an explicit top-N limit, falling back to a short ranked list."""
+        patterns = [
+            r'\btop\s+(\d+)\b',
+            r'\b(\d+)\s+top\b',
+            r'\bhighest\s+(\d+)\b',
+            r'\blowest\s+(\d+)\b',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, utterance, re.IGNORECASE)
+            if match:
+                return max(int(match.group(1)), 1)
+
+        return 5
+
+    def _infer_ranking_metric_from_utterance(self, utterance: str) -> str:
+        """Map ranking phrasing to the metric used by the top-consumers endpoint."""
+        utterance_lower = utterance.lower()
+
+        if "cost" in utterance_lower:
+            return "cost"
+        if "alert" in utterance_lower or "anomal" in utterance_lower:
+            return "alerts"
+        if "efficien" in utterance_lower:
+            return "efficiency"
+        return "energy"
     
     def _apply_implicit_scope(self, intent: Intent) -> Intent:
         """
@@ -644,6 +728,18 @@ class EnmsSkill(FallbackSkill):
             dict with: success, response, latency_ms, tier, intent
         """
         start_time = time.time()
+        normalized_utterance = utterance.strip().lower()
+        if normalized_utterance in {'ping', 'pong'}:
+            self.logger.debug("probe_utterance_ignored", utterance=normalized_utterance)
+            return {
+                'success': False,
+                'response': '',
+                'latency_ms': 0.0,
+                'tier': RoutingTier.HEURISTIC,
+                'intent': None,
+                'error': 'probe_utterance_ignored'
+            }
+
         self.logger.info("⚙️ PROCESS_QUERY_START", utterance=utterance[:50])
         
         try:
@@ -677,6 +773,28 @@ class EnmsSkill(FallbackSkill):
             
             # Track tier routing
             tier_routing.labels(tier=tier).inc()
+
+            raw_intent = str(llm_output.get('intent', '')).strip().lower()
+            if raw_intent in {'clarification_needed', IntentType.UNKNOWN.value}:
+                clarification_response = llm_output.get(
+                    'response_suggestion',
+                    "I'm not sure what you're asking. Try rephrasing your question or mention a machine name."
+                )
+                total_latency_ms = (time.time() - start_time) * 1000
+                query_latency.labels(intent_type='unknown', tier=str(tier)).observe(total_latency_ms / 1000)
+                self.logger.info(
+                    "clarification_response_returned",
+                    utterance=utterance,
+                    reason=raw_intent or 'missing_intent'
+                )
+                return {
+                    'success': False,
+                    'response': clarification_response,
+                    'latency_ms': round(total_latency_ms, 2),
+                    'tier': tier,
+                    'intent': None,
+                    'error': clarification_response
+                }
             
             # Step 3.5: Check for pending clarification BEFORE validation
             # If query is just a machine name answering clarification
@@ -3569,6 +3687,46 @@ class EnmsSkill(FallbackSkill):
             if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+
+            if not machine and self._looks_like_ranking_query(utterance):
+                ranking_metric = self._infer_ranking_metric_from_utterance(utterance)
+                ranking_limit = self._extract_ranking_limit(utterance)
+                ranking_intent = Intent(
+                    intent=IntentType.RANKING,
+                    limit=ranking_limit,
+                    metric=ranking_metric,
+                    ranking_metric=ranking_metric,
+                    confidence=0.90,
+                    utterance=utterance,
+                )
+
+                self.logger.info(
+                    "power_query_rerouted_to_ranking",
+                    utterance=utterance,
+                    limit=ranking_limit,
+                    metric=ranking_metric,
+                )
+
+                result = self._call_enms_api(ranking_intent)
+
+                if result['success']:
+                    response_text = self.response_formatter.format_response('ranking', result['data'])
+                    self._emit_structured_response(
+                        session_id,
+                        ranking_intent.intent,
+                        result.get('data'),
+                        confidence=ranking_intent.confidence,
+                        utterance=utterance,
+                    )
+                    self.speak(response_text)
+
+                    if session:
+                        session.add_turn(utterance, ranking_intent, response_text, result['data'])
+
+                    return
+
+                self.speak_dialog("error.general")
+                return
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -3689,6 +3847,10 @@ class EnmsSkill(FallbackSkill):
         """
         try:
             utterance = message.data.get("utterances", [""])[0]
+            if utterance and utterance.strip().lower() in {"ping", "pong"}:
+                self.logger.debug("fallback_probe_ignored", utterance=utterance.strip().lower())
+                return False
+
             if not utterance or len(utterance.strip()) < 3:
                 return False
             

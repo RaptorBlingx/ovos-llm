@@ -13,9 +13,9 @@ skillMetadata:
       fields:
         - name: llm_model_path
           type: text
-          label: Qwen3 Model Path
-          value: ./models/qwen3-1.7b-instruct-q4_k_m.gguf
-          placeholder: /path/to/qwen3-1.7b-instruct-q4_k_m.gguf
+          label: Qwen Model Path
+          value: ./models/Qwen3.5-2B-Q4_K_M.gguf
+          placeholder: /path/to/Qwen3.5-2B-Q4_K_M.gguf
           
         - name: llm_temperature
           type: number

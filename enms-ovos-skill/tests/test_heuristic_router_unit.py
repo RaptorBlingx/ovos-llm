@@ -66,6 +66,13 @@ class TestRankingPatterns:
         if result:
             assert result['intent'] == 'ranking'
 
+    def test_typo_ranking_phrase_still_stays_out_of_power_query(self):
+        """Generic machine phrases with ranking language should not become machine-specific power queries."""
+        router = HeuristicRouter()
+        result = router.route("which machines are using most electricity")
+
+        assert result is None
+
 
 class TestFactoryPatterns:
     """Test factory overview patterns"""
@@ -166,6 +173,16 @@ class TestPowerPatterns:
         assert result['intent'] == 'power_query'
         assert result['machine'] == 'Boiler-1'
 
+    def test_typo_power_query_uses_fuzzy_recovery(self):
+        """A typo-heavy power query should recover in the heuristic tier instead of falling to LLM."""
+        router = HeuristicRouter()
+        result = router.route("what is the powre of comprsor one")
+
+        assert result is not None
+        assert result['intent'] == 'power_query'
+        assert result['machine'] == 'Compressor-1'
+        assert result['metric'] == 'power'
+
 
 class TestEnergyPatterns:
     """Test energy query patterns"""
@@ -187,6 +204,29 @@ class TestEnergyPatterns:
         assert result is not None
         assert result['intent'] == 'energy_query'
         assert result['machine'] == 'Boiler-1'
+
+
+class TestSEUPatterns:
+    """Test SEU query phrase variants"""
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "what are the significant energy users",
+            "what is the significant energy users",
+            "what are the SEU",
+            "what are the SEUs",
+            "what are the SEU's",
+        ],
+    )
+    def test_seu_query_variants_route_to_seus(self, query):
+        """Common SEU phrasings should resolve to the SEUS intent."""
+        router = HeuristicRouter()
+        result = router.route(query)
+
+        assert result is not None
+        assert result['intent'] == 'seus'
+        assert result['confidence'] >= 0.95
 
 
 class TestComparisonPatterns:

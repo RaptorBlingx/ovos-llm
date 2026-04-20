@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uvicorn
 
 from ovos_bus_client.client import MessageBusClient
@@ -39,6 +39,17 @@ class QueryRequest(BaseModel):
     text: str = Field(..., description="User query text")
     session_id: Optional[str] = Field(None, description="Session ID for context")
     user_id: Optional[str] = Field(None, description="User ID")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_query_fields(cls, data):
+        if isinstance(data, dict) and not data.get("text"):
+            for key in ("utterance", "query"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    data["text"] = value
+                    break
+        return data
     
 class QueryResponse(BaseModel):
     success: bool
