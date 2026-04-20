@@ -13,6 +13,7 @@ Human-centric voice assistant for industrial energy management (ISO 50001). Part
 - **Predictive Forecasting** - Ask about tomorrow's expected energy usage
 - **Machine Status** - Check operational status and power levels
 - **Factory Overview** - Get comprehensive energy performance summaries
+- **Hybrid NLU Fallback** - Heuristic and Adapt routing backed by a local Qwen3.5-2B GGUF model for harder queries
 - **ISO 50001 Compliance** - Built-in support for energy management standards
 - **Multi-language Support** - Currently English (en-us), expandable
 
@@ -43,10 +44,13 @@ Create or edit `~/.config/ovos/skills/enms-ovos-skill/settings.json`:
 ```json
 {
   "enms_api_base_url": "http://your-enms-server:8001/api/v1",
+  "llm_model_path": "./models/Qwen3.5-2B-Q4_K_M.gguf",
   "confidence_threshold": 0.85,
   "api_timeout_seconds": 30
 }
 ```
+
+The default Tier-3 local fallback model is `Qwen3.5-2B-Q4_K_M.gguf`. Requests only escalate to this model when the faster heuristic and Adapt tiers cannot resolve the query confidently.
 
 ## 🗣️ Voice Commands
 
@@ -78,8 +82,8 @@ Portal/User → REST Bridge → OVOS Messagebus → EnmsSkill
                                                    ↓
                                     HybridParser (3-tier NLU)
                                     ↓         ↓        ↓
-                              Heuristic  Adapt   LLM
-                               (<5ms)   (<10ms) (300ms)
+          Heuristic  Adapt  Qwen3.5-2B
+           (<5ms)   (<10ms) (fallback)
                                     ↓
                               Validator (Zero-trust)
                                     ↓
@@ -88,8 +92,9 @@ Portal/User → REST Bridge → OVOS Messagebus → EnmsSkill
 
 ### Performance
 
-- **P50 Latency**: <200ms (actual: ~142ms)
-- **P90 Latency**: <500ms
+- **Fast-Path Queries**: Sub-second live responses for standard operational requests
+- **Intent Detection**: Heuristic and Adapt routing stay in the 1-10ms range
+- **LLM Fallback**: Typically multi-second when a request escalates to Qwen3.5-2B
 - **Intent Accuracy**: 95%+
 - **Heuristic Tier**: 1-5ms for 80% of queries
 

@@ -36,7 +36,7 @@ As committed in the WASABI 1st Open Call proposal, this project implements **3 D
 - **Audio Feedback**: Text-to-Speech responses via Edge-TTS
 
 ### Industrial-Grade Architecture
-- **2-Tier Intent Parsing**: Heuristic (<5ms) → Adapt (<10ms) - No LLM required
+- **3-Tier Intent Parsing**: Heuristic (<5ms) → Adapt (<10ms) → local Qwen3.5-2B fallback for harder queries
 - **Fuzzy Machine Matching**: Handles spoken forms ("compressor one" → "Compressor-1")
 - **Context-Aware Clarification**: Helpful suggestions for ambiguous queries
 - **Zero-Trust Validation**: All API calls validated against whitelists
@@ -130,23 +130,28 @@ As committed in the WASABI 1st Open Call proposal, this project implements **3 D
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 🧠 NLU Architecture (No LLM Required)
+### 🧠 Hybrid NLU Architecture
 
-**2-Tier Intent Parsing System:**
+**3-Tier Intent Parsing System:**
 
-1. **Tier 1: Heuristic Router** (95% of queries, <5ms)
+1. **Tier 1: Heuristic Router** (majority of operational queries, <5ms)
    - 600+ regex patterns for energy domain
    - Handles: power, energy, status, ranking, anomalies, baseline, KPI
    - Added 16 new patterns in Phase 3 (temporal expressions, natural variations)
    - Deterministic and blazing fast
 
-2. **Tier 2: Adapt Parser** (4% of queries, <10ms)
+2. **Tier 2: Adapt Parser** (secondary fast path, <10ms)
    - 250+ vocabulary terms (expanded in Phase 2)
    - Synonym handling: "usage" → "consumption", "wattage" → "power"
    - Multi-word entity recognition
    - Context-aware entity extraction
 
-3. **Clarification Fallback** (1% of queries)
+3. **Tier 3: Local LLM Fallback** (harder or lower-confidence queries)
+   - Default model: Qwen3.5-2B GGUF via llama-cpp-python
+   - Activated only when heuristic and Adapt parsing do not resolve the request confidently
+   - Output passes through zero-trust validation before any EnMS API call
+
+4. **Clarification and Recovery Layer**
    - Context-aware suggestions based on query content
    - Examples: "Try: 'power of Compressor-1'" for power-related ambiguity
    - Interactive refinement for ambiguous requests
@@ -199,6 +204,8 @@ As committed in the WASABI 1st Open Call proposal, this project implements **3 D
 | Intent Detection | <100ms | ✅ 5-10ms (avg) |
 | API Response Time | <2s | ✅ ~200ms |
 | TTS Generation | <3s | ✅ ~1.8s (Edge-TTS) |
+
+Fast-path operational queries remain sub-second in live checks, while requests that escalate to the local Qwen3.5-2B fallback are still typically multi-second. The model upgrade from Qwen3-1.7B to Qwen3.5-2B improves fallback capacity, but observed gains also depend on the surrounding routing, validation, and typo-recovery logic.
 
 See [ovos-evaluation.md](./enms-ovos-skill/docs/ovos-evaluation.md) for detailed test results.
 
