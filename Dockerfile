@@ -78,6 +78,7 @@ USER ovos
 # Environment variables with defaults
 ENV ENMS_API_URL=http://host.docker.internal:8001/api/v1
 ENV OVOS_BRIDGE_PORT=5000
+ENV STRUCTURED_RESPONSE_GRACE_SECONDS=2.5
 ENV OVOS_TTS_ENABLED=true
 ENV LOG_LEVEL=INFO
 ENV OVOS_CONFIG_PATH=/config/mycroft/mycroft.conf
@@ -87,7 +88,7 @@ EXPOSE 5000 8181
 
 # Health check - check both bridge and messagebus
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -f http://localhost:5000/health && curl -f http://localhost:8181/core || exit 1
+    CMD curl -fsS http://localhost:5000/health >/dev/null && python -c "import socket; sock = socket.create_connection(('127.0.0.1', 8181), 2); sock.close()" || exit 1
 
 # Default command - run supervisor to manage all services
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

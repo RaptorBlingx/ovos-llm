@@ -5,7 +5,7 @@ Integration with Energy Management System (EnMS) API
 Architecture:
 - Tier 1 (Heuristic): Ultra-fast regex patterns (<5ms) - 80% queries
 - Tier 2 (Adapt): Fast pattern matching (<10ms) - 10% queries  
-- Tier 3 (LLM): Qwen3-1.7B for complex NLU (300-500ms) - 10% queries
+- Tier 3 (LLM): Qwen3.5-2B GGUF for complex NLU fallback - 10% queries
 - Tier 4 (Validator): Zero-trust hallucination prevention
 - Tier 5 (API): EnMS REST client with circuit breakers
 - Tier 6 (Response): Voice-optimized Jinja2 templates
@@ -142,10 +142,21 @@ class EnmsSkill(FallbackSkill):
                 "voice": {},
                 "features": {}
             }
+
+        env_api_base_url = os.getenv("ENMS_API_URL")
+        if env_api_base_url:
+            configured_api_base_url = self.config.get("api_base_url")
+            if configured_api_base_url and configured_api_base_url != env_api_base_url:
+                logger.info(
+                    "overriding_config_api_base_url_from_env",
+                    configured_api_base_url=configured_api_base_url,
+                    env_api_base_url=env_api_base_url
+                )
+            self.config["api_base_url"] = env_api_base_url
         
         # Extract commonly used settings
         self.enms_api_base_url = self.config.get("api_base_url", "http://10.33.10.104:8001/api/v1")
-        _llm_path = self.settings.get("llm_model_path", "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf")
+        _llm_path = self.settings.get("llm_model_path", "./models/Qwen3.5-2B-Q4_K_M.gguf")
         # Resolve relative model path against skill root directory
         from pathlib import Path
         _llm_path_obj = Path(_llm_path)
@@ -570,7 +581,14 @@ class EnmsSkill(FallbackSkill):
         Returns:
             Canonical machine name from whitelist, or None if no match
         """
-        if not raw_machine or not self.validator:
+        if not raw_machine:
+            return raw_machine
+
+        if self._is_generic_machine_reference(raw_machine):
+            self.logger.debug("generic_machine_reference_ignored", raw=raw_machine)
+            return None
+
+        if not self.validator:
             return raw_machine
         
         # Use validator's normalization logic
@@ -581,7 +599,84 @@ class EnmsSkill(FallbackSkill):
                            raw=raw_machine,
                            normalized=normalized)
         
-        return normalized if normalized else raw_machine
+        return normalized
+
+    def _is_generic_machine_reference(self, raw_machine: Optional[str]) -> bool:
+        """Return True when Adapt matched a generic placeholder instead of a real machine."""
+        if not raw_machine:
+            return False
+
+        normalized = raw_machine.strip().lower()
+        generic_references = {
+            "machine",
+            "machines",
+            "unit",
+            "units",
+            "equipment",
+            "system",
+            "systems",
+            "all machines",
+            "all the machines",
+        }
+        return normalized in generic_references
+
+    def _looks_like_ranking_query(self, utterance: str) -> bool:
+        """Detect ranking language that should not stay on the power-query handler path."""
+        utterance_lower = utterance.lower()
+        has_ranking_signal = any(word in utterance_lower for word in [
+            "top",
+            "most",
+            "highest",
+            "least",
+            "lowest",
+            "rank",
+            "consumer",
+        ])
+        has_machine_group = any(phrase in utterance_lower for phrase in [
+            "which machines",
+            "what machines",
+            "machines are",
+            "machines use",
+            "machines consume",
+            "all machines",
+        ])
+        has_metric_signal = any(word in utterance_lower for word in [
+            "electricity",
+            "energy",
+            "power",
+            "consumption",
+            "cost",
+            "alert",
+        ])
+        return has_ranking_signal and has_machine_group and has_metric_signal
+
+    def _extract_ranking_limit(self, utterance: str) -> int:
+        """Extract an explicit top-N limit, falling back to a short ranked list."""
+        patterns = [
+            r'\btop\s+(\d+)\b',
+            r'\b(\d+)\s+top\b',
+            r'\bhighest\s+(\d+)\b',
+            r'\blowest\s+(\d+)\b',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, utterance, re.IGNORECASE)
+            if match:
+                return max(int(match.group(1)), 1)
+
+        return 5
+
+    def _infer_ranking_metric_from_utterance(self, utterance: str) -> str:
+        """Map ranking phrasing to the metric used by the top-consumers endpoint."""
+        utterance_lower = utterance.lower()
+
+        if "cost" in utterance_lower:
+            return "cost"
+        if "alert" in utterance_lower or "anomal" in utterance_lower:
+            return "alerts"
+        if "efficien" in utterance_lower:
+            return "efficiency"
+        return "energy"
     
     def _apply_implicit_scope(self, intent: Intent) -> Intent:
         """
@@ -644,6 +739,18 @@ class EnmsSkill(FallbackSkill):
             dict with: success, response, latency_ms, tier, intent
         """
         start_time = time.time()
+        normalized_utterance = utterance.strip().lower()
+        if normalized_utterance in {'ping', 'pong'}:
+            self.logger.debug("probe_utterance_ignored", utterance=normalized_utterance)
+            return {
+                'success': False,
+                'response': '',
+                'latency_ms': 0.0,
+                'tier': RoutingTier.HEURISTIC,
+                'intent': None,
+                'error': 'probe_utterance_ignored'
+            }
+
         self.logger.info("⚙️ PROCESS_QUERY_START", utterance=utterance[:50])
         
         try:
@@ -677,6 +784,28 @@ class EnmsSkill(FallbackSkill):
             
             # Track tier routing
             tier_routing.labels(tier=tier).inc()
+
+            raw_intent = str(llm_output.get('intent', '')).strip().lower()
+            if raw_intent in {'clarification_needed', IntentType.UNKNOWN.value}:
+                clarification_response = llm_output.get(
+                    'response_suggestion',
+                    "I'm not sure what you're asking. Try rephrasing your question or mention a machine name."
+                )
+                total_latency_ms = (time.time() - start_time) * 1000
+                query_latency.labels(intent_type='unknown', tier=str(tier)).observe(total_latency_ms / 1000)
+                self.logger.info(
+                    "clarification_response_returned",
+                    utterance=utterance,
+                    reason=raw_intent or 'missing_intent'
+                )
+                return {
+                    'success': False,
+                    'response': clarification_response,
+                    'latency_ms': round(total_latency_ms, 2),
+                    'tier': tier,
+                    'intent': None,
+                    'error': clarification_response
+                }
             
             # Step 3.5: Check for pending clarification BEFORE validation
             # If query is just a machine name answering clarification
@@ -849,7 +978,9 @@ class EnmsSkill(FallbackSkill):
                 'latency_ms': round(total_latency_ms, 2),
                 'tier': tier,
                 'intent': intent.intent,
+                'confidence': intent.confidence,
                 'machine': intent.machine,
+                'data': api_data['data'],
                 'breakdown': {
                     'parse_ms': round(parse_latency_ms, 2),
                     'validation_ms': round(validation_latency_ms, 2),
@@ -2321,6 +2452,484 @@ class EnmsSkill(FallbackSkill):
         
         else:
             return "I retrieved the data successfully"
+
+    def _json_safe_value(self, value: Any) -> Any:
+        """Convert nested skill data into JSON-safe values for messagebus events."""
+        if isinstance(value, datetime):
+            return value.isoformat()
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._json_safe_value(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, list):
+            return [self._json_safe_value(item) for item in value]
+
+        if isinstance(value, tuple):
+            return [self._json_safe_value(item) for item in value]
+
+        if hasattr(value, 'value') and not isinstance(value, (str, bytes)):
+            return getattr(value, 'value')
+
+        return value
+
+    def _safe_float(self, value: Any, precision: int = 1) -> Optional[float]:
+        """Safely round a numeric value for widget summaries."""
+        try:
+            if value is None:
+                return None
+            return round(float(value), precision)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_widget_metric(self, label: str, value: Any, unit: Optional[str] = None, tone: str = 'neutral') -> Optional[Dict[str, Any]]:
+        """Create a compact summary metric for the widget side panel."""
+        if value is None:
+            return None
+
+        return {
+            'label': label,
+            'value': value,
+            'unit': unit,
+            'tone': tone
+        }
+
+    def _build_widget_badge(self, label: str, tone: str = 'neutral') -> Dict[str, str]:
+        """Create a status badge for the widget side panel."""
+        return {
+            'label': label,
+            'tone': tone
+        }
+
+    def _build_widget_spotlight(
+        self,
+        kicker: str,
+        title: Any,
+        detail: Optional[str] = None,
+        tone: str = 'info'
+    ) -> Optional[Dict[str, Any]]:
+        """Create a high-emphasis spotlight block for the widget side panel."""
+        if title is None or title == '':
+            return None
+
+        return {
+            'kicker': kicker,
+            'title': title,
+            'detail': detail,
+            'tone': tone
+        }
+
+    def _build_response_snapshot(self, api_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Keep a lightweight, JSON-safe snapshot of raw data for the portal response."""
+        if not isinstance(api_data, dict):
+            return None
+
+        snapshot: Dict[str, Any] = {}
+        list_limits = {
+            'ranking': 5,
+            'anomalies': 8,
+            'timeseries_data': 8,
+            'data_points': 8,
+            'affected_machines': 8
+        }
+        excluded_keys = {'pdf_base64', 'audio_base64'}
+
+        for key, value in api_data.items():
+            if key in excluded_keys:
+                continue
+
+            if isinstance(value, list) and key in list_limits:
+                snapshot[key] = self._json_safe_value(value[:list_limits[key]])
+                snapshot[f'{key}_truncated'] = len(value) > list_limits[key]
+                continue
+
+            snapshot[key] = self._json_safe_value(value)
+
+        return snapshot
+
+    def _build_widget_insights(
+        self,
+        intent_name: Optional[str],
+        api_data: Optional[Dict[str, Any]],
+        utterance: str = '',
+        machine: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Build a curated side-panel payload for selected operational replies."""
+        if not intent_name or not isinstance(api_data, dict):
+            return None
+
+        normalized_intent = intent_name.value if hasattr(intent_name, 'value') else str(intent_name)
+        utterance_lower = (utterance or '').lower()
+
+        if normalized_intent in (
+            IntentType.MACHINE_STATUS.value,
+            IntentType.ENERGY_QUERY.value,
+            IntentType.POWER_QUERY.value
+        ):
+            if api_data.get('factory_wide') or {'total_kwh_today', 'current_power_kw', 'machines_active'} & set(api_data.keys()):
+                metrics = [
+                    self._build_widget_metric('Energy Today', self._safe_float(api_data.get('total_kwh_today'), 1), 'kWh', 'neutral'),
+                    self._build_widget_metric('Current Power', self._safe_float(api_data.get('current_power_kw'), 1), 'kW', 'info'),
+                    self._build_widget_metric('Active Machines', api_data.get('machines_active'), None, 'good'),
+                    self._build_widget_metric('Cost Today', self._safe_float(api_data.get('total_cost_usd'), 2), 'USD', 'warning')
+                ]
+                metrics = [metric for metric in metrics if metric]
+
+                lines = []
+                if api_data.get('machines_active') is not None and api_data.get('machines_total') is not None:
+                    lines.append(f"{api_data.get('machines_active')} of {api_data.get('machines_total')} machines are active right now.")
+
+                return {
+                    'panel_type': 'factory_overview',
+                    'title': 'Factory energy snapshot',
+                    'subtitle': 'Live operational context',
+                    'summary_metrics': metrics,
+                    'status_badges': [
+                        self._build_widget_badge('Live data', 'good'),
+                        self._build_widget_badge('Energy summary', 'neutral')
+                    ],
+                    'secondary_lines': lines or ['Factory-wide energy totals are available for this request.'],
+                    'links': [
+                        {'label': 'Open reports', 'href': '/reports.html'}
+                    ]
+                }
+
+            machine_name = api_data.get('machine_name') or api_data.get('machine') or machine
+            current_status = api_data.get('current_status') or {}
+            today_stats = api_data.get('today_stats') or {}
+            recent_anomalies = api_data.get('recent_anomalies') or {}
+
+            if machine_name and (current_status or today_stats or recent_anomalies):
+                status_value = (current_status.get('status') or 'unknown').lower()
+                status_tone = {
+                    'running': 'good',
+                    'idle': 'warning',
+                    'stopped': 'neutral'
+                }.get(status_value, 'neutral')
+
+                metrics = [
+                    self._build_widget_metric('Power', self._safe_float(current_status.get('power_kw'), 1), 'kW', 'info'),
+                    self._build_widget_metric('Energy Today', self._safe_float(today_stats.get('energy_kwh'), 1), 'kWh', 'neutral'),
+                    self._build_widget_metric('Uptime', self._safe_float(today_stats.get('uptime_percent'), 1), '%', 'good'),
+                    self._build_widget_metric('Cost Today', self._safe_float(today_stats.get('cost_usd'), 2), 'USD', 'warning')
+                ]
+                metrics = [metric for metric in metrics if metric]
+
+                anomaly_count = recent_anomalies.get('count')
+                critical_count = recent_anomalies.get('critical')
+                warning_count = recent_anomalies.get('warnings')
+
+                badges = [self._build_widget_badge(status_value.title(), status_tone)]
+                if anomaly_count == 0:
+                    badges.append(self._build_widget_badge('No anomalies today', 'good'))
+                elif critical_count:
+                    badges.append(self._build_widget_badge(f'{critical_count} critical', 'danger'))
+                elif warning_count:
+                    badges.append(self._build_widget_badge(f'{warning_count} warnings', 'warning'))
+
+                lines = []
+                if status_value != 'unknown':
+                    lines.append(f"{machine_name} is currently {status_value}.")
+
+                peak_power = self._safe_float(today_stats.get('peak_power_kw'), 1)
+                if peak_power is not None:
+                    lines.append(f"Peak power today reached {peak_power} kW.")
+
+                latest_anomaly = recent_anomalies.get('latest') or {}
+                if latest_anomaly.get('description'):
+                    lines.append(f"Latest anomaly: {latest_anomaly['description']}.")
+                elif anomaly_count == 0:
+                    lines.append('No anomalies were recorded for this machine today.')
+
+                if 'energy' in utterance_lower and today_stats.get('energy_kwh') is not None:
+                    lines.insert(0, f"Energy today is {today_stats.get('energy_kwh')} kWh for {machine_name}.")
+
+                return {
+                    'panel_type': 'machine_status',
+                    'title': machine_name,
+                    'subtitle': 'Live machine context',
+                    'summary_metrics': metrics,
+                    'status_badges': badges,
+                    'secondary_lines': lines[:4],
+                    'links': [
+                        {'label': 'Open reports', 'href': '/reports.html'}
+                    ]
+                }
+
+        if normalized_intent == IntentType.FACTORY_OVERVIEW.value:
+            energy = api_data.get('energy') or {}
+            costs = api_data.get('costs') or {}
+            machines = api_data.get('machines') or {}
+            anomalies = api_data.get('anomalies') or {}
+            top_consumer = api_data.get('top_consumer') or {}
+            latest_anomaly = api_data.get('latest_anomaly') or {}
+
+            total_energy = energy.get('total_kwh_today')
+            if total_energy is None:
+                total_energy = api_data.get('total_energy')
+
+            live_rate = energy.get('current_power_kw')
+            if live_rate is None:
+                live_rate = api_data.get('energy_per_hour')
+
+            active_machines = machines.get('active')
+            if active_machines is None:
+                active_machines = api_data.get('active_machines_today')
+
+            critical_alerts = anomalies.get('critical')
+            if critical_alerts is None:
+                critical_alerts = api_data.get('critical')
+            if critical_alerts is None:
+                critical_alerts = 0
+
+            total_alerts = anomalies.get('total')
+            if total_alerts is None:
+                total_alerts = api_data.get('total_anomalies')
+            if total_alerts is None:
+                total_alerts = 0
+
+            estimated_cost = costs.get('total_usd_today')
+            if estimated_cost is None:
+                estimated_cost = api_data.get('estimated_cost')
+
+            cost_per_day = costs.get('cost_per_day')
+            if cost_per_day is None:
+                cost_per_day = api_data.get('cost_per_day')
+
+            peak_power = energy.get('peak_power_kw')
+            if peak_power is None:
+                peak_power = api_data.get('peak_power')
+
+            avg_power = energy.get('avg_power_kw')
+            if avg_power is None:
+                avg_power = api_data.get('avg_power')
+
+            carbon_footprint = api_data.get('carbon_footprint')
+            readings_per_minute = api_data.get('readings_per_minute')
+            total_readings = api_data.get('total_readings')
+            uptime_percent = api_data.get('uptime_percent')
+
+            metrics = [
+                self._build_widget_metric('Total Energy', self._safe_float(total_energy, 1), 'kWh', 'neutral'),
+                self._build_widget_metric('Live Rate', self._safe_float(live_rate, 1), 'kWh/h', 'info'),
+                self._build_widget_metric('Active Today', active_machines, None, 'good'),
+                self._build_widget_metric('Estimated Cost', self._safe_float(estimated_cost, 2), 'USD', 'warning')
+            ]
+            metrics = [metric for metric in metrics if metric]
+
+            badges = [self._build_widget_badge(str(api_data.get('status', 'operational')).replace('_', ' ').title(), 'good')]
+            if active_machines is not None:
+                badges.append(self._build_widget_badge(f"{active_machines} active machines", 'info'))
+            if total_alerts:
+                badges.append(self._build_widget_badge(f"{total_alerts} alerts logged", 'warning' if total_alerts and not critical_alerts else 'danger'))
+            elif total_alerts == 0:
+                badges.append(self._build_widget_badge('No active alerts', 'good'))
+            if uptime_percent is not None:
+                badges.append(self._build_widget_badge(f"{uptime_percent}% uptime", 'neutral'))
+
+            spotlight = None
+            if top_consumer.get('machine_name'):
+                spotlight = self._build_widget_spotlight(
+                    'Top consumer',
+                    top_consumer.get('machine_name'),
+                    (
+                        f"{top_consumer.get('energy_kwh', 0)} kWh"
+                        f" · {top_consumer.get('percent_of_total', 0)}% of facility total"
+                    ),
+                    'warning'
+                )
+            elif live_rate is not None:
+                detail_parts = []
+                if active_machines is not None:
+                    detail_parts.append(f"{active_machines} active machines")
+                if total_alerts is not None:
+                    detail_parts.append(f"{total_alerts} alerts tracked")
+                if cost_per_day is not None:
+                    detail_parts.append(f"${cost_per_day}/day est.")
+
+                spotlight = self._build_widget_spotlight(
+                    'Factory pulse',
+                    f"{self._safe_float(live_rate, 1)} kWh/h",
+                    ' · '.join(detail_parts) if detail_parts else None,
+                    'danger' if critical_alerts else 'info'
+                )
+
+            lines = []
+            if peak_power is not None or avg_power is not None:
+                peak_text = f"Peak power reached {peak_power} kW" if peak_power is not None else None
+                avg_text = f"average power held at {avg_power} kW" if avg_power is not None else None
+                lines.append('. '.join(part for part in [peak_text, avg_text] if part) + '.')
+            if cost_per_day is not None or estimated_cost is not None:
+                cost_parts = []
+                if estimated_cost is not None:
+                    cost_parts.append(f"Estimated spend is ${estimated_cost}")
+                if cost_per_day is not None:
+                    cost_parts.append(f"roughly ${cost_per_day} per day")
+                lines.append(' with '.join(cost_parts) + '.')
+            if carbon_footprint is not None:
+                lines.append(f"Carbon footprint estimate is {carbon_footprint} kilograms.")
+            if total_readings is not None or readings_per_minute is not None:
+                readings_parts = []
+                if total_readings is not None:
+                    readings_parts.append(f"{total_readings} readings captured")
+                if readings_per_minute is not None:
+                    readings_parts.append(f"{readings_per_minute} readings per minute")
+                lines.append('Telemetry stream processed ' + ' at '.join(readings_parts) + '.')
+            if latest_anomaly.get('machine_name'):
+                lines.append(
+                    f"Latest anomaly: {latest_anomaly.get('severity', 'info')} alert on {latest_anomaly['machine_name']}."
+                )
+            if not lines:
+                lines.append('Factory-wide summary is available for this request.')
+
+            return {
+                'panel_type': 'factory_overview',
+                'title': 'Factory overview',
+                'subtitle': 'Operational pulse',
+                'spotlight': spotlight,
+                'summary_metrics': metrics,
+                'status_badges': badges,
+                'secondary_lines': lines[:4],
+                'links': [
+                    {'label': 'Open reports', 'href': '/reports.html'}
+                ]
+            }
+
+        if normalized_intent == IntentType.RANKING.value and isinstance(api_data.get('ranking'), list):
+            ranking = api_data.get('ranking', [])[:3]
+            if not ranking:
+                return None
+
+            metric_label = api_data.get('metric_label') or 'Top consumers'
+            top_entry = ranking[0]
+            metrics = [
+                self._build_widget_metric('Top Value', top_entry.get('value'), api_data.get('unit'), 'info'),
+                self._build_widget_metric('Leader Share', self._safe_float(top_entry.get('percentage'), 1), '%', 'good'),
+                self._build_widget_metric('Machines', api_data.get('machines_analyzed'), None, 'neutral'),
+                self._build_widget_metric('Total', api_data.get('total_value'), api_data.get('unit'), 'warning')
+            ]
+            metrics = [metric for metric in metrics if metric]
+
+            spotlight = self._build_widget_spotlight(
+                'Top consumer',
+                top_entry.get('machine_name') or 'Unknown machine',
+                (
+                    f"{top_entry.get('value')} {api_data.get('unit', '').strip()}"
+                    f" · {top_entry.get('percentage', 0)}% of tracked load"
+                ),
+                'info'
+            )
+
+            lines = [
+                f"{entry.get('rank')}. {entry.get('machine_name', 'Unknown')} - {entry.get('value')} {api_data.get('unit', '').strip()} ({entry.get('percentage', 0)}%)"
+                for entry in ranking
+            ]
+
+            return {
+                'panel_type': 'ranking',
+                'title': metric_label,
+                'subtitle': 'Current ranking snapshot',
+                'spotlight': spotlight,
+                'summary_metrics': metrics,
+                'status_badges': [
+                    self._build_widget_badge(str(api_data.get('metric', 'ranking')).replace('_', ' ').title(), 'neutral')
+                ],
+                'secondary_lines': lines,
+                'links': [
+                    {'label': 'Open reports', 'href': '/reports.html'}
+                ]
+            }
+
+        if normalized_intent == IntentType.ANOMALY_DETECTION.value:
+            by_severity = api_data.get('by_severity') or {}
+            anomalies = api_data.get('anomalies') or []
+            total_count = api_data.get('total_count')
+            if total_count is None:
+                total_count = len(anomalies)
+
+            affected_machines = api_data.get('affected_machines') or []
+            if not affected_machines and anomalies:
+                affected_machines = sorted({
+                    anomaly.get('machine_name')
+                    for anomaly in anomalies
+                    if anomaly.get('machine_name')
+                })
+
+            latest = anomalies[0] if anomalies else {}
+            metrics = [
+                self._build_widget_metric('Total Alerts', total_count, None, 'danger' if total_count else 'good'),
+                self._build_widget_metric('Critical', by_severity.get('critical') or api_data.get('critical') or 0, None, 'danger'),
+                self._build_widget_metric('Warnings', by_severity.get('warning') or api_data.get('warnings') or 0, None, 'warning'),
+                self._build_widget_metric('Machines', len(affected_machines), None, 'neutral')
+            ]
+            metrics = [metric for metric in metrics if metric]
+
+            badges = []
+            if api_data.get('is_active'):
+                badges.append(self._build_widget_badge('Active alerts', 'danger' if total_count else 'good'))
+            elif api_data.get('is_detection'):
+                badges.append(self._build_widget_badge('Detection run', 'info'))
+            else:
+                badges.append(self._build_widget_badge('Recent anomalies', 'warning' if total_count else 'good'))
+
+            lines = []
+            if latest.get('machine_name'):
+                lines.append(
+                    f"Most recent anomaly: {latest.get('severity', 'info')} on {latest.get('machine_name')}"
+                    f" for {latest.get('metric_name') or latest.get('anomaly_type', 'operational drift')}."
+                )
+            elif total_count == 0:
+                lines.append('No anomalies matched this request.')
+
+            if affected_machines:
+                lines.append(f"Affected machines: {', '.join(affected_machines[:3])}.")
+
+            return {
+                'panel_type': 'anomaly_summary',
+                'title': api_data.get('machine_name') or 'Anomaly overview',
+                'subtitle': 'Alert context',
+                'summary_metrics': metrics,
+                'status_badges': badges,
+                'secondary_lines': lines[:4] or ['Recent anomaly information is available for this request.'],
+                'links': [
+                    {'label': 'Open reports', 'href': '/reports.html'}
+                ]
+            }
+
+        return None
+
+    def _emit_structured_response(
+        self,
+        session_id: str,
+        intent_name: Optional[str],
+        api_data: Optional[Dict[str, Any]] = None,
+        confidence: Optional[float] = None,
+        utterance: str = '',
+        machine: Optional[str] = None
+    ) -> None:
+        """Emit structured response data so the widget can show extra contextual panels."""
+        if not self.bus or not session_id:
+            return
+
+        normalized_intent = intent_name.value if hasattr(intent_name, 'value') else str(intent_name) if intent_name else None
+        insights = self._build_widget_insights(normalized_intent, api_data, utterance=utterance, machine=machine)
+        data_snapshot = self._build_response_snapshot(api_data)
+
+        if not normalized_intent and not insights and not data_snapshot:
+            return
+
+        self.bus.emit(Message(
+            'enms.skill.response',
+            {
+                'intent': normalized_intent,
+                'confidence': confidence,
+                'data': data_snapshot,
+                'insights': insights
+            },
+            {'session_id': session_id}
+        ))
     
     # ========== EXISTING MACHINE-SPECIFIC HANDLERS (UPDATED FOR PRIORITY 3) ==========
     
@@ -2381,15 +2990,39 @@ class EnmsSkill(FallbackSkill):
                     self.logger.info("factory_energy_speaking", data=result['data'])
                     try:
                         response_text = f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today"
+                        self._emit_structured_response(
+                            session_id,
+                            intent.intent,
+                            result.get('data'),
+                            confidence=intent.confidence,
+                            utterance=utterance,
+                            machine=machine
+                        )
                         self.speak_dialog("factory_energy", result['data'])
                     except Exception as dialog_error:
                         self.logger.error("factory_energy_dialog_failed", error=str(dialog_error), data=result['data'])
                         # Fallback to simple response
                         response_text = f"Factory consumed {result['data'].get('total_kwh_today', 0):.1f} kilowatt-hours today"
+                        self._emit_structured_response(
+                            session_id,
+                            intent.intent,
+                            result.get('data'),
+                            confidence=intent.confidence,
+                            utterance=utterance,
+                            machine=machine
+                        )
                         self.speak(response_text)
                 else:
                     # Machine-specific: use formatter
                     response_text = self.response_formatter.format_response('energy_query', result['data'])
+                    self._emit_structured_response(
+                        session_id,
+                        intent.intent,
+                        result.get('data'),
+                        confidence=intent.confidence,
+                        utterance=utterance,
+                        machine=machine
+                    )
                     self.speak(response_text)
                 
                 # Update context for next query
@@ -2484,6 +3117,14 @@ class EnmsSkill(FallbackSkill):
             # Speak result
             if result['success']:
                 response = self.response_formatter.format_response('machine_status', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance,
+                    machine=machine
+                )
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2511,6 +3152,13 @@ class EnmsSkill(FallbackSkill):
             # Speak result
             if result['success']:
                 response = self.response_formatter.format_response('factory_overview', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance
+                )
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -2554,6 +3202,14 @@ class EnmsSkill(FallbackSkill):
             
             if result['success']:
                 response = self.response_formatter.format_response('anomaly_detection', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance,
+                    machine=machine
+                )
                 self.speak(response)
                 
                 # Update context for next query
@@ -2572,6 +3228,7 @@ class EnmsSkill(FallbackSkill):
         try:
             limit = message.data.get('limit', '5')
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
             
             # Convert limit to int if it's a string number
             try:
@@ -2590,6 +3247,13 @@ class EnmsSkill(FallbackSkill):
             
             if result['success']:
                 response = self.response_formatter.format_response('ranking', result['data'])
+                self._emit_structured_response(
+                    session_id,
+                    intent.intent,
+                    result.get('data'),
+                    confidence=intent.confidence,
+                    utterance=utterance
+                )
                 self.speak(response)
             else:
                 self.speak_dialog("error.general")
@@ -3034,6 +3698,46 @@ class EnmsSkill(FallbackSkill):
             if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+
+            if not machine and self._looks_like_ranking_query(utterance):
+                ranking_metric = self._infer_ranking_metric_from_utterance(utterance)
+                ranking_limit = self._extract_ranking_limit(utterance)
+                ranking_intent = Intent(
+                    intent=IntentType.RANKING,
+                    limit=ranking_limit,
+                    metric=ranking_metric,
+                    ranking_metric=ranking_metric,
+                    confidence=0.90,
+                    utterance=utterance,
+                )
+
+                self.logger.info(
+                    "power_query_rerouted_to_ranking",
+                    utterance=utterance,
+                    limit=ranking_limit,
+                    metric=ranking_metric,
+                )
+
+                result = self._call_enms_api(ranking_intent)
+
+                if result['success']:
+                    response_text = self.response_formatter.format_response('ranking', result['data'])
+                    self._emit_structured_response(
+                        session_id,
+                        ranking_intent.intent,
+                        result.get('data'),
+                        confidence=ranking_intent.confidence,
+                        utterance=utterance,
+                    )
+                    self.speak(response_text)
+
+                    if session:
+                        session.add_turn(utterance, ranking_intent, response_text, result['data'])
+
+                    return
+
+                self.speak_dialog("error.general")
+                return
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -3059,10 +3763,26 @@ class EnmsSkill(FallbackSkill):
                 if not machine:
                     # Factory-wide: use speak_dialog with data
                     response_text = f"Current power is {result['data'].get('current_power_kw', 0):.1f} kilowatts"
+                    self._emit_structured_response(
+                        session_id,
+                        intent.intent,
+                        result.get('data'),
+                        confidence=intent.confidence,
+                        utterance=utterance,
+                        machine=machine
+                    )
                     self.speak_dialog("factory_power", result['data'])
                 else:
                     # Machine-specific: use formatter
                     response_text = self.response_formatter.format_response('power_query', result['data'])
+                    self._emit_structured_response(
+                        session_id,
+                        intent.intent,
+                        result.get('data'),
+                        confidence=intent.confidence,
+                        utterance=utterance,
+                        machine=machine
+                    )
                     self.speak(response_text)
                 
                 # Update context for next query
@@ -3138,6 +3858,10 @@ class EnmsSkill(FallbackSkill):
         """
         try:
             utterance = message.data.get("utterances", [""])[0]
+            if utterance and utterance.strip().lower() in {"ping", "pong"}:
+                self.logger.debug("fallback_probe_ignored", utterance=utterance.strip().lower())
+                return False
+
             if not utterance or len(utterance.strip()) < 3:
                 return False
             
@@ -3149,6 +3873,14 @@ class EnmsSkill(FallbackSkill):
             result = self._process_query(utterance, session_id)
             
             if result.get('success'):
+                self._emit_structured_response(
+                    session_id,
+                    result.get('intent'),
+                    result.get('data'),
+                    confidence=result.get('confidence'),
+                    utterance=utterance,
+                    machine=result.get('machine')
+                )
                 self.speak(result['response'])
                 
                 # For report generation, emit custom event with PDF data
@@ -3242,6 +3974,15 @@ class EnmsSkill(FallbackSkill):
             result = self._process_query(utterance, session_id)
             
             if result['success'] or 'error' in result:
+                if result.get('success'):
+                    self._emit_structured_response(
+                        session_id,
+                        result.get('intent'),
+                        result.get('data'),
+                        confidence=result.get('confidence'),
+                        utterance=utterance,
+                        machine=result.get('machine')
+                    )
                 self.speak(result['response'])
                 
                 # For report generation, emit custom event with PDF data

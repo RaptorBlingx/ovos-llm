@@ -1,20 +1,22 @@
 """
-LLM Parser - Tier 3 Intent Classification using Qwen3-1.7B
+LLM Parser - Tier 3 Intent Classification using a local Qwen GGUF model
 
 This module provides LLM-based intent classification as a fallback when
 heuristic and adapt parsers fail to match user queries.
 
 Features:
-- Qwen3-1.7B model with Q4_K_M quantization
+- Qwen3.5-2B model with Q4_K_M quantization
 - Hybrid thinking mode support (fast vs reasoning)
-- 5-second timeout per inference
+- 30-second timeout per inference
 - Graceful error handling
 - Prometheus metrics integration
 """
 
 import json
+import os
 import time
 import logging
+import threading
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
@@ -28,11 +30,18 @@ except ImportError:
 
 class Qwen3Parser:
     """
-    Qwen3-1.7B-based intent parser for natural language queries.
+    Qwen-based intent parser for natural language queries.
     
     Uses llama-cpp-python for CPU inference with Q4_K_M quantization.
     Supports both fast (non-thinking) and reasoning (thinking) modes.
     """
+
+    INTENT_ALIASES = {
+        "clarification_needed": "unknown",
+        "anomaly_query": "anomaly_detection",
+        "efficiency": "performance",
+        "baseline_prediction": "forecast",
+    }
     
     def __init__(self, model_path: str, thinking_enabled: bool = False):
         """
@@ -46,12 +55,14 @@ class Qwen3Parser:
         self.thinking_enabled = thinking_enabled
         self.model: Optional[Llama] = None
         self.logger = logging.getLogger("enms_ovos_skill.llm_parser")
+        self._inference_lock = threading.Lock()
         
         # Model configuration
         self.context_size = 4096  # Reduced from 32K for speed
-        self.max_tokens = 512  # Response limit
-        self.temperature = 0.1  # Low temp for deterministic outputs
+        self.max_tokens = 64  # JSON classification should stay very short
+        self.temperature = 0.0  # Deterministic intent classification
         self.timeout = 30.0  # 30-second timeout (increased from 5s - LLM needs 15-30s)
+        self.stop_tokens = ["\n\n", "</s>", "<|im_end|>", "<|endoftext|>"]
         
         # Metrics (can be exported to Prometheus)
         self.metrics = {
@@ -64,7 +75,7 @@ class Qwen3Parser:
     
     def load_model(self) -> None:
         """
-        Load Qwen3-1.7B model into memory.
+        Load the configured GGUF model into memory.
         
         Raises:
             FileNotFoundError: If model file doesn't exist
@@ -80,18 +91,19 @@ class Qwen3Parser:
             )
         
         self.logger.info(
-            f"Loading Qwen3-1.7B model from {self.model_path} "
+            f"Loading LLM model from {self.model_path} "
             f"(thinking_mode={'ON' if self.thinking_enabled else 'OFF'})"
         )
         
         start = time.time()
         
         try:
+            cpu_threads = max(4, min(8, os.cpu_count() or 4))
             self.model = Llama(
                 model_path=str(self.model_path),
                 n_ctx=self.context_size,
-                n_threads=4,  # Use 4 CPU cores
-                n_batch=64,  # Minimum batch size (llama.cpp requires >=64)
+                n_threads=cpu_threads,
+                n_batch=128,
                 n_gpu_layers=0,  # CPU-only inference
                 verbose=False
             )
@@ -148,13 +160,15 @@ class Qwen3Parser:
             # Call LLM with timeout
             self.logger.debug(f"LLM inference starting: '{utterance}'")
             
-            response = self.model(
-                prompt,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                stop=["</s>", "\n\n"],  # Stop tokens
-                echo=False
-            )
+            # llama-cpp inference is not safe to run concurrently on the same model instance.
+            with self._inference_lock:
+                response = self.model(
+                    prompt,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    stop=self.stop_tokens,
+                    echo=False
+                )
             
             elapsed_ms = (time.time() - start) * 1000
             
@@ -207,6 +221,14 @@ class Qwen3Parser:
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
             text = text.split("```")[1].split("```")[0].strip()
+
+        if "</think>" in text:
+            text = text.rsplit("</think>", 1)[1].strip()
+
+        json_start = text.find("{")
+        json_end = text.rfind("}")
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            text = text[json_start:json_end + 1]
         
         try:
             data = json.loads(text)
@@ -215,21 +237,31 @@ class Qwen3Parser:
             if "intent" not in data:
                 self.logger.warning(f"Missing 'intent' field in LLM response: {text}")
                 return None
+
+            raw_intent = str(data["intent"]).strip().lower()
+            normalized_intent = self.INTENT_ALIASES.get(raw_intent, raw_intent)
             
             # Validate confidence (default to 0.5 if missing)
-            confidence = data.get("confidence", 0.5)
+            confidence = float(data.get("confidence", 0.5))
             if not (0.0 <= confidence <= 1.0):
                 self.logger.warning(f"Invalid confidence value: {confidence}")
                 confidence = 0.5
+
+            machine = data.get("machine")
+            if isinstance(machine, str) and machine.strip().lower() in {"", "none", "null"}:
+                machine = None
             
             return {
-                "intent": data["intent"],
-                "machine": data.get("machine"),
+                "intent": normalized_intent,
+                "machine": machine,
                 "confidence": confidence,
                 "entities": data.get("entities", {}),
                 "tier": "llm"
             }
-            
+
+        except (TypeError, ValueError) as e:
+            self.logger.warning(f"Invalid LLM response payload: {e}\nText: {text}")
+            return None
         except json.JSONDecodeError as e:
             self.logger.warning(f"Failed to parse LLM JSON response: {e}\nText: {text}")
             return None

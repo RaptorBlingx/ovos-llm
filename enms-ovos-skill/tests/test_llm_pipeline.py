@@ -61,7 +61,7 @@ async def test_pipeline():
     
     # Initialize components
     print("\n[1] Initializing components...")
-    model_path = Path(__file__).parent.parent / "models" / "Qwen_Qwen3-1.7B-Q4_K_M.gguf"
+    model_path = Path(__file__).parent.parent / "models" / "Qwen3.5-2B-Q4_K_M.gguf"
     parser = Qwen3Parser(model_path=str(model_path))
     validator = ENMSValidator(confidence_threshold=0.85)
     api_client = ENMSClient(base_url="http://10.33.10.109:8001/api/v1")

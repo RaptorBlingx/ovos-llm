@@ -301,8 +301,8 @@ def main():
     parser = argparse.ArgumentParser(description="Benchmark LLM integration performance")
     parser.add_argument(
         "--model-path",
-        default="/models/Qwen3-1.7B-Q4_K_M.gguf",
-        help="Path to GGUF model file (default: /models/Qwen3-1.7B-Q4_K_M.gguf)"
+        default="./models/Qwen3.5-2B-Q4_K_M.gguf",
+        help="Path to GGUF model file (default: ./models/Qwen3.5-2B-Q4_K_M.gguf)"
     )
     parser.add_argument(
         "--iterations",
@@ -327,8 +327,8 @@ def main():
     # Check model file exists
     if not os.path.exists(args.model_path):
         print(f"\n❌ Error: Model file not found: {args.model_path}")
-        print("   Expected location for Docker: /models/Qwen3-1.7B-Q4_K_M.gguf")
-        print("   Expected location for dev: ./models/Qwen3-1.7B-Q4_K_M.gguf")
+        print("   Expected location for Docker: /opt/ovos/skills/enms-ovos-skill/models/Qwen3.5-2B-Q4_K_M.gguf")
+        print("   Expected location for dev: ./models/Qwen3.5-2B-Q4_K_M.gguf")
         return 1
     
     results = {}

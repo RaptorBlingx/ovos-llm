@@ -11,6 +11,8 @@ It's a thin proxy that lets the portal communicate with OVOS.
 
 import asyncio
 import logging
+import os
+import time
 from typing import Dict, Any, Optional
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -18,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 import uvicorn
 
 from ovos_bus_client.client import MessageBusClient
@@ -37,6 +39,17 @@ class QueryRequest(BaseModel):
     text: str = Field(..., description="User query text")
     session_id: Optional[str] = Field(None, description="Session ID for context")
     user_id: Optional[str] = Field(None, description="User ID")
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_query_fields(cls, data):
+        if isinstance(data, dict) and not data.get("text"):
+            for key in ("utterance", "query"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    data["text"] = value
+                    break
+        return data
     
 class QueryResponse(BaseModel):
     success: bool
@@ -44,6 +57,7 @@ class QueryResponse(BaseModel):
     intent: Optional[str] = None
     confidence: Optional[float] = None
     data: Optional[Dict[str, Any]] = None
+    insights: Optional[Dict[str, Any]] = None
     timestamp: str
     session_id: str
 
@@ -60,6 +74,9 @@ class OVOSRestBridge:
         self.bus: Optional[MessageBusClient] = None
         self.responses: Dict[str, Dict[str, Any]] = {}
         self.response_timeout = 90  # seconds (increased for ML baseline operations)
+        self.structured_response_grace_seconds = float(
+            os.getenv('STRUCTURED_RESPONSE_GRACE_SECONDS', '2.5')
+        )
         
     def connect_to_messagebus(self):
         """Connect to OVOS messagebus"""
@@ -84,8 +101,10 @@ class OVOSRestBridge:
         utterance = message.data.get('utterance', '')
         
         if session_id in self.responses:
-            self.responses[session_id]['response'] = utterance
-            self.responses[session_id]['received'] = True
+            tracker = self.responses[session_id]
+            tracker['response'] = utterance
+            tracker['speak_received'] = True
+            tracker['speak_received_at'] = time.monotonic()
             logger.debug(f"Received speak for session {session_id}: {utterance[:50]}...")
     
     def _handle_skill_response(self, message: Message):
@@ -93,11 +112,17 @@ class OVOSRestBridge:
         session_id = message.context.get('session_id', 'default')
         
         if session_id in self.responses:
-            self.responses[session_id].update({
+            tracker = self.responses[session_id]
+            response = message.data.get('response')
+            if response:
+                tracker['response'] = response
+            tracker.update({
                 'intent': message.data.get('intent'),
                 'confidence': message.data.get('confidence'),
                 'data': message.data.get('data'),
-                'received': True
+                'insights': message.data.get('insights'),
+                'structured_received': True,
+                'structured_received_at': time.monotonic()
             })
             logger.debug(f"Received skill response for session {session_id}")
     
@@ -114,7 +139,11 @@ class OVOSRestBridge:
             'intent': None,
             'confidence': None,
             'data': None,
-            'received': False
+            'insights': None,
+            'speak_received': False,
+            'structured_received': False,
+            'speak_received_at': None,
+            'structured_received_at': None
         }
         
         try:
@@ -135,15 +164,25 @@ class OVOSRestBridge:
             logger.info(f"📤 Sent query to messagebus: '{text}' (session: {session_id})")
             
             # Wait for response with timeout
-            start_time = asyncio.get_event_loop().time()
-            while asyncio.get_event_loop().time() - start_time < self.response_timeout:
-                if self.responses[session_id]['received']:
+            start_time = time.monotonic()
+            while time.monotonic() - start_time < self.response_timeout:
+                tracker = self.responses[session_id]
+
+                if tracker['speak_received']:
+                    if tracker['structured_received']:
+                        break
+
+                    speak_received_at = tracker.get('speak_received_at') or start_time
+                    if time.monotonic() - speak_received_at >= self.structured_response_grace_seconds:
+                        break
+
+                if tracker['structured_received'] and tracker['response']:
                     break
                 await asyncio.sleep(0.1)
             
             # Check if we got a response
             response_data = self.responses[session_id]
-            if not response_data['received']:
+            if not response_data['speak_received']:
                 logger.warning(f"⏱️ Timeout waiting for response (session: {session_id})")
                 return QueryResponse(
                     success=False,
@@ -161,6 +200,7 @@ class OVOSRestBridge:
                 intent=response_data.get('intent'),
                 confidence=response_data.get('confidence'),
                 data=response_data.get('data'),
+                insights=response_data.get('insights'),
                 timestamp=datetime.utcnow().isoformat(),
                 session_id=session_id
             )

@@ -157,10 +157,10 @@ class HeuristicRouter:
             re.compile(r'\bmodel\s+(?:details?|info|explanation)', re.IGNORECASE),
         ],
         
-        # NEW: SEUs - Significant Energy Uses (case insensitive: seu, seus, SEU, SEUs)
+        # NEW: SEUs - Significant Energy Uses / Users (case insensitive: seu, seus, SEU, SEUs)
         'seus': [
-            re.compile(r'\bseus?\b', re.IGNORECASE),  # seu, seus, SEU, SEUs
-            re.compile(r'\bsignificant\s+energy\s+uses?\b', re.IGNORECASE),
+            re.compile(r"\bseu(?:s|'s)?\b", re.IGNORECASE),  # seu, seus, SEU, SEUs, SEU's
+            re.compile(r'\bsignificant\s+energy\s+us(?:e|er)s?\b', re.IGNORECASE),
             re.compile(r'\benergy\s+uses?\b', re.IGNORECASE),
             re.compile(r'\blist.*?(?:all\s+)?(?:available\s+)?seus?\b', re.IGNORECASE),
             re.compile(r'\b(?:show|get|what).*?seus?\b', re.IGNORECASE),
@@ -452,6 +452,33 @@ class HeuristicRouter:
                     if len(matches) > 1:
                         return machine_type  # Validator will detect this is ambiguous
                     return matches[0]
+
+        try:
+            from rapidfuzz import fuzz
+
+            best_match = None
+            best_score = 0
+            words = utterance_normalized.split()
+
+            for index in range(len(words)):
+                candidates = [words[index]]
+                if index + 1 < len(words):
+                    candidates.append(f"{words[index]} {words[index + 1]}")
+                if index + 2 < len(words):
+                    candidates.append(f"{words[index]} {words[index + 1]} {words[index + 2]}")
+
+                for candidate in candidates:
+                    for machine in self.MACHINES:
+                        machine_simple = machine.lower().replace('-', ' ').replace('_', ' ')
+                        score = fuzz.ratio(candidate, machine_simple)
+                        if score >= 75 and score > best_score:
+                            best_match = machine
+                            best_score = score
+
+            if best_match:
+                return best_match
+        except ImportError:
+            pass
         
         return None
     
@@ -657,6 +684,49 @@ class HeuristicRouter:
         }
         
         return default_metrics.get(intent_type, 'energy')
+
+    def _has_fuzzy_keyword(self, utterance: str, keywords: List[str], threshold: int = 80) -> bool:
+        """Allow small STT or typing errors when matching key metric words."""
+        try:
+            from rapidfuzz import fuzz
+        except ImportError:
+            return False
+
+        tokens = re.findall(r'[a-z0-9]+', utterance.lower())
+        for token in tokens:
+            for keyword in keywords:
+                if fuzz.ratio(token, keyword) >= threshold:
+                    return True
+
+        return False
+
+    def _recover_fuzzy_machine_metric_query(self, utterance: str) -> Optional[Dict]:
+        """Recover common typo-heavy machine queries without falling through to the LLM tier."""
+        machine = self._extract_machine_fuzzy(utterance)
+        if not machine:
+            return None
+
+        normalized_machine = self._normalize_machine_name(machine)
+        utterance_lower = utterance.lower()
+        recovery_confidence = 0.88
+
+        if "electricity" in utterance_lower or self._has_fuzzy_keyword(utterance, ["power", "watt", "watts", "kw"], threshold=80):
+            return {
+                'intent': 'power_query',
+                'confidence': recovery_confidence,
+                'machine': normalized_machine,
+                'metric': 'power'
+            }
+
+        if self._has_fuzzy_keyword(utterance, ["energy", "kwh", "consumption", "usage"], threshold=78):
+            return {
+                'intent': 'energy_query',
+                'confidence': recovery_confidence,
+                'machine': normalized_machine,
+                'metric': 'energy'
+            }
+
+        return None
     
     def route(self, utterance: str) -> Optional[Dict]:
         """
@@ -698,6 +768,18 @@ class HeuristicRouter:
                         )
                         query_latency.labels(intent_type=intent_type, tier="heuristic").observe(latency_ms / 1000)
                         return result
+
+        fuzzy_recovery = self._recover_fuzzy_machine_metric_query(normalized)
+        if fuzzy_recovery:
+            latency_ms = (time.time() - start_time) * 1000
+            self.logger.info(
+                "heuristic_fuzzy_recovery",
+                intent=fuzzy_recovery['intent'],
+                latency_ms=latency_ms,
+                utterance=normalized,
+            )
+            query_latency.labels(intent_type=fuzzy_recovery['intent'], tier="heuristic").observe(latency_ms / 1000)
+            return fuzzy_recovery
         
         # No pattern matched
         latency_ms = (time.time() - start_time) * 1000
@@ -1081,7 +1163,7 @@ class HybridParser:
     Performance Target: P50 < 200ms (weighted average)
     """
     
-    def __init__(self, llm_model_path: str = "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf"):
+    def __init__(self, llm_model_path: str = "./models/Qwen3.5-2B-Q4_K_M.gguf"):
         """Initialize hybrid parser with all tiers"""
         self.logger = logger.bind(component="hybrid_parser")
         
@@ -1151,7 +1233,7 @@ class HybridParser:
                                     utterance=utterance,
                                     reason="no_match" if not result else "low_confidence")
                     try:
-                        valid_intents = [it.value for it in IntentType if it != IntentType.UNKNOWN]
+                        valid_intents = [it.value for it in IntentType]
                         llm_result = self.llm.parse(
                             utterance=utterance,
                             machines=self.heuristic.MACHINES,

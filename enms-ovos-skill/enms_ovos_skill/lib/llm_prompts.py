@@ -1,8 +1,8 @@
 """
 LLM Prompt Templates for Intent Classification
 
-Provides structured prompts for Qwen3-1.7B to classify user intents
-and extract entities from natural language queries.
+Provides structured prompts for the configured Qwen GGUF model to classify
+user intents and extract entities from natural language queries.
 """
 
 from typing import List
@@ -15,7 +15,7 @@ def build_intent_classification_prompt(
     thinking_mode: bool = False
 ) -> str:
     """
-    Build intent classification prompt for Qwen3-1.7B.
+    Build intent classification prompt for the configured Qwen model.
     
     Args:
         utterance: User query text
@@ -37,10 +37,15 @@ def build_intent_classification_prompt(
     if len(intents) > 30:
         intent_list += f", ... ({len(intents)} total)"
     
+    mode_instruction = "/think" if thinking_mode else "/no_think"
+
     # Base prompt
     prompt = f"""You are an intent classifier for an industrial energy management system (EnMS).
 
-Your task: Classify the user's query and extract relevant entities.
+Your task: classify the user's query and extract relevant entities.
+Return exactly one compact JSON object and nothing else.
+Use only the valid intents listed below.
+Mode: {mode_instruction}
 
 Valid intents: [{intent_list}]
 
@@ -74,7 +79,7 @@ Query: "show me top 5 energy consumers"
 Output: {{"intent": "ranking", "machine": null, "confidence": 0.92}}
 
 Query: "predicted energy for compressor"
-Output: {{"intent": "baseline", "machine": "Compressor-1", "confidence": 0.88}}
+Output: {{"intent": "forecast", "machine": "Compressor-1", "confidence": 0.88}}
 
 Query: "factory status"
 Output: {{"intent": "factory_overview", "machine": null, "confidence": 0.99}}
@@ -83,13 +88,16 @@ Query: "give me a breakdown of where power is going"
 Output: {{"intent": "ranking", "machine": null, "confidence": 0.80}}
 
 Query: "how efficient is HVAC?"
-Output: {{"intent": "efficiency", "machine": "HVAC-Main", "confidence": 0.85}}
+Output: {{"intent": "performance", "machine": "HVAC-Main", "confidence": 0.85}}
 
 Query: "are there any anomalies in the system?"
-Output: {{"intent": "anomaly_query", "machine": null, "confidence": 0.90}}
+Output: {{"intent": "anomaly_detection", "machine": null, "confidence": 0.90}}
+
+Query: "compare boiler 1 and boiler 2"
+Output: {{"intent": "comparison", "machine": null, "confidence": 0.90}}
 
 Query: "what time is it?"
-Output: {{"intent": "clarification_needed", "machine": null, "confidence": 0.10}}
+Output: {{"intent": "unknown", "machine": null, "confidence": 0.10}}
 
 """
     
@@ -97,9 +105,10 @@ Output: {{"intent": "clarification_needed", "machine": null, "confidence": 0.10}
     prompt += f"""Instructions:
 1. Normalize machine names (e.g., "compressor one" → "Compressor-1", "hvac" → "HVAC-Main")
 2. Return confidence 0.0-1.0 (>0.7 = high confidence, 0.5-0.7 = medium, <0.5 = low)
-3. If query is off-topic or unclear, use intent="clarification_needed" with confidence < 0.5
-4. Respond with ONLY valid JSON (no markdown code blocks, no extra text)
+3. If query is off-topic or unclear, use intent="unknown" with confidence < 0.5
+4. Respond with ONLY valid JSON on a single line (no markdown, no analysis, no extra text)
 5. Required fields: intent, machine (or null), confidence
+6. If no machine is clearly mentioned, set machine to null
 
 User query: "{utterance}"
 
