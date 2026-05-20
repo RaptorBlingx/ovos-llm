@@ -1,0 +1,6 @@
+{% set carbon = kpis.carbon_intensity if kpis is defined and kpis.carbon_intensity is defined else none -%}
+{% if machine_name is defined and carbon -%}
+{{ machine_name }} emitted {{ carbon.value|num }} {{ carbon.unit or 'kg CO2' }} {{ period_label or 'for the requested period' }}.
+{%- else -%}
+Carbon emissions data is not available for the requested period.
+{%- endif %}

@@ -4,6 +4,7 @@ Direct Test - Calls the skill pipeline directly without instantiating OVOSSkill
 Tests the CORE processing logic: _call_enms_api() and _format_response()
 """
 import sys
+import os
 import asyncio
 from pathlib import Path
 
@@ -39,7 +40,8 @@ async def test_full_pipeline(query_text):
     validator = ENMSValidator(confidence_threshold=0.85)
     
     # Load machines
-    machines_resp = requests.get("http://10.33.10.109:8001/api/v1/machines?is_active=true")
+    api_url = os.getenv("ENMS_API_URL", "http://localhost:8001/api/v1")
+    machines_resp = requests.get(f"{api_url}/machines?is_active=true")
     machines = machines_resp.json()
     machine_names = [m["name"] for m in machines]
     validator.update_machine_whitelist(machine_names)
@@ -56,7 +58,7 @@ async def test_full_pipeline(query_text):
     
     # Step 3: Call API (using __init__.py logic)
     print("\n[STEP 3] Calling EnMS API (using skill logic from __init__.py)...")
-    api_client = ENMSClient(base_url="http://10.33.10.109:8001/api/v1")
+    api_client = ENMSClient(base_url=api_url)
     
     # This is COPIED from __init__.py _call_enms_api() method (lines 372-492)
     api_data = None

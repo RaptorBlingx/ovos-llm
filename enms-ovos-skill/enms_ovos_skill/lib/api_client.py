@@ -41,7 +41,7 @@ class ENMSClient:
     
     def __init__(
         self,
-        base_url: str = "http://10.33.10.104:8001/api/v1",
+        base_url: str = "http://localhost:8001/api/v1",
         timeout: float = 90.0,
         max_retries: int = 3
     ):
@@ -567,6 +567,37 @@ class ENMSClient:
         """
         params = {"include_explanation": str(include_explanation).lower()}
         return await self._request("GET", f"/baseline/model/{model_id}", params=params)
+
+    async def get_seu_driver_analysis(
+        self,
+        seu_name: str,
+        energy_source: str,
+        driver_name: Optional[str] = None,
+        top_n: int = 3
+    ) -> Dict[str, Any]:
+        """Get learned or candidate drivers for a single SEU."""
+        params: Dict[str, Any] = {
+            "seu_name": seu_name,
+            "energy_source": energy_source,
+            "top_n": top_n,
+        }
+        if driver_name:
+            params["driver_name"] = driver_name
+        return await self._request("GET", "/baseline/drivers", params=params)
+
+    async def get_factory_driver_analysis(
+        self,
+        energy_source: Optional[str] = None,
+        driver_name: Optional[str] = None,
+        top_n: int = 5
+    ) -> Dict[str, Any]:
+        """Get aggregated drivers across active SEU baselines."""
+        params: Dict[str, Any] = {"top_n": top_n}
+        if energy_source:
+            params["energy_source"] = energy_source
+        if driver_name:
+            params["driver_name"] = driver_name
+        return await self._request("GET", "/baseline/drivers/factory", params=params)
     
     async def list_seus(
         self,

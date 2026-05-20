@@ -97,17 +97,16 @@ class TestMachineValidation:
         assert "Invalid machine" in result.errors[0]
     
     def test_suggestion_for_similar_name(self, validator):
-        """Validator suggests similar machine names"""
+        """Validator normalizes similar machine names"""
         result = validator.validate({
             "intent": "machine_status",
             "confidence": 0.95,
             "machine": "Boiler-2"  # Similar to Boiler-1
         })
         
-        assert not result.valid
-        assert len(result.suggestions) > 0
-        # Should suggest Boiler-1
-        assert any("Boiler-1" in s for s in result.suggestions)
+        assert result.valid
+        assert result.intent.machine == "Boiler-1"
+        assert any("Boiler-2" in warning and "Boiler-1" in warning for warning in result.warnings)
     
     def test_empty_machine_name(self, validator):
         """Empty machine name for intents that don't require it"""
@@ -435,3 +434,26 @@ class TestEdgeCases:
         # Should fail or normalize
         # Depending on fuzzy matching rules
         assert True  # Placeholder - behavior depends on implementation
+
+
+class TestDriverAnalysisValidation:
+    """Test validator preservation of driver-analysis entities."""
+
+    def test_driver_analysis_keeps_energy_source_and_driver(self):
+        validator = ENMSValidator(confidence_threshold=0.85)
+        result = validator.validate({
+            "intent": "driver_analysis",
+            "confidence": 0.95,
+            "utterance": "does temperature affect Compressor-1 electricity use",
+            "entities": {
+                "machine": "Compressor-1",
+                "energy_source": "electricity",
+                "driver_name": "temperature"
+            }
+        })
+
+        assert result.valid
+        assert result.intent.intent == IntentType.DRIVER_ANALYSIS
+        assert result.intent.machine == "Compressor-1"
+        assert result.intent.energy_source == "electricity"
+        assert result.intent.driver_name == "temperature"

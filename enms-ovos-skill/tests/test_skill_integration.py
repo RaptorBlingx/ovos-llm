@@ -47,13 +47,13 @@ BOLD = '\033[1m'
 class SkillIntegrationTest:
     """End-to-end skill integration tester"""
     
-    def __init__(self, api_base_url: str = "http://10.33.10.109:8001/api/v1"):
+    def __init__(self, api_base_url: str = None):
         """Initialize all skill components"""
         print(f"{BOLD}{CYAN}=" * 80)
         print("🚀 END-TO-END SKILL INTEGRATION TEST")
         print(f"{'=' * 80}{RESET}\n")
         
-        self.api_base_url = api_base_url
+        self.api_base_url = api_base_url or os.getenv("ENMS_API_URL", "http://localhost:8001/api/v1")
         
         # Initialize all components
         print(f"{BLUE}[1/6] Initializing HybridParser...{RESET}")
@@ -67,7 +67,7 @@ class SkillIntegrationTest:
         
         print(f"{BLUE}[3/6] Initializing API Client...{RESET}")
         self.api_client = ENMSClient(
-            base_url=api_base_url,
+            base_url=self.api_base_url,
             timeout=30
         )
         

@@ -7,7 +7,7 @@ FROM python:3.10-slim-bookworm
 LABEL maintainer="A Plus Engineering"
 LABEL description="OVOS Energy Management Skill - ISO 50001 Voice Assistant"
 LABEL version="1.0.0"
-LABEL license="GPL-3.0"
+LABEL license="Apache-2.0 OR GPL-3.0-or-later"
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive

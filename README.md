@@ -363,7 +363,7 @@ This project fulfills the WASABI 1st Open Call commitment:
 
 ## 📄 License
 
-MIT License - See [LICENSE](./LICENSE) for details.
+The HumanEnerDIA OVOS skill release is distributed as **Apache-2.0 OR GPL-3.0-or-later** for WASABI shop publication. See `enms-ovos-skill/RELEASE_LICENSE.md` and `enms-ovos-skill/LICENSE` for details.
 
 ---
 

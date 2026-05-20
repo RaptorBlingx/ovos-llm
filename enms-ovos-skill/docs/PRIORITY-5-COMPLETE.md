@@ -134,7 +134,7 @@ Comprehensive configuration template with 9 sections:
 ```yaml
 # ==================== EnMS Adapter Configuration ====================
 adapter_type: humanergy  # Options: humanergy, generic, custom
-api_base_url: http://10.33.10.109:8001/api/v1
+api_base_url: http://YOUR_ENMS_HOST:8001/api/v1
 api_timeout: 90.0
 max_retries: 3
 
@@ -444,7 +444,7 @@ OVOS Skill
     │
     └─> ENMSClient (hardcoded)
             │
-            └─> Humanergy API (http://10.33.10.109:8001)
+            └─> Humanergy API (http://YOUR_ENMS_HOST:8001)
 ```
 
 **Problems:**
@@ -527,7 +527,7 @@ print(f'Created: {adapter.__class__.__name__}')
 ```bash
 $ ./setup_ovos_skill.sh
 Select adapter type [1]: 1  # Humanergy
-Enter API URL [http://10.33.10.109:8001/api/v1]: <enter>
+Enter API URL [http://YOUR_ENMS_HOST:8001/api/v1]: <enter>
 Factory name [Humanergy Factory]: <enter>
 Auto-discover machines? (y/n) [y]: y
 ✓ API connection successful!

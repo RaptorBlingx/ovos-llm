@@ -101,8 +101,8 @@ python scripts/chat_gui.py
 - Subsequent queries ~500ms
 
 **API connection errors:**
-- Verify EnMS API running: `curl http://10.33.10.109:8001/api/v1/machines`
-- Check network connectivity to 10.33.10.109
+- Verify EnMS API running: `curl ${ENMS_API_URL:-http://localhost:8001/api/v1}/machines`
+- Check network connectivity to the host configured in `ENMS_API_URL`.
 
 ## Performance
 

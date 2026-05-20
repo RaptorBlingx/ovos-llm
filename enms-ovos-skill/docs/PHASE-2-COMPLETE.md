@@ -265,7 +265,7 @@ Available adapters: ['humanergy']
 # Installation simulation
 $ ./setup_ovos_skill.sh
 Select adapter: 1 (humanergy)
-API URL: http://10.33.10.104:8001/api/v1
+API URL: http://YOUR_ENMS_HOST:8001/api/v1
 Factory: Humanergy Factory
 ✓ API connection successful!
 ✓ config.yaml generated

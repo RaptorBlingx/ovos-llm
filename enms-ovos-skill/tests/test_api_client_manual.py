@@ -3,6 +3,7 @@ Test script for EnMS API client
 Validates connection and core endpoints
 """
 import asyncio
+import os
 import sys
 from datetime import datetime, timedelta
 sys.path.insert(0, '/home/ubuntu/ovos/enms-ovos-skill')
@@ -14,7 +15,7 @@ async def test_api_client():
     """Test EnMS API client functionality"""
     
     # Initialize client
-    client = ENMSClient(base_url="http://10.33.10.109:8001/api/v1")
+    client = ENMSClient(base_url=os.getenv("ENMS_API_URL", "http://localhost:8001/api/v1"))
     
     try:
         print("=" * 60)

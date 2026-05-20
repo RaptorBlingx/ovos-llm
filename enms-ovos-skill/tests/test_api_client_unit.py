@@ -250,6 +250,72 @@ class TestFactoryEndpoints:
         assert result["active_machines"] == 7
         
         await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_seu_driver_analysis(self, monkeypatch):
+        """Test SEU driver-analysis endpoint wrapper."""
+        client = ENMSClient()
+
+        mock_response = {
+            "response_mode": "trained_baseline",
+            "seu_name": "Compressor-1",
+            "top_drivers": [{"human_name": "Temperature", "rank": 1}]
+        }
+        request_mock = AsyncMock(return_value=mock_response)
+        monkeypatch.setattr(client, '_request', request_mock)
+
+        result = await client.get_seu_driver_analysis(
+            seu_name="Compressor-1",
+            energy_source="electricity",
+            driver_name="temperature",
+            top_n=3
+        )
+
+        assert result["response_mode"] == "trained_baseline"
+        request_mock.assert_called_with(
+            "GET",
+            "/baseline/drivers",
+            params={
+                "seu_name": "Compressor-1",
+                "energy_source": "electricity",
+                "top_n": 3,
+                "driver_name": "temperature"
+            }
+        )
+
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_get_factory_driver_analysis(self, monkeypatch):
+        """Test factory-wide driver-analysis endpoint wrapper."""
+        client = ENMSClient()
+
+        mock_response = {
+            "response_mode": "factory_wide",
+            "seus_analyzed": 4,
+            "top_drivers": [{"human_name": "Production", "rank": 1}]
+        }
+        request_mock = AsyncMock(return_value=mock_response)
+        monkeypatch.setattr(client, '_request', request_mock)
+
+        result = await client.get_factory_driver_analysis(
+            energy_source="electricity",
+            driver_name="production",
+            top_n=5
+        )
+
+        assert result["response_mode"] == "factory_wide"
+        request_mock.assert_called_with(
+            "GET",
+            "/baseline/drivers/factory",
+            params={
+                "top_n": 5,
+                "energy_source": "electricity",
+                "driver_name": "production"
+            }
+        )
+
+        await client.close()
     
     @pytest.mark.asyncio
     async def test_get_top_consumers_default(self, mocker):
@@ -467,7 +533,7 @@ class TestClientLifecycle:
         client = ENMSClient(base_url="http://example.com/api")
         
         assert client.base_url == "http://example.com/api"
-        assert client.timeout == 30.0
+        assert client.timeout == 90.0
         
         await client.close()
     

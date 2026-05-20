@@ -6,20 +6,52 @@ Provides reusable fixtures for all test modules
 """
 import pytest
 import asyncio
+import os
+from unittest.mock import AsyncMock, Mock, patch
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add both project root and package directory so legacy `from lib...` tests
+# work when pytest is run from a fresh checkout.
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "enms_ovos_skill"))
 
 from lib.api_client import ENMSClient
 from lib.validator import ENMSValidator
 from lib.intent_parser import HybridParser, HeuristicRouter
 from lib.response_formatter import ResponseFormatter
-from lib.qwen3_parser import Qwen3Parser
+from lib.llm_parser import Qwen3Parser
 from lib.adapt_parser import AdaptParser
 from lib.models import Intent, IntentType, TimeRange
+
+
+@pytest.fixture
+def mocker():
+    """Small pytest-mock compatible fixture for fresh release environments."""
+    active_patchers = []
+
+    class _PatchProxy:
+        def __call__(self, *args, **kwargs):
+            patcher = patch(*args, **kwargs)
+            active_patchers.append(patcher)
+            return patcher.start()
+
+        def object(self, *args, **kwargs):
+            patcher = patch.object(*args, **kwargs)
+            active_patchers.append(patcher)
+            return patcher.start()
+
+    class _Mocker:
+        patch = _PatchProxy()
+        Mock = Mock
+        AsyncMock = AsyncMock
+
+    yield _Mocker()
+
+    for patcher in reversed(active_patchers):
+        patcher.stop()
 
 
 # ============================================================================
@@ -49,9 +81,9 @@ async def api_client():
     """
     Real API client (for integration tests)
     
-    Connects to actual EnMS API at http://10.33.10.109:8001/api/v1
+    Connects to the EnMS API configured by ENMS_API_URL.
     """
-    client = ENMSClient(base_url="http://10.33.10.109:8001/api/v1")
+    client = ENMSClient(base_url=os.getenv("ENMS_API_URL", "http://localhost:8001/api/v1"))
     yield client
     await client.close()
 

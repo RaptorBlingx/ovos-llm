@@ -8,7 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.qwen3_parser import Qwen3Parser
+if "pytest" in sys.modules:
+    import pytest
+    pytest.skip("Requires an explicitly loaded local LLM model; run as a manual script.", allow_module_level=True)
+
+from lib.llm_parser import Qwen3Parser
 from lib.validator import ENMSValidator
 
 # Representative test queries (faster than full 20-query suite)

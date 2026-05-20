@@ -12,7 +12,7 @@ Tests the LLM-based intent parsing (30+ cases)
 import pytest
 import json
 
-from lib.qwen3_parser import Qwen3Parser
+from lib.llm_parser import Qwen3Parser
 
 
 class TestJSONExtraction:
@@ -266,8 +266,7 @@ class TestErrorHandling:
         mocker.patch.object(parser, '_call_llm', return_value=llm_output)
         
         # Should handle gracefully
-        with pytest.raises(Exception):
-            parser.parse("Some query")
+        assert parser.parse("Some query") is None
     
     def test_empty_llm_response(self, mocker):
         """Test handling empty LLM response"""
@@ -275,8 +274,7 @@ class TestErrorHandling:
         
         mocker.patch.object(parser, '_call_llm', return_value='')
         
-        with pytest.raises(Exception):
-            parser.parse("Some query")
+        assert parser.parse("Some query") is None
     
     def test_llm_timeout(self, mocker):
         """Test handling LLM timeout"""
@@ -285,8 +283,7 @@ class TestErrorHandling:
         # Mock a timeout exception
         mocker.patch.object(parser, '_call_llm', side_effect=TimeoutError("LLM timeout"))
         
-        with pytest.raises(TimeoutError):
-            parser.parse("Some query")
+        assert parser.parse("Some query") is None
     
     def test_llm_error(self, mocker):
         """Test handling LLM error"""
@@ -294,8 +291,7 @@ class TestErrorHandling:
         
         mocker.patch.object(parser, '_call_llm', side_effect=Exception("LLM error"))
         
-        with pytest.raises(Exception):
-            parser.parse("Some query")
+        assert parser.parse("Some query") is None
 
 
 class TestComplexQueries:

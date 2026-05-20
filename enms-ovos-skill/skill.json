@@ -1,11 +1,11 @@
 {
-  "name": "EnMS Energy Management Skill",
+  "name": "HumanEnerDIA OVOS Skill for Industrial Energy Management",
   "skill_id": "enms-ovos-skill",
   "version": "1.0.0",
   "author": "A Plus Engineering",
-  "description": "Human-centric voice assistant for industrial energy management (ISO 50001). Provides real-time monitoring, anomaly detection, forecasting, and decision support for manufacturing SMEs. Part of WASABI H2020 HumanEnerDIA project.",
-  "license": "GPL-3.0",
-  "url": "https://github.com/aplusengineering/enms-ovos-skill",
+  "description": "Human-centric OVOS skill for industrial energy management (ISO 50001). Provides real-time monitoring, anomaly detection, forecasting, and decision support for manufacturing SMEs. Part of the WASABI HumanEnerDIA project.",
+  "license": "Apache-2.0 OR GPL-3.0-or-later",
+  "url": "https://github.com/RaptorBlingx/ovos-llm/tree/main/enms-ovos-skill",
   "category": "Productivity",
   "tags": [
     "energy",
@@ -21,7 +21,7 @@
     "arm"
   ],
   "requirements": {
-    "python": ">=3.11",
+    "python": ">=3.10",
     "skill": [
       "ovos-workshop>=0.0.15"
     ]

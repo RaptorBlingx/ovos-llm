@@ -7,6 +7,10 @@ TARGET: 100% COVERAGE
 import sys, os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+if "pytest" in sys.modules:
+    import pytest
+    pytest.skip("Legacy executable script; use test_100_percent_coverage.py for pytest release coverage.", allow_module_level=True)
+
 from lib.intent_parser import HybridParser
 from lib.validator import ENMSValidator
 from lib.models import IntentType

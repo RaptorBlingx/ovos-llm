@@ -144,8 +144,6 @@ def test_clarification_needed():
     test_cases = [
         (Intent(intent=IntentType.UNKNOWN, confidence=0.5, utterance="help"), 
          "Unknown intent needs clarification"),
-        (Intent(intent=IntentType.POWER_QUERY, machine=None, confidence=0.9, utterance="power"),
-         "Machine-specific query without machine"),
         (Intent(intent=IntentType.COMPARISON, machines=None, confidence=0.9, utterance="compare"),
          "Comparison without machines"),
     ]

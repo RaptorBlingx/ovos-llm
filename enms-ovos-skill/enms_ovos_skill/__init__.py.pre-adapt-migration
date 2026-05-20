@@ -107,7 +107,7 @@ class EnmsSkill(ConversationalSkill):
         # Get settings from environment variables (Docker) or settingsmeta.yaml (local)
         import os
         self.enms_api_base_url = os.getenv("ENMS_API_URL", 
-                                          self.settings.get("enms_api_base_url", "http://172.18.0.1:8001/api/v1"))
+                                          self.settings.get("enms_api_base_url", "http://localhost:8001/api/v1"))
         self.llm_model_path = self.settings.get("llm_model_path", "./models/Qwen_Qwen3-1.7B-Q4_K_M.gguf")
         self.confidence_threshold = self.settings.get("confidence_threshold", 0.85)
         self.enable_progress_feedback = self.settings.get("enable_progress_feedback", True)

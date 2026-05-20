@@ -63,7 +63,7 @@ class HeuristicRouter:
     # Known machine names (loaded from validator)
     MACHINES = [
         "Boiler-1", "Compressor-1", "Compressor-EU-1", "Conveyor-A",
-        "HVAC-EU-North", "HVAC-Main", "Injection-Molding-1", "Turbine-1"
+        "HVAC-EU-North", "HVAC-Main", "Hydraulic-Pump-1", "Injection-Molding-1"
     ]
     
     # Regex patterns (compiled for speed)
@@ -145,6 +145,16 @@ class HeuristicRouter:
             re.compile(r'\b(?:does|do|has|have).*?baseline.*?model', re.IGNORECASE),
             re.compile(r'\bhow\s+many.*?baseline.*?models?', re.IGNORECASE),
             re.compile(r'\bshow.*?baseline.*?models?', re.IGNORECASE),
+        ],
+
+        'driver_analysis': [
+            re.compile(r'\b(?:main|top|key|biggest)\s+energy\s+drivers?\b', re.IGNORECASE),
+            re.compile(r'\b(?:what|which)\s+(?:are\s+the\s+)?(?:main|top|key|biggest|most\s+important)\s+drivers?\b', re.IGNORECASE),
+            re.compile(r'\bdriver\s+analysis\b', re.IGNORECASE),
+            re.compile(r'\bwhat\s+(?:drives?|affects?|influences?)\s+(?:the\s+)?(?:energy|consumption|usage)\b', re.IGNORECASE),
+            re.compile(r'\bwhich\s+factors?\s+(?:drive|affect|influence)\s+(?:the\s+)?(?:energy|consumption|usage)\b', re.IGNORECASE),
+            re.compile(r'\b(?:does|do|can)\s+.*?(?:temperature|pressure|humidity|production|throughput|output|load|runtime|operating\s+hours|weather)\b.*?\b(?:affect|influence|drive)\b', re.IGNORECASE),
+            re.compile(r'\bmost\s+influential\s+driver\b', re.IGNORECASE),
         ],
         
         # Baseline explanation (key drivers, model accuracy)
@@ -726,6 +736,54 @@ class HeuristicRouter:
                 'metric': 'energy'
             }
 
+        if 'performance' in utterance_lower or 'performing' in utterance_lower:
+            return {
+                'intent': 'performance',
+                'confidence': recovery_confidence,
+                'machine': normalized_machine,
+                'metric': 'efficiency'
+            }
+
+        return None
+
+    def _extract_energy_source(self, utterance: str) -> Optional[str]:
+        """Extract canonical energy-source name from the utterance."""
+        utterance_lower = utterance.lower()
+
+        if 'compressed air' in utterance_lower:
+            return 'compressed_air'
+        if 'natural gas' in utterance_lower or re.search(r'\bgas\b', utterance_lower):
+            return 'natural_gas'
+        if 'steam' in utterance_lower:
+            return 'steam'
+        if 'electricity' in utterance_lower or 'electric' in utterance_lower:
+            return 'electricity'
+
+        return None
+
+    def _extract_driver_focus(self, utterance: str) -> Optional[str]:
+        """Extract the specific driver mentioned in the utterance, if any."""
+        driver_aliases = [
+            ('outdoor temperature', ['outdoor temperature', 'ambient temperature', 'weather']),
+            ('indoor temperature', ['indoor temperature', 'room temperature']),
+            ('machine temperature', ['machine temperature', 'equipment temperature']),
+            ('temperature', ['temperature']),
+            ('pressure', ['operating pressure', 'steam pressure', 'air pressure', 'pressure']),
+            ('production', ['production count', 'production', 'throughput', 'output']),
+            ('load factor', ['load factor', 'load']),
+            ('operating hours', ['operating hours', 'runtime', 'run time']),
+            ('humidity', ['humidity']),
+            ('heating degree days', ['heating degree days', 'hdd']),
+            ('cooling degree days', ['cooling degree days', 'cdd']),
+            ('dewpoint', ['dew point', 'dewpoint']),
+        ]
+
+        utterance_lower = utterance.lower()
+        for canonical_name, aliases in driver_aliases:
+            for alias in aliases:
+                if alias in utterance_lower:
+                    return canonical_name
+
         return None
     
     def route(self, utterance: str) -> Optional[Dict]:
@@ -805,7 +863,7 @@ class HeuristicRouter:
                     
                     # Machine listing patterns: "which HVAC units", "find compressors", "how many", "list machines"
                     is_listing = any([
-                        re.search(r'\b(?:which|what)\s+(HVAC|Boiler|Compressor|Conveyor|Turbine|Hydraulic|Injection)', utterance_lower),
+                        re.search(r'\b(?:which|what)\s+(?:hvac|boiler|compressor|conveyor|turbine|hydraulic|injection)', utterance_lower),
                         'find' in utterance_lower and any(t in utterance_lower for t in ['hvac', 'boiler', 'compressor', 'conveyor']),
                         'how many' in utterance_lower,
                         'list' in utterance_lower and 'machine' in utterance_lower,
@@ -827,7 +885,9 @@ class HeuristicRouter:
                 # Determine ranking metric from query
                 metric = 'energy'  # default
                 utterance_lower = utterance.lower()
-                if 'efficiency' in utterance_lower or 'efficient' in utterance_lower:
+                if 'power' in utterance_lower or 'kw' in utterance_lower or 'kilowatt' in utterance_lower:
+                    metric = 'power'
+                elif 'efficiency' in utterance_lower or 'efficient' in utterance_lower:
                     metric = 'efficiency'
                 elif 'cost' in utterance_lower:
                     metric = 'cost'
@@ -856,7 +916,17 @@ class HeuristicRouter:
                 return {
                     'intent': 'baseline_models',
                     'confidence': 0.95,
-                    'machine': machine
+                    'machine': machine,
+                    'energy_source': self._extract_energy_source(utterance)
+                }
+
+            elif intent_type == 'driver_analysis':
+                return {
+                    'intent': 'driver_analysis',
+                    'confidence': 0.95,
+                    'machine': self._extract_machine_fuzzy(utterance),
+                    'energy_source': self._extract_energy_source(utterance),
+                    'driver_name': self._extract_driver_focus(utterance)
                 }
             
             elif intent_type == 'baseline_explanation':
@@ -866,7 +936,8 @@ class HeuristicRouter:
                 return {
                     'intent': 'baseline_explanation',
                     'confidence': 0.95,
-                    'machine': machine
+                    'machine': machine,
+                    'energy_source': self._extract_energy_source(utterance)
                 }
             
             elif intent_type == 'seus':
@@ -916,7 +987,8 @@ class HeuristicRouter:
                 return {
                     'intent': 'baseline',
                     'confidence': 0.95,
-                    'machine': machine
+                    'machine': machine,
+                    'energy_source': self._extract_energy_source(utterance)
                 }
             
             elif intent_type == 'production':
@@ -943,6 +1015,23 @@ class HeuristicRouter:
                 # Factory overview - may include machine name for filtering (e.g., opportunities for Compressor-1)
                 machines = self._extract_multiple_machines(utterance)
                 machine = machines[0] if machines else None
+                utterance_lower = utterance.lower()
+
+                if machine and any(word in utterance_lower for word in ['carbon', 'emission', 'co2']):
+                    return {
+                        'intent': 'kpi',
+                        'confidence': 0.90,
+                        'machine': machine,
+                        'metric': 'carbon'
+                    }
+
+                if machine and 'cost' in utterance_lower:
+                    return {
+                        'intent': 'cost_analysis',
+                        'confidence': 0.90,
+                        'machine': machine,
+                        'metric': 'cost'
+                    }
                 
                 # If a machine was found (even via fuzzy matching), this is likely an energy_query, not factory_overview 
                 if machine:
@@ -993,11 +1082,17 @@ class HeuristicRouter:
             
             elif intent_type == 'energy_query':
                 # Try to extract machine from capture group, fall back to fuzzy matching
+                machine = None
                 try:
-                    machine = match.group(1)
-                    machine = self._normalize_machine_name(machine)
+                    candidate_machine = match.group(1)
                 except (IndexError, AttributeError):
-                    # No capture group or match failed - use fuzzy extraction
+                    candidate_machine = None
+
+                if candidate_machine:
+                    machine = self._normalize_machine_name(candidate_machine)
+
+                if machine not in self.MACHINES:
+                    # No machine capture, or the capture was a time token like "today"
                     machine = self._extract_machine_fuzzy(utterance)
                 
                 # Phase 2.3: Infer metric (might be cost/power query disguised as energy)
@@ -1047,12 +1142,7 @@ class HeuristicRouter:
             
             elif intent_type == 'anomaly_detection':
                 # Anomaly detection - may or may not have machine name
-                machine = None
-                utterance_lower = utterance.lower()
-                for m in self.MACHINES:
-                    if m.lower() in utterance_lower:
-                        machine = m
-                        break
+                machine = self._extract_machine_fuzzy(utterance)
                 
                 return {
                     'intent': 'anomaly_detection',

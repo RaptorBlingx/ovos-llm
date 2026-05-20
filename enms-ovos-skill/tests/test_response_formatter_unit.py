@@ -22,9 +22,9 @@ class TestTemplateRendering:
         """Test machine status dialog template"""
         data = {
             "machine_name": "Compressor-1",
-            "current_status": "running",
-            "power_kw": 47.98,
-            "uptime_hours": 23.5
+            "current_status": {"status": "running", "power_kw": 47.98},
+            "today_stats": {"energy_kwh": 1152.5, "cost_usd": 123.4},
+            "recent_anomalies": {"count": 0}
         }
         
         response = response_formatter.format_response("machine_status", data)
@@ -35,9 +35,9 @@ class TestTemplateRendering:
     def test_energy_query_template(self, response_formatter):
         """Test energy query dialog template"""
         data = {
-            "machine_name": "Boiler-1",
+            "machine": "Boiler-1",
             "energy_kwh": 1152.5,
-            "time_period": "today"
+            "time_range": "today"
         }
         
         response = response_formatter.format_response("energy_query", data)
@@ -47,7 +47,7 @@ class TestTemplateRendering:
     def test_power_query_template(self, response_formatter):
         """Test power query dialog template"""
         data = {
-            "machine_name": "HVAC-Main",
+            "machine": "HVAC-Main",
             "power_kw": 23.45
         }
         
@@ -67,6 +67,93 @@ class TestTemplateRendering:
         response = response_formatter.format_response("factory_overview", data)
         
         assert "8" in response or "eight" in response.lower()
+
+    def test_machine_anomaly_detail_template(self, response_formatter):
+        """Test detailed machine anomaly rendering for recent anomaly lists."""
+        data = {
+            "machine_name": "Boiler-1",
+            "total_count": 3,
+            "anomalies": [
+                {
+                    "anomaly_type": "spike",
+                    "severity": "critical",
+                    "metric_name": "power_kw",
+                    "metric_value": 78.8,
+                    "expected_value": 45.0,
+                    "deviation_percent": 75.1,
+                    "detected_at": "2026-04-22T11:31:00+00:00",
+                    "is_resolved": False,
+                    "machine_name": "Boiler-1"
+                },
+                {
+                    "anomaly_type": "spike",
+                    "severity": "critical",
+                    "metric_name": "power_kw",
+                    "metric_value": 77.4,
+                    "expected_value": 44.7,
+                    "deviation_percent": 73.2,
+                    "detected_at": "2026-04-21T09:14:00+00:00",
+                    "is_resolved": True,
+                    "machine_name": "Boiler-1"
+                },
+                {
+                    "anomaly_type": "spike",
+                    "severity": "critical",
+                    "metric_name": "power_kw",
+                    "metric_value": 79.2,
+                    "expected_value": 45.1,
+                    "deviation_percent": 75.6,
+                    "detected_at": "2026-04-20T07:05:00+00:00",
+                    "is_resolved": False,
+                    "machine_name": "Boiler-1"
+                }
+            ]
+        }
+
+        response = response_formatter.format_response("anomaly_detection", data)
+
+        assert "3 anomalies detected for Boiler-1" in response
+        assert "critical power spike anomalies" in response
+        assert "Latest examples:" in response
+        assert "observed 78.8 versus expected 45" in response
+        assert "2 remain unresolved and 1 is resolved" in response
+
+    def test_enrich_anomaly_response_computes_summary_fields(self, response_formatter):
+        """Test anomaly enrichment for machine-specific anomaly data."""
+        data = {
+            "machine_name": "Boiler-1",
+            "anomalies": [
+                {
+                    "anomaly_type": "spike",
+                    "severity": "critical",
+                    "metric_name": "power_kw",
+                    "metric_value": 78.8,
+                    "expected_value": 45.0,
+                    "deviation_percent": 75.1,
+                    "detected_at": "2026-04-22T11:31:00+00:00",
+                    "is_resolved": False,
+                },
+                {
+                    "anomaly_type": "spike",
+                    "severity": "critical",
+                    "metric_name": "power_kw",
+                    "metric_value": 77.4,
+                    "expected_value": 44.7,
+                    "deviation_percent": 73.2,
+                    "detected_at": "2026-04-21T09:14:00+00:00",
+                    "is_resolved": True,
+                }
+            ]
+        }
+
+        enriched = response_formatter.enrich_anomaly_response(data)
+
+        assert enriched["response_mode"] == "machine_anomaly_detail"
+        assert enriched["critical"] == 2
+        assert enriched["resolved_count"] == 1
+        assert enriched["unresolved_count"] == 1
+        assert enriched["group_summaries"] == ["2 critical power spike anomalies"]
+        assert len(enriched["detail_anomaly_summaries"]) == 2
 
 
 class TestVoiceNumberFormatting:

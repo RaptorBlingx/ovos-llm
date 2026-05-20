@@ -3,13 +3,14 @@ Test LLM pipeline end-to-end
 Validates: Qwen3 Parser → Validator → EnMS API → Response
 """
 import sys
+import os
 import asyncio
 from pathlib import Path
 
 # Add skill to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.qwen3_parser import Qwen3Parser
+from lib.llm_parser import Qwen3Parser
 from lib.validator import ENMSValidator
 from lib.api_client import ENMSClient
 
@@ -64,7 +65,7 @@ async def test_pipeline():
     model_path = Path(__file__).parent.parent / "models" / "Qwen3.5-2B-Q4_K_M.gguf"
     parser = Qwen3Parser(model_path=str(model_path))
     validator = ENMSValidator(confidence_threshold=0.85)
-    api_client = ENMSClient(base_url="http://10.33.10.109:8001/api/v1")
+    api_client = ENMSClient(base_url=os.getenv("ENMS_API_URL", "http://localhost:8001/api/v1"))
     
     # Refresh machine whitelist
     print("[2] Refreshing machine whitelist from EnMS API...")

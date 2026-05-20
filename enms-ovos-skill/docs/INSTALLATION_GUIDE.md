@@ -171,7 +171,7 @@ For Humanergy's EnMS installations:
 
 ```yaml
 adapter_type: humanergy
-api_base_url: http://10.33.10.109:8001/api/v1
+api_base_url: http://YOUR_ENMS_HOST:8001/api/v1
 ```
 
 **Features:**

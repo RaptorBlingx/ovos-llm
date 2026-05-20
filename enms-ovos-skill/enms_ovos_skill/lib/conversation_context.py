@@ -481,8 +481,18 @@ class ConversationContextManager:
                            intent=intent.intent.value,
                            default=default_time_range.relative if hasattr(default_time_range, 'relative') else 'today')
         
+        ranking_text = (intent.utterance or "").lower()
+        is_ranking_discovery = (
+            intent.intent == IntentType.RANKING
+            and not intent.metric
+            and not intent.ranking_metric
+            and not intent.limit
+            and any(word in ranking_text for word in ["find", "which", "list", "show details", "tell me about"])
+            and not any(word in ranking_text for word in ["top", "consumer", "consumers", "most", "highest", "rank"])
+        )
+
         # 2. Apply default metric based on intent type (if not already inferred)
-        if not intent.metric:
+        if not intent.metric and not is_ranking_discovery:
             default_metric = self._get_default_metric(intent.intent)
             if default_metric:
                 updates['metric'] = default_metric
@@ -518,7 +528,7 @@ class ConversationContextManager:
                            intent=intent.intent.value)
         
         # 4. Apply default aggregation for ranking/comparison
-        if intent.intent in [IntentType.RANKING, IntentType.COMPARISON]:
+        if intent.intent in [IntentType.RANKING, IntentType.COMPARISON] and not is_ranking_discovery:
             if not intent.aggregation:
                 updates['aggregation'] = 'total'
                 logger.info("applied_default_aggregation",
@@ -526,7 +536,7 @@ class ConversationContextManager:
                            default='total')
         
         # 5. Apply default limit for ranking queries
-        if intent.intent == IntentType.RANKING:
+        if intent.intent == IntentType.RANKING and not is_ranking_discovery:
             if not intent.limit or intent.limit == 0:
                 updates['limit'] = 5  # Top 5 by default
                 logger.info("applied_default_limit",

@@ -15,9 +15,9 @@
 adapter_type: humanergy
 
 # API connection settings
-# Default: Current server (10.33.10.104)
+# Default: local EnMS analytics API. Override with ENMS_API_URL in production.
 # Set ENMS_API_HOST environment variable to override
-api_base_url: http://10.33.10.104:8001/api/v1
+api_base_url: http://localhost:8001/api/v1
 api_timeout: 90.0  # seconds
 max_retries: 3
 

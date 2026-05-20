@@ -5,6 +5,7 @@ Subscribes to Redis pub/sub for proactive warnings.
 import asyncio
 import json
 import logging
+import os
 from typing import Callable, Optional
 from redis.asyncio import Redis
 
@@ -22,10 +23,10 @@ class EnMSEventListener:
             callback: Function to call when event received (event_type, data)
         """
         self.callback = callback
-        self.redis_host = "redis"
-        self.redis_port = 6379
-        self.redis_password = "raptorblingx"
-        self.redis_db = 0
+        self.redis_host = os.getenv("REDIS_HOST", "redis")
+        self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        self.redis_password = os.getenv("REDIS_PASSWORD")
+        self.redis_db = int(os.getenv("REDIS_DB", "0"))
         self.redis: Optional[Redis] = None
         self.pubsub = None
         self.running = False

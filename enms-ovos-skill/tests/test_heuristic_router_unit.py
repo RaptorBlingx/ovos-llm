@@ -229,6 +229,38 @@ class TestSEUPatterns:
         assert result['confidence'] >= 0.95
 
 
+class TestDriverAnalysisPatterns:
+    """Test dedicated driver-analysis routing."""
+
+    def test_main_drivers_for_machine(self):
+        """Driver-focused machine queries should not collapse into baseline explanation."""
+        router = HeuristicRouter()
+        result = router.route("what are the main drivers for Compressor-1")
+
+        assert result is not None
+        assert result['intent'] == 'driver_analysis'
+        assert result['machine'] == 'Compressor-1'
+
+    def test_specific_driver_question_extracts_driver_name(self):
+        """Specific-driver phrasing should preserve the requested driver."""
+        router = HeuristicRouter()
+        result = router.route("does temperature affect energy use of Compressor-1")
+
+        assert result is not None
+        assert result['intent'] == 'driver_analysis'
+        assert result['machine'] == 'Compressor-1'
+        assert result['driver_name'] == 'temperature'
+
+    def test_driver_query_extracts_energy_source(self):
+        """Energy-source qualifiers should be preserved for multi-energy routing."""
+        router = HeuristicRouter()
+        result = router.route("what are the top drivers for Boiler-1 natural gas")
+
+        assert result is not None
+        assert result['intent'] == 'driver_analysis'
+        assert result['energy_source'] == 'natural_gas'
+
+
 class TestComparisonPatterns:
     """Test comparison patterns"""
     

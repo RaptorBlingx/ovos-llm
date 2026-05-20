@@ -30,7 +30,7 @@ VALID_MACHINES = [
     "HVAC-EU-North",
     "Conveyor-A",
     "Injection-Molding-1",
-    "Pump-1"
+    "Hydraulic-Pump-1"
 ]
 
 VALID_METRICS = [
@@ -158,6 +158,13 @@ class ENMSValidator:
                 time_range=time_range_obj,
                 aggregation=llm_output.get("aggregation") or entities.get("aggregation"),
                 limit=llm_output.get("limit") or entities.get("limit"),
+                energy_source=llm_output.get("energy_source") or entities.get("energy_source"),
+                ranking_metric=llm_output.get("ranking_metric") or entities.get("ranking_metric"),
+                driver_name=(
+                    llm_output.get("driver_name")
+                    or entities.get("driver_name")
+                    or entities.get("driver")
+                ),
                 params=self._extract_intent_params(llm_output)
             )
         except (ValidationError, ValueError) as e:
@@ -181,12 +188,9 @@ class ENMSValidator:
         factory_wide_intents = [
             IntentType.FACTORY_OVERVIEW, 
             IntentType.RANKING, 
-            IntentType.COST_ANALYSIS, 
             IntentType.REPORT, 
-            IntentType.KPI,
             IntentType.SEUS,
             IntentType.HELP,
-            IntentType.FORECAST  # Can be factory-wide or machine-specific
         ]
         
         if intent.machine and intent.intent not in factory_wide_intents:

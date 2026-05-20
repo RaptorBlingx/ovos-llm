@@ -1,6 +1,6 @@
 # EnMS OVOS Skill - Energy Management Voice Assistant
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: Apache-2.0 OR GPL-3.0-or-later](https://img.shields.io/badge/License-Apache--2.0%20OR%20GPL--3.0--or--later-blue.svg)](./RELEASE_LICENSE.md)
 [![OVOS](https://img.shields.io/badge/OVOS-Compatible-green.svg)](https://openvoiceos.github.io/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -138,12 +138,12 @@ enms-ovos-skill/
 ├── bridge/                      # REST API gateway
 ├── setup.py                     # Package configuration
 ├── skill.json                   # OVOS metadata
-└── LICENSE                      # GPL-3.0
+└── RELEASE_LICENSE.md           # WASABI release licensing
 ```
 
 ## 🤝 Contributing
 
-Contributions are welcome! This is an open-source project under GPL-3.0.
+Contributions are welcome. The WASABI release artifact is offered under Apache-2.0 OR GPL-3.0-or-later; see [RELEASE_LICENSE.md](./RELEASE_LICENSE.md).
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -153,7 +153,7 @@ Contributions are welcome! This is an open-source project under GPL-3.0.
 
 ## 📄 License
 
-This project is licensed under the **GNU General Public License v3.0** - see the [LICENSE](LICENSE) file for details.
+The WASABI release artifact is licensed under **Apache-2.0 OR GPL-3.0-or-later**. The existing repository license file is preserved for historical GPL distribution context; see [RELEASE_LICENSE.md](./RELEASE_LICENSE.md) for the release grant used for WASABI shop distribution.
 
 **Copyright (C) 2025 A Plus Engineering (Turkey)**
 

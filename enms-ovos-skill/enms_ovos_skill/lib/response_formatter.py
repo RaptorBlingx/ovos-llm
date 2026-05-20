@@ -8,7 +8,7 @@ Tier 4: Response Formatter
 - 100% data from API (NO LLM generation)
 - <1ms latency
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 from jinja2 import Environment, FileSystemLoader, Template
 import structlog
@@ -115,6 +115,9 @@ class ResponseFormatter:
             
             # Merge API data with context
             data = {**(context or {}), **api_data}
+
+            if intent_type == "anomaly_detection":
+                data = self.enrich_anomaly_response(data)
             
             # Render template
             response = template.render(**data)
@@ -134,6 +137,233 @@ class ResponseFormatter:
             
             # Fallback to generic response
             return self._generic_response(api_data)
+
+    def enrich_anomaly_response(self, api_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Add voice- and widget-friendly anomaly summaries for machine-specific anomaly lists."""
+        if not isinstance(api_data, dict):
+            return api_data
+
+        if api_data.get('is_active') or api_data.get('is_detection'):
+            return api_data
+
+        machine_name = api_data.get('machine_name')
+        anomalies = api_data.get('anomalies')
+        if not machine_name or not isinstance(anomalies, list):
+            return api_data
+
+        total_count = api_data.get('total_count')
+        if total_count is None:
+            total_count = len(anomalies)
+            api_data['total_count'] = total_count
+
+        severity_counts: Dict[str, int] = {}
+        group_map: Dict[tuple, Dict[str, Any]] = {}
+        resolved_count = 0
+
+        for anomaly in anomalies:
+            severity = str(anomaly.get('severity') or 'unknown').lower()
+            metric_label = self._humanize_metric_name(anomaly.get('metric_name'))
+            anomaly_label = self._humanize_anomaly_type(anomaly.get('anomaly_type'))
+            group_key = (severity, metric_label, anomaly_label)
+            detected_at = self._parse_datetime(anomaly.get('detected_at'))
+
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            if anomaly.get('is_resolved'):
+                resolved_count += 1
+
+            if group_key not in group_map:
+                group_map[group_key] = {
+                    'severity': severity,
+                    'metric_label': metric_label,
+                    'anomaly_label': anomaly_label,
+                    'count': 0,
+                    'latest_detected_at': detected_at,
+                }
+
+            group_map[group_key]['count'] += 1
+            latest_detected = group_map[group_key]['latest_detected_at']
+            if detected_at and (latest_detected is None or detected_at > latest_detected):
+                group_map[group_key]['latest_detected_at'] = detected_at
+
+        grouped_anomalies = sorted(
+            group_map.values(),
+            key=lambda group: (
+                -group['count'],
+                group['latest_detected_at'].timestamp() if group['latest_detected_at'] else 0,
+            )
+        )
+
+        unresolved_count = max(total_count - resolved_count, 0)
+        detail_limit = min(2, len(anomalies))
+        detail_anomaly_summaries = [
+            self._build_anomaly_example_summary(anomaly)
+            for anomaly in anomalies[:detail_limit]
+        ]
+
+        api_data['response_mode'] = 'machine_anomaly_detail'
+        api_data['response_period_label'] = self._anomaly_period_label(api_data)
+        api_data['by_severity'] = severity_counts
+        api_data['critical'] = severity_counts.get('critical', 0)
+        api_data['warnings'] = severity_counts.get('warning', 0)
+        api_data['resolved_count'] = resolved_count
+        api_data['unresolved_count'] = unresolved_count
+        api_data['group_summaries'] = [
+            self._build_anomaly_group_summary(group)
+            for group in grouped_anomalies
+        ]
+        api_data['all_same_pattern'] = len(grouped_anomalies) == 1 and total_count > 1
+        api_data['primary_group_summary'] = (
+            self._build_anomaly_descriptor(grouped_anomalies[0], plural=grouped_anomalies[0]['count'] != 1)
+            if grouped_anomalies else None
+        )
+        api_data['detail_anomaly_summaries'] = detail_anomaly_summaries
+        api_data['additional_anomaly_count'] = max(total_count - detail_limit, 0)
+
+        return api_data
+
+    def _anomaly_period_label(self, api_data: Dict[str, Any]) -> str:
+        """Return a short voice-friendly period label for anomaly summaries."""
+        filters = api_data.get('filters') or {}
+        if filters.get('start_time') or filters.get('end_time'):
+            return 'in the requested time range'
+        return 'in the last 7 days'
+
+    def _humanize_metric_name(self, metric_name: Any) -> str:
+        """Convert raw metric keys to voice-friendly metric names."""
+        if not metric_name:
+            return 'observed metric'
+
+        metric_key = str(metric_name).strip().lower()
+        metric_map = {
+            'power_kw': 'power',
+            'total_energy_kwh': 'energy use',
+            'energy_kwh': 'energy use',
+            'avg_pressure_bar': 'pressure',
+            'pressure_bar': 'pressure',
+            'avg_machine_temp_c': 'machine temperature',
+            'machine_temp_c': 'machine temperature',
+            'avg_outdoor_temp_c': 'outdoor temperature',
+            'outdoor_temp_c': 'outdoor temperature',
+            'avg_load_factor': 'load factor',
+            'load_factor': 'load factor',
+            'total_production_count': 'production',
+            'production_count': 'production',
+        }
+        if metric_key in metric_map:
+            return metric_map[metric_key]
+
+        return metric_key.replace('_', ' ')
+
+    def _humanize_anomaly_type(self, anomaly_type: Any) -> str:
+        """Convert raw anomaly type keys to voice-friendly labels."""
+        if not anomaly_type:
+            return 'anomaly'
+        return str(anomaly_type).strip().lower().replace('_', ' ')
+
+    def _parse_datetime(self, value: Any):
+        """Parse ISO datetimes when present."""
+        from datetime import datetime
+
+        if isinstance(value, datetime):
+            return value
+        if not value:
+            return None
+
+        try:
+            return datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        except ValueError:
+            return None
+
+    def _format_anomaly_time(self, value: Any) -> Optional[str]:
+        """Render anomaly timestamps in a short spoken form."""
+        timestamp = self._parse_datetime(value)
+        if not timestamp:
+            return str(value) if value else None
+
+        month_names = [
+            '', 'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ]
+        hour = timestamp.hour
+        minute = timestamp.minute
+        ampm = 'AM' if hour < 12 else 'PM'
+        display_hour = hour % 12 or 12
+
+        if minute:
+            return f"{month_names[timestamp.month]} {timestamp.day} at {display_hour}:{minute:02d} {ampm}"
+        return f"{month_names[timestamp.month]} {timestamp.day} at {display_hour} {ampm}"
+
+    def _build_anomaly_descriptor(self, group: Dict[str, Any], plural: bool = True) -> str:
+        """Build a compact human-readable anomaly descriptor."""
+        parts: List[str] = []
+        severity = group.get('severity')
+        metric_label = group.get('metric_label')
+        anomaly_label = group.get('anomaly_label')
+
+        if severity and severity != 'unknown':
+            parts.append(severity)
+        if metric_label and metric_label != 'observed metric':
+            parts.append(metric_label)
+        if anomaly_label and anomaly_label != 'anomaly':
+            parts.append(anomaly_label)
+
+        suffix = 'anomalies' if plural else 'anomaly'
+        return ' '.join(parts + [suffix]).strip()
+
+    def _build_anomaly_group_summary(self, group: Dict[str, Any]) -> str:
+        """Build a count-oriented summary for an anomaly group."""
+        count = group.get('count', 0)
+        descriptor = self._build_anomaly_descriptor(group, plural=count != 1)
+        return f"{count} {descriptor}".strip()
+
+    def _build_anomaly_example_summary(self, anomaly: Dict[str, Any]) -> str:
+        """Build a short detailed spoken summary for one anomaly record."""
+        group = {
+            'severity': str(anomaly.get('severity') or 'unknown').lower(),
+            'metric_label': self._humanize_metric_name(anomaly.get('metric_name')),
+            'anomaly_label': self._humanize_anomaly_type(anomaly.get('anomaly_type')),
+        }
+        descriptor = self._build_anomaly_descriptor(group, plural=False)
+        time_text = self._format_anomaly_time(anomaly.get('detected_at'))
+        observed_value = self._safe_number_text(anomaly.get('metric_value'), 1)
+        expected_value = self._safe_number_text(anomaly.get('expected_value'), 1)
+        deviation_text = self._deviation_text(anomaly.get('deviation_percent'))
+        resolution_text = 'resolved' if anomaly.get('is_resolved') else 'unresolved'
+
+        headline = descriptor
+        if time_text:
+            headline = f"{headline} at {time_text}"
+
+        parts = [headline]
+        if observed_value and expected_value:
+            parts.append(f"observed {observed_value} versus expected {expected_value}")
+        if deviation_text:
+            parts.append(deviation_text)
+        parts.append(resolution_text)
+
+        return ', '.join(parts)
+
+    def _safe_number_text(self, value: Any, precision: int = 1) -> Optional[str]:
+        """Format numeric values without raising if they are missing or invalid."""
+        try:
+            if value is None:
+                return None
+            return self._format_number(float(value), precision)
+        except (TypeError, ValueError):
+            return None
+
+    def _deviation_text(self, value: Any) -> Optional[str]:
+        """Render deviation percentages in a voice-friendly form."""
+        try:
+            if value is None:
+                return None
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return None
+
+        direction = 'above expected' if numeric_value >= 0 else 'below expected'
+        formatted = self._format_number(abs(numeric_value), 0)
+        return f"{formatted} percent {direction}"
     
     def _voice_number(self, value: float, precision: int = 1) -> str:
         """

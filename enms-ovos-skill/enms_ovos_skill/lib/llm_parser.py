@@ -43,7 +43,7 @@ class Qwen3Parser:
         "baseline_prediction": "forecast",
     }
     
-    def __init__(self, model_path: str, thinking_enabled: bool = False):
+    def __init__(self, model_path: str = "./models/Qwen3.5-2B-Q4_K_M.gguf", thinking_enabled: bool = False):
         """
         Initialize Qwen3Parser.
         
@@ -117,8 +117,8 @@ class Qwen3Parser:
     def parse(
         self,
         utterance: str,
-        machines: List[str],
-        intents: List[str]
+        machines: Optional[List[str]] = None,
+        intents: Optional[List[str]] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Parse utterance and extract intent/entities using LLM.
@@ -139,9 +139,15 @@ class Qwen3Parser:
             ... )
             {'intent': 'ranking', 'machine': None, 'confidence': 0.85}
         """
-        if not self.model:
-            self.logger.warning("Model not loaded. Skipping LLM parsing.")
-            return None
+        machines = machines or [
+            "Boiler-1", "Compressor-1", "Compressor-EU-1", "Conveyor-A",
+            "HVAC-EU-North", "HVAC-Main", "Hydraulic-Pump-1", "Injection-Molding-1"
+        ]
+        intents = intents or [
+            "power_query", "energy_query", "machine_status", "ranking",
+            "factory_overview", "comparison", "forecast", "anomaly_detection",
+            "baseline_models", "baseline_explanation", "driver_analysis", "kpi"
+        ]
         
         self.metrics["inferences_total"] += 1
         start = time.time()
@@ -159,16 +165,10 @@ class Qwen3Parser:
             
             # Call LLM with timeout
             self.logger.debug(f"LLM inference starting: '{utterance}'")
-            
-            # llama-cpp inference is not safe to run concurrently on the same model instance.
-            with self._inference_lock:
-                response = self.model(
-                    prompt,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    stop=self.stop_tokens,
-                    echo=False
-                )
+            text = self._call_llm(prompt)
+            if not text:
+                self.metrics["inferences_failure"] += 1
+                return None
             
             elapsed_ms = (time.time() - start) * 1000
             
@@ -181,8 +181,6 @@ class Qwen3Parser:
                 self.metrics["inferences_failure"] += 1
                 return None
             
-            # Parse JSON response
-            text = response["choices"][0]["text"].strip()
             result = self._parse_json_response(text)
             
             if result:
@@ -205,6 +203,23 @@ class Qwen3Parser:
             self.logger.error(f"LLM inference error after {elapsed_ms:.0f}ms: {e}")
             self.metrics["inferences_failure"] += 1
             return None
+
+    def _call_llm(self, prompt: str) -> Optional[str]:
+        """Run the local model and return raw text. Kept patchable for tests."""
+        if not self.model:
+            self.logger.warning("Model not loaded. Skipping LLM parsing.")
+            return None
+
+        # llama-cpp inference is not safe to run concurrently on the same model instance.
+        with self._inference_lock:
+            response = self.model(
+                prompt,
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                stop=self.stop_tokens,
+                echo=False
+            )
+        return response["choices"][0]["text"].strip()
     
     def _parse_json_response(self, text: str) -> Optional[Dict[str, Any]]:
         """
@@ -225,10 +240,7 @@ class Qwen3Parser:
         if "</think>" in text:
             text = text.rsplit("</think>", 1)[1].strip()
 
-        json_start = text.find("{")
-        json_end = text.rfind("}")
-        if json_start != -1 and json_end != -1 and json_end > json_start:
-            text = text[json_start:json_end + 1]
+        text = self._extract_first_json_object(text)
         
         try:
             data = json.loads(text)
@@ -251,13 +263,20 @@ class Qwen3Parser:
             if isinstance(machine, str) and machine.strip().lower() in {"", "none", "null"}:
                 machine = None
             
-            return {
+            result = {
                 "intent": normalized_intent,
                 "machine": machine,
                 "confidence": confidence,
                 "entities": data.get("entities", {}),
                 "tier": "llm"
             }
+            for key in (
+                "metric", "limit", "machines", "time_range", "energy_source",
+                "ranking_metric", "driver_name", "aggregation"
+            ):
+                if key in data:
+                    result[key] = data[key]
+            return result
 
         except (TypeError, ValueError) as e:
             self.logger.warning(f"Invalid LLM response payload: {e}\nText: {text}")
@@ -265,6 +284,37 @@ class Qwen3Parser:
         except json.JSONDecodeError as e:
             self.logger.warning(f"Failed to parse LLM JSON response: {e}\nText: {text}")
             return None
+
+    def _extract_first_json_object(self, text: str) -> str:
+        """Extract the first balanced JSON object from mixed LLM output."""
+        start = text.find("{")
+        if start == -1:
+            return text
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+
+        return text[start:]
     
     def get_metrics(self) -> Dict[str, Any]:
         """Get parser metrics for monitoring."""

@@ -68,6 +68,15 @@ vosk-model-*/
 tmp/
 temp/
 *.tmp
+final_output.txt
+full_results.txt
+sweep.py
+
+# Generated WASABI release artifacts
+releases/*.zip
+releases/*.gguf
+releases/*.sha256
+releases/*.md
 
 # Ignore all markdown files by default
 *.md
@@ -75,3 +84,4 @@ temp/
 # EXCEPT these essential ones
 !README.md
 !documentation/TECHNICAL_DOCUMENTATION.md
+!enms-ovos-skill/RELEASE_LICENSE.md

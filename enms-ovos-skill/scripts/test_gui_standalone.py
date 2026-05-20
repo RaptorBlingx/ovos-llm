@@ -12,6 +12,7 @@ Open: http://localhost:7862
 """
 import sys
 import os
+import os
 from pathlib import Path
 from typing import List
 
@@ -63,7 +64,7 @@ class SkillTester:
         self.validator = ENMSValidator(confidence_threshold=0.85)
         
         print("  [3/5] Connecting to API...")
-        self.api_client = ENMSClient(base_url="http://10.33.10.109:8001/api/v1")
+        self.api_client = ENMSClient(base_url=os.getenv("ENMS_API_URL", "http://localhost:8001/api/v1"))
         
         print("  [4/5] Loading formatter...")
         self.formatter = ResponseFormatter()

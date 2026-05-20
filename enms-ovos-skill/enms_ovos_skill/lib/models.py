@@ -22,6 +22,7 @@ class IntentType(str, Enum):
     BASELINE = "baseline"
     BASELINE_MODELS = "baseline_models"
     BASELINE_EXPLANATION = "baseline_explanation"
+    DRIVER_ANALYSIS = "driver_analysis"
     SEUS = "seus"  # Significant Energy Uses
     KPI = "kpi"
     PERFORMANCE = "performance"
@@ -59,6 +60,7 @@ class Intent(BaseModel):
     # NEW: Multi-energy support
     energy_source: Optional[str] = None  # electricity, natural_gas, steam, compressed_air
     energy_sources: Optional[List[str]] = None  # for multi-source queries
+    driver_name: Optional[str] = None  # temperature, pressure, production, etc.
     
     # NEW: Multi-factory support
     factory: Optional[str] = None

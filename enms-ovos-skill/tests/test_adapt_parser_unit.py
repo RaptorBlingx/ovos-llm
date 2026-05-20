@@ -212,6 +212,37 @@ class TestEntityExtraction:
             assert result['confidence'] > 0.0
 
 
+class TestDriverAnalysisIntent:
+    """Test Adapt matching for dedicated driver-analysis phrases."""
+
+    def test_driver_analysis_exact_phrase(self):
+        """A direct driver-analysis phrase should route to the new intent."""
+        parser = AdaptParser()
+        result = parser.parse("driver analysis for Compressor-1")
+
+        assert result is not None
+        assert result['intent'] == IntentType.DRIVER_ANALYSIS.value
+        assert result['entities']['machine'] == 'Compressor-1'
+
+    def test_driver_analysis_with_specific_driver(self):
+        """Adapt should preserve the named driver entity when present."""
+        parser = AdaptParser()
+        result = parser.parse("temperature affect energy use Compressor-1")
+
+        assert result is not None
+        assert result['intent'] == IntentType.DRIVER_ANALYSIS.value
+        assert result['entities']['machine'] == 'Compressor-1'
+        assert result['entities']['driver_name'] == 'temperature'
+
+    def test_driver_analysis_factory_phrase(self):
+        """Factory-wide driver phrasing should route directly to driver analysis."""
+        parser = AdaptParser()
+        result = parser.parse("what are the top energy drivers across the factory")
+
+        assert result is not None
+        assert result['intent'] == IntentType.DRIVER_ANALYSIS.value
+
+
 class TestConfidenceScoring:
     """Test confidence score calculation"""
     

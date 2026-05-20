@@ -37,6 +37,7 @@ class AdaptParser:
         """
         self.logger = logger.bind(component="adapt_parser")
         self.engine = IntentDeterminationEngine()
+        self.machines: List[str] = []
         
         # Determine skill directory
         if skill_dir is None:
@@ -55,8 +56,9 @@ class AdaptParser:
         # Machine names (8 machines)
         machines = [
             "Boiler-1", "Compressor-1", "Compressor-EU-1", "Conveyor-A",
-            "HVAC-EU-North", "HVAC-Main", "Injection-Molding-1", "Turbine-1"
+            "HVAC-EU-North", "HVAC-Main", "Hydraulic-Pump-1", "Injection-Molding-1"
         ]
+        self.machines = machines
         
         # Number word mappings for spoken forms
         digit_to_word = {'1': 'one', '2': 'two', '3': 'three', '4': 'four', '5': 'five'}
@@ -182,6 +184,26 @@ class AdaptParser:
         ]
         for keyword in help_keywords:
             self.engine.register_entity(keyword, "help_query")
+
+    def _extract_machine_fuzzy(self, utterance: str) -> Optional[str]:
+        """Recover a canonical machine name from a natural utterance when Adapt omits the entity."""
+        utterance_lower = utterance.lower()
+        number_words = {
+            'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
+            'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10'
+        }
+
+        utterance_normalized = utterance_lower
+        for word, digit in number_words.items():
+            utterance_normalized = re.sub(rf'\b{word}\b', digit, utterance_normalized)
+
+        for machine in self.machines:
+            machine_lower = machine.lower()
+            machine_spaced = machine_lower.replace('-', ' ')
+            if machine_lower in utterance_lower or machine_spaced in utterance_normalized:
+                return machine
+
+        return None
         
         # Report keywords - NEW
         report_keywords = [
@@ -231,6 +253,66 @@ class AdaptParser:
         ]
         for keyword in explain_keywords:
             self.engine.register_entity(keyword, "explain_query")
+
+        driver_analysis_keywords = [
+            "energy drivers",
+            "main energy drivers",
+            "main drivers",
+            "top energy drivers",
+            "top drivers",
+            "key energy drivers",
+            "key drivers",
+            "driver analysis",
+            "what drives energy",
+            "what affects energy",
+            "what affects consumption",
+            "affect energy use",
+            "influence energy use",
+            "most influential driver",
+        ]
+        for keyword in driver_analysis_keywords:
+            self.engine.register_entity(keyword, "driver_analysis")
+
+        driver_keywords = [
+            "temperature",
+            "outdoor temperature",
+            "ambient temperature",
+            "indoor temperature",
+            "machine temperature",
+            "pressure",
+            "operating pressure",
+            "steam pressure",
+            "air pressure",
+            "production",
+            "production count",
+            "throughput",
+            "output",
+            "humidity",
+            "load factor",
+            "load",
+            "runtime",
+            "operating hours",
+            "weather",
+            "heating degree days",
+            "cooling degree days",
+            "dew point",
+            "dewpoint",
+        ]
+        for keyword in driver_keywords:
+            self.engine.register_entity(keyword, "driver")
+
+        energy_source_keywords = [
+            "electricity",
+            "electric",
+            "natural gas",
+            "gas",
+            "steam",
+            "compressed air",
+            "air",
+        ]
+        for keyword in energy_source_keywords:
+            self.engine.register_entity(keyword, "energy_source")
+
     def _register_intents(self):
         """Register Adapt intent patterns"""
         
@@ -320,6 +402,22 @@ class AdaptParser:
             .require("explain_query") \
             .build()
         self.engine.register_intent_parser(baseline_explanation_intent)
+
+        driver_analysis_intent = IntentBuilder("driver_analysis") \
+            .require("driver_analysis") \
+            .optionally("machine") \
+            .optionally("driver") \
+            .optionally("energy_source") \
+            .build()
+        self.engine.register_intent_parser(driver_analysis_intent)
+
+        factory_driver_analysis_intent = IntentBuilder("factory_driver_analysis") \
+            .require("driver_analysis") \
+            .require("factory") \
+            .optionally("driver") \
+            .optionally("energy_source") \
+            .build()
+        self.engine.register_intent_parser(factory_driver_analysis_intent)
         
         # SEUs intent
         seus_intent = IntentBuilder("seus") \
@@ -352,6 +450,46 @@ class AdaptParser:
             .require("help_query") \
             .build()
         self.engine.register_intent_parser(help_intent)
+
+    def _parse_driver_analysis_direct(self, utterance: str) -> Optional[Dict]:
+        """Route driver-analysis phrasing before generic energy/ranking matches."""
+        text = utterance.lower()
+        driver_patterns = (
+            "driver analysis",
+            "energy drivers",
+            "top energy drivers",
+            "key energy drivers",
+            "what drives energy",
+            "what affects energy",
+            "what affects consumption",
+            "affect energy use",
+            "influence energy use",
+        )
+        driver_terms = (
+            "temperature", "pressure", "humidity", "production", "throughput",
+            "output", "load factor", "runtime", "weather", "dew point", "dewpoint"
+        )
+
+        if not any(pattern in text for pattern in driver_patterns) and not (
+            "affect" in text and "energy" in text
+        ):
+            return None
+
+        entities = {}
+        machine = self._extract_machine_fuzzy(utterance)
+        if machine:
+            entities["machine"] = machine
+
+        for driver in driver_terms:
+            if driver in text:
+                entities["driver_name"] = driver
+                break
+
+        return {
+            "intent": IntentType.DRIVER_ANALYSIS.value,
+            "confidence": 0.95,
+            "entities": entities
+        }
     
     def parse(self, utterance: str) -> Optional[Dict]:
         """
@@ -365,6 +503,10 @@ class AdaptParser:
         """
         import time
         start_time = time.time()
+
+        direct_driver_result = self._parse_driver_analysis_direct(utterance)
+        if direct_driver_result:
+            return direct_driver_result
         
         # Run Adapt parser
         intents = list(self.engine.determine_intent(utterance))
@@ -384,6 +526,10 @@ class AdaptParser:
         # Extract machine name
         if 'machine' in best_intent:
             entities['machine'] = best_intent['machine']
+        else:
+            recovered_machine = self._extract_machine_fuzzy(utterance)
+            if recovered_machine:
+                entities['machine'] = recovered_machine
         
         # Extract metric type
         if 'power_metric' in best_intent:
@@ -398,6 +544,12 @@ class AdaptParser:
         # Extract time range
         if 'time_range' in best_intent:
             entities['time_range'] = best_intent['time_range']
+
+        if 'driver' in best_intent:
+            entities['driver_name'] = best_intent['driver']
+
+        if 'energy_source' in best_intent:
+            entities['energy_source'] = best_intent['energy_source'].replace(' ', '_')
         
         # Extract limit for ranking queries (e.g., "highest 3", "top 5")
         if intent_name.lower() == 'ranking':
@@ -422,6 +574,8 @@ class AdaptParser:
             'baseline': IntentType.BASELINE,
             'baselinemodels': IntentType.BASELINE_MODELS,
             'baselineexplanation': IntentType.BASELINE_EXPLANATION,
+            'driveranalysis': IntentType.DRIVER_ANALYSIS,
+            'factorydriveranalysis': IntentType.DRIVER_ANALYSIS,
             'seus': IntentType.SEUS,
             'performance': IntentType.PERFORMANCE,
             'production': IntentType.PRODUCTION,
