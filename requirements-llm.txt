@@ -1,0 +1,3 @@
+# Optional local LLM fallback for harder OVOS queries.
+# Install this only when a GGUF model will actually be provided.
+llama-cpp-python>=0.2.50

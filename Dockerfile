@@ -41,12 +41,17 @@ RUN useradd -m -u 1000 ovos && \
     chown -R ovos:ovos /opt/ovos /var/log/ovos /var/log/supervisor /app /config /models /tmp/mycroft
 
 # Copy requirements first for better layer caching
-COPY requirements.txt /app/requirements.txt
+COPY requirements.txt requirements-llm.txt /app/
+
+ARG INSTALL_LLM_FALLBACK=false
 
 # Install Python dependencies
 # NOTE: OVOS plugin manager still imports pkg_resources, removed in setuptools>=81
 RUN pip install --no-cache-dir --upgrade pip "setuptools<81" wheel && \
-    pip install --no-cache-dir -r /app/requirements.txt
+    pip install --no-cache-dir -r /app/requirements.txt && \
+    if [ "$INSTALL_LLM_FALLBACK" = "true" ]; then \
+        pip install --no-cache-dir -r /app/requirements-llm.txt; \
+    fi
 
 # Copy OVOS configuration to the path ovos_config resolves at runtime
 # Expected user config location: /config/mycroft/mycroft.conf
