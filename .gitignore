@@ -83,5 +83,10 @@ releases/*.md
 
 # EXCEPT these essential ones
 !README.md
+!docs/
+!docs/*.md
+!docs/images/
+!docs/images/*/
+!docs/images/*/.gitkeep
 !documentation/TECHNICAL_DOCUMENTATION.md
 !enms-ovos-skill/RELEASE_LICENSE.md
