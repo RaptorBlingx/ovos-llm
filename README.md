@@ -63,8 +63,8 @@ EnMS API
 ### Run with Docker
 
 ```bash
-git clone https://github.com/RaptorBlingx/ovos-prod.git
-cd ovos-prod
+git clone https://github.com/RaptorBlingx/ovos-llm.git
+cd ovos-llm
 cp .env.example .env
 docker network create enms-network || true
 docker compose build
@@ -88,8 +88,8 @@ curl -X POST http://localhost:5000/query \
 ## Skill Installation Without Docker
 
 ```bash
-git clone https://github.com/RaptorBlingx/ovos-prod.git
-cd ovos-prod/enms-ovos-skill
+git clone https://github.com/RaptorBlingx/ovos-llm.git
+cd ovos-llm/enms-ovos-skill
 pip install -e .
 ```
 
@@ -129,7 +129,7 @@ container can reach the HumanEnerDIA stack by service name.
 ## Repository Layout
 
 ```text
-ovos-prod/
+ovos-llm/
 ├── enms-ovos-skill/      # OVOS skill package
 ├── models/               # optional local model directory
 ├── scripts/              # helper scripts

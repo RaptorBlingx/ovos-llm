@@ -79,6 +79,13 @@ fi
   echo "safe configuration templates, and documentation. It intentionally excludes"
   echo "GGUF model weights, local environments, caches, logs, and build outputs."
   echo
+  echo "## Runtime Requirements"
+  echo
+  echo "This artifact is the standalone skill package. It requires an OVOS runtime,"
+  echo "an OVOS messagebus/REST bridge, and a reachable HumanEnerDIA/EnMS analytics"
+  echo "API endpoint. For a clean-machine OVOS runtime experiment, use the companion"
+  echo "\`ovos-llm\` Docker repository and set \`ENMS_API_URL\` to the backend URL."
+  echo
   echo "## Optional Local LLM Model"
   echo
   if [[ -f "$MODEL_SHA_PATH" ]]; then
