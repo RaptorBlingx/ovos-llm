@@ -14,7 +14,6 @@ anomalies, forecasts, KPIs, reports, and action-plan context.
 - OVOS skill package
 - REST bridge source under `bridge/`
 - safe configuration templates
-- tests and helper scripts
 - WASABI release license
 
 The ZIP does not include the HumanEnerDIA backend, a full OVOS runtime, Docker
@@ -132,7 +131,6 @@ enms-ovos-skill/
 │   ├── lib/
 │   └── locale/
 ├── bridge/
-├── scripts/
 ├── setup.py
 ├── skill.json
 └── RELEASE_LICENSE.md

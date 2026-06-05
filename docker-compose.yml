@@ -27,9 +27,6 @@ services:
       - XDG_CONFIG_HOME=/config
 
     volumes:
-      # Skill development - mount for hot reload (comment out in production)
-      - ./enms-ovos-skill:/opt/ovos/skills/enms-ovos-skill:rw
-
       # OVOS logs
       - ovos-logs:/var/log/ovos
 

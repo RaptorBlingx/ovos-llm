@@ -24,7 +24,13 @@ import zipfile
 
 artifact_path = sys.argv[1]
 exclude_patterns = (
+    ".gitignore",
+    "pytest.ini",
     "models/*",
+    "docs/*",
+    "scripts/*",
+    "tests/*",
+    "enms_ovos_skill/tests/*",
     "*/__pycache__/*",
     "*.pyc",
     ".pytest_cache/*",
@@ -35,6 +41,18 @@ exclude_patterns = (
     "*.bak",
     "*.backup",
     "*.backup_*",
+    "*.phase*",
+    "*.pre-*",
+    "test_*.py",
+    "*_test.py",
+    "run_gui.sh",
+    "bridge/README.md",
+    "bridge/pdf_download_example.html",
+    "bridge/test_*",
+    "bridge/*windows*",
+    "bridge/*wsl*",
+    "bridge/*.bat",
+    "bridge/hey_mycroft.tflite",
     ".env",
     "*.log",
 )
@@ -75,9 +93,10 @@ fi
   echo
   echo "## Artifact Contents"
   echo
-  echo "The ZIP contains the OVOS skill package, bridge code, tests, release license,"
-  echo "safe configuration templates, and documentation. It intentionally excludes"
-  echo "GGUF model weights, local environments, caches, logs, and build outputs."
+  echo "The ZIP contains the OVOS skill package, REST bridge code, release license,"
+  echo "and safe configuration templates. It intentionally excludes tests, helper"
+  echo "scripts, internal docs, GGUF model weights, local environments, caches, logs,"
+  echo "and build outputs."
   echo
   echo "## Runtime Requirements"
   echo

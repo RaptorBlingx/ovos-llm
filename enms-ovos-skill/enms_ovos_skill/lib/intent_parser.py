@@ -287,7 +287,7 @@ class HeuristicRouter:
             re.compile(r'\b({})\s+(?:energy|kwh|consumption)\b'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),
             # Time-only queries (factory-wide)
             re.compile(r'\benergy\s+(yesterday|today|last\s+week|last\s+month|this\s+week|this\s+month)', re.IGNORECASE),
-            re.compile(r'\b(yesterday|today|last\s+week|last\s+month)'"'"'?s?\s+energy', re.IGNORECASE),
+            re.compile(r"\b(yesterday|today|last\s+week|last\s+month)'?s?\s+energy", re.IGNORECASE),
             re.compile(r'\bpower\s+consumption\s+(yesterday|today|last\s+week|this\s+week)', re.IGNORECASE),
             re.compile(r'\btotal\s+energy\s+(yesterday|today|last\s+week)', re.IGNORECASE),
             re.compile(r'\benergy\s+(?:of\s+)?({})'.format('|'.join(re.escape(m) for m in MACHINES)), re.IGNORECASE),

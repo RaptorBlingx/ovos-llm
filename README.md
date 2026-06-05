@@ -3,8 +3,8 @@
 OVOS integration for HumanEnerDIA and compatible industrial energy management
 backends.
 
-This repository packages the OVOS skill, REST bridge, Docker deployment, and
-supporting configuration used to query energy data through natural language.
+This package provides the OVOS skill, REST bridge, Docker deployment, and
+runtime configuration used to query energy data through natural language.
 
 [![OVOS](https://img.shields.io/badge/OVOS-compatible-green.svg)](https://openvoiceos.org/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -21,7 +21,6 @@ The stack includes:
 - an OVOS skill for machine, factory, KPI, forecast, and anomaly queries
 - a REST bridge for web clients and external integrations
 - Docker-based deployment for headless Linux environments
-- optional Windows and WSL2 bridge utilities for local audio workflows
 - an optional local Qwen GGUF fallback model for harder queries
 
 ## Features
@@ -126,13 +125,11 @@ container can reach the HumanEnerDIA stack by service name.
 - "What is tomorrow's forecast?"
 - "Give me a factory overview."
 
-## Repository Layout
+## Package Layout
 
 ```text
 ovos-llm/
 ├── enms-ovos-skill/      # OVOS skill package
-├── models/               # optional local model directory
-├── scripts/              # helper scripts
 ├── .env.example
 ├── docker-compose.yml
 ├── Dockerfile
@@ -140,18 +137,6 @@ ovos-llm/
 ├── setup.sh
 └── supervisord.conf
 ```
-
-## Additional Components
-
-- [Documentation Index](docs/README.md)
-- [Installation and Configuration](docs/INSTALLATION_AND_CONFIGURATION.md)
-- [Technical Architecture Guide](docs/TECHNICAL_ARCHITECTURE_GUIDE.md)
-- [REST Bridge API Reference](docs/REST_BRIDGE_API_REFERENCE.md)
-- [Query Capabilities](docs/QUERY_CAPABILITIES.md)
-- [Operations Runbook](docs/OPERATIONS_RUNBOOK.md)
-- [LLM Fallback Model Guide](docs/LLM_FALLBACK_MODEL_GUIDE.md)
-- [Skill README](enms-ovos-skill/README.md)
-- [Bridge README](enms-ovos-skill/bridge/README.md)
 
 ## License
 
