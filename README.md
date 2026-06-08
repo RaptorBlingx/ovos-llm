@@ -1,144 +1,152 @@
-# OVOS-EnMS
+# HumanEnerDIA OVOS Skill
 
-OVOS integration for HumanEnerDIA and compatible industrial energy management
-backends.
+This package is the OVOS assistant layer for HumanEnerDIA. It lets users ask
+natural-language questions such as machine status, power, energy, anomalies,
+forecasts, KPIs, and ISO 50001 context.
 
-This package provides the OVOS skill, REST bridge, Docker deployment, and
-runtime configuration used to query energy data through natural language.
+It is not the HumanEnerDIA backend. The assistant must connect to a reachable
+HumanEnerDIA analytics API.
 
-[![OVOS](https://img.shields.io/badge/OVOS-compatible-green.svg)](https://openvoiceos.org/)
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
-[![Docker](https://img.shields.io/badge/docker-ready-brightgreen.svg)](docker-compose.yml)
+## Which Product Do I Need?
 
-## Overview
+- Use `HumanEnerDIA-full-stack-v1.0.0` when you want the whole system:
+  portal, database, analytics, Grafana, simulator, and embedded OVOS runtime.
+- Use `HumanEnerDIA-OVOS-skill-v1.0.0` when HumanEnerDIA is already running
+  somewhere and you want to run only the OVOS assistant layer.
+- Use the skill-only install path only if you already operate your own OVOS
+  runtime and messagebus.
 
-OVOS-EnMS provides a voice and API layer for energy management systems. The
-default adapter targets HumanEnerDIA, and the adapter layer makes it possible
-to support additional backends without rewriting the skill.
+## What This Bundle Includes
 
-The stack includes:
+- Headless OVOS runtime Docker image definition
+- Docker Compose service for the OVOS messagebus, skill runtime, and REST bridge
+- HumanEnerDIA OVOS skill source under `enms-ovos-skill/`
+- REST bridge at `http://localhost:5000`
+- Safe `.env.example`, install guide, and release license
 
-- an OVOS skill for machine, factory, KPI, forecast, and anomaly queries
-- a REST bridge for web clients and external integrations
-- Docker-based deployment for headless Linux environments
-- an optional local Qwen GGUF fallback model for harder queries
-
-## Features
-
-- natural-language energy and machine-status queries
-- multi-tier intent routing with heuristic, Adapt, and optional LLM fallback
-- fuzzy machine matching for spoken or loosely typed equipment names
-- structured validation before backend API execution
-- response formatting tuned for voice output and chat-style integrations
-- support for factory-wide summaries, KPIs, forecasts, reports, and comparisons
-
-## Architecture
-
-```text
-Portal / Client / CLI
-        |
-        v
-REST Bridge (port 5000)
-        |
-        v
-OVOS Messagebus + OVOS Core
-        |
-        v
-HumanEnerDIA OVOS Skill
-        |
-        v
-EnMS API
-```
+The bundle excludes HumanEnerDIA backend services, live `.env` files, logs,
+caches, tests, internal development documents, and optional GGUF model weights.
 
 ## Quick Start
 
-### Requirements
-
-- Docker Engine 20.10+
-- Docker Compose v2
-- a reachable EnMS API endpoint
-- Linux host recommended for deployment
-
-### Run with Docker
+Extract the Wasabi ZIP:
 
 ```bash
-git clone https://github.com/RaptorBlingx/ovos-llm.git
-cd ovos-llm
-cp .env.example .env
-docker network create enms-network || true
-docker compose build
-docker compose up -d
+unzip HumanEnerDIA-OVOS-skill-v1.0.0.zip
+cd HumanEnerDIA-OVOS-skill-v1.0.0
 ```
 
-### Default local endpoints
-
-- REST bridge: `http://localhost:5000`
-- Health check: `http://localhost:5000/health`
-- OVOS messagebus: `ws://localhost:8181/core`
-
-### Smoke test
+Run OVOS against a HumanEnerDIA backend:
 
 ```bash
-curl -X POST http://localhost:5000/query \
-  -H "Content-Type: application/json" \
-  -d '{"text":"What is the status of Compressor-1?"}'
+./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1
 ```
 
-## Skill Installation Without Docker
+Common backend URL choices:
 
 ```bash
-git clone https://github.com/RaptorBlingx/ovos-llm.git
-cd ovos-llm/enms-ovos-skill
-pip install -e .
+# HumanEnerDIA on another machine
+./setup.sh --enms-api-url http://192.168.1.50:8001/api/v1
+
+# HumanEnerDIA on this same laptop
+./setup.sh --enms-api-url http://host.docker.internal:8001/api/v1
+
+# HumanEnerDIA on the same Docker network
+./setup.sh --enms-api-url http://enms-analytics:8001/api/v1 --network enms-network
+
+# If port 5000 is already used
+./setup.sh --enms-api-url http://192.168.1.50:8001/api/v1 --bridge-port 5500
 ```
 
-Create or edit `~/.config/ovos/skills/enms-ovos-skill/settings.json`:
+## Verify
+
+```bash
+curl -fsS http://localhost:5000/health
+
+curl -sS -X POST http://localhost:5000/query \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"what is the power of compressor one","session_id":"ovos-smoke"}'
+```
+
+Expected result:
+
+- health reports `"status":"healthy"`
+- `messagebus_connected` is `true`
+- the query returns `"success":true`
+- the response mentions `Compressor-1` or another matching backend machine
+
+## Integration Model
+
+```text
+User / Portal / API client
+        |
+        v
+OVOS REST bridge (:5000)
+        |
+        v
+OVOS messagebus (:8181)
+        |
+        v
+HumanEnerDIA OVOS skill
+        |
+        v
+HumanEnerDIA analytics API (:8001/api/v1)
+```
+
+The REST bridge does not answer energy questions by itself. It forwards the
+query into OVOS, the skill parses and validates it, and the skill calls the
+HumanEnerDIA analytics API.
+
+## Existing OVOS Runtime
+
+If you already operate OVOS and only want the skill package:
+
+```bash
+cd enms-ovos-skill
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e .
+```
+
+Configure your OVOS skill settings with:
 
 ```json
 {
-  "enms_api_base_url": "http://your-enms-server:8001/api/v1",
-  "llm_model_path": "./models/Qwen3.5-2B-Q4_K_M.gguf",
-  "confidence_threshold": 0.85,
-  "api_timeout_seconds": 30
+  "enms_api_base_url": "http://<humanerdia-host>:8001/api/v1",
+  "api_timeout_seconds": 30,
+  "confidence_threshold": 0.85
 }
 ```
 
-## Configuration
+Restart OVOS, then test through your runtime's messagebus or bridge.
 
-Root environment settings live in `.env.example`.
+## Example Questions
 
-Common values:
-
-- `ENMS_API_URL`: backend API base URL
-- `LLM_MODEL_DIR`: directory for optional GGUF fallback models
-- `OVOS_TTS_ENABLED`: enable or disable spoken responses
-- `LOG_LEVEL`: runtime log verbosity
-
-The Docker deployment expects an `enms-network` Docker network so the OVOS
-container can reach the HumanEnerDIA stack by service name.
-
-## Example Queries
-
-- "What is the status of Compressor-1?"
+- "What is the power of Compressor-1?"
+- "Is HVAC-Main running?"
 - "How much energy did Boiler-1 use yesterday?"
 - "Show me the top three energy consumers."
-- "What is tomorrow's forecast?"
+- "Any anomalies today?"
+- "What is tomorrow's energy forecast?"
 - "Give me a factory overview."
 
-## Package Layout
+## Optional LLM Fallback
 
-```text
-ovos-llm/
-├── enms-ovos-skill/      # OVOS skill package
-├── .env.example
-├── docker-compose.yml
-├── Dockerfile
-├── ovos.conf
-├── setup.sh
-└── supervisord.conf
-```
+The default release uses fast heuristic and Adapt routing. It does not include
+large GGUF model files.
+
+If you want local LLM fallback, place `Qwen3.5-2B-Q4_K_M.gguf` under
+`enms-ovos-skill/models/`, build with `INSTALL_LLM_FALLBACK=true`, and expect
+fallback queries to be slower than the standard fast path.
+
+## More Detail
+
+Read `INSTALL.md` for step-by-step deployment, cleanup, and existing-OVOS
+installation instructions.
 
 ## License
 
-See [enms-ovos-skill/LICENSE](enms-ovos-skill/LICENSE) and
-[enms-ovos-skill/RELEASE_LICENSE.md](enms-ovos-skill/RELEASE_LICENSE.md).
+The Wasabi release artifact is licensed under
+`Apache-2.0 OR GPL-3.0-or-later`. See
+`enms-ovos-skill/RELEASE_LICENSE.md`.

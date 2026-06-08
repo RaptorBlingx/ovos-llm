@@ -5,72 +5,107 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKILL_DIR="$ROOT_DIR/enms-ovos-skill"
 RELEASE_DIR="$ROOT_DIR/releases"
 VERSION="${1:-1.0.0}"
-ARTIFACT_NAME="HumanEnerDIA-OVOS-skill-v${VERSION}.zip"
+ARTIFACT_BASE="HumanEnerDIA-OVOS-skill-v${VERSION}"
+ARTIFACT_NAME="${ARTIFACT_BASE}.zip"
 ARTIFACT_PATH="$RELEASE_DIR/$ARTIFACT_NAME"
 MODEL_PATH="$SKILL_DIR/models/Qwen3.5-2B-Q4_K_M.gguf"
 MODEL_SHA_PATH="$RELEASE_DIR/Qwen3.5-2B-Q4_K_M.gguf.sha256"
-NOTES_PATH="$RELEASE_DIR/HumanEnerDIA-OVOS-skill-v${VERSION}-release-notes.md"
+NOTES_PATH="$RELEASE_DIR/${ARTIFACT_BASE}-release-notes.md"
+STAGE_ROOT="$(mktemp -d)"
+BUNDLE_DIR="$STAGE_ROOT/$ARTIFACT_BASE"
 
-mkdir -p "$RELEASE_DIR"
+cleanup() {
+  rm -rf "$STAGE_ROOT"
+}
+trap cleanup EXIT
+
+mkdir -p "$RELEASE_DIR" "$BUNDLE_DIR"
 rm -f "$ARTIFACT_PATH" "$ARTIFACT_PATH.sha256" "$MODEL_SHA_PATH" "$NOTES_PATH"
 
+copy_root() {
+  rsync -a \
+    --exclude '.git/' \
+    --exclude '.gitignore' \
+    --exclude '.env' \
+    --exclude '__pycache__/' \
+    --exclude '.pytest_cache/' \
+    --exclude 'htmlcov/' \
+    --exclude 'logs/' \
+    --exclude 'models/' \
+    --exclude 'releases/' \
+    --exclude 'documentation/' \
+    --exclude 'scripts/' \
+    --exclude 'benchmark.sh' \
+    --exclude 'compare_parsers.py' \
+    --exclude 'run_validation.sh' \
+    --exclude 'validate_ovos.sh' \
+    --exclude 'humanergy-ovos-llm.code-workspace' \
+    --exclude 'query*_time.txt' \
+    --exclude '*.log' \
+    --exclude '.gitkeep' \
+    --exclude '*.gitkeep' \
+    --exclude '*.pyc' \
+    --exclude '*.bak' \
+    --exclude '*.backup' \
+    --exclude '*.phase*' \
+    --exclude '*.pre-*' \
+    --exclude 'enms-ovos-skill/' \
+    "$ROOT_DIR/" "$BUNDLE_DIR/"
+}
+
+copy_skill() {
+  mkdir -p "$BUNDLE_DIR/enms-ovos-skill"
+  rsync -a \
+    --exclude '.gitignore' \
+    --exclude '.env' \
+    --exclude '__pycache__/' \
+    --exclude '.pytest_cache/' \
+    --exclude 'htmlcov/' \
+    --exclude 'docs/' \
+    --exclude 'scripts/' \
+    --exclude 'tests/' \
+    --exclude 'enms_ovos_skill/tests/' \
+    --exclude 'models/' \
+    --exclude 'pytest.ini' \
+    --exclude 'run_gui.sh' \
+    --exclude 'test_*.py' \
+    --exclude '*_test.py' \
+    --exclude '.gitkeep' \
+    --exclude '*.gitkeep' \
+    --exclude '*.pyc' \
+    --exclude '*.bak' \
+    --exclude '*.backup' \
+    --exclude '*.phase*' \
+    --exclude '*.pre-*' \
+    --exclude 'bridge/README.md' \
+    --exclude 'bridge/pdf_download_example.html' \
+    --exclude 'bridge/test_*' \
+    --exclude 'bridge/*windows*' \
+    --exclude 'bridge/*wsl*' \
+    --exclude 'bridge/*.bat' \
+    --exclude 'bridge/hey_mycroft.tflite' \
+    "$SKILL_DIR/" "$BUNDLE_DIR/enms-ovos-skill/"
+}
+
+copy_root
+copy_skill
+chmod 755 "$BUNDLE_DIR/setup.sh" "$BUNDLE_DIR/enms-ovos-skill/bridge/start_rest_bridge.sh" "$BUNDLE_DIR/enms-ovos-skill/setup_ovos_skill.sh"
+
 (
-  cd "$SKILL_DIR"
-  python3 - "$ARTIFACT_PATH" <<'PY'
-import fnmatch
+  cd "$STAGE_ROOT"
+  python3 - "$ARTIFACT_PATH" "$ARTIFACT_BASE" <<'PY'
 import os
 import sys
 import zipfile
 
 artifact_path = sys.argv[1]
-exclude_patterns = (
-    ".gitignore",
-    "pytest.ini",
-    "models/*",
-    "docs/*",
-    "scripts/*",
-    "tests/*",
-    "enms_ovos_skill/tests/*",
-    "*/__pycache__/*",
-    "*.pyc",
-    ".pytest_cache/*",
-    "htmlcov/*",
-    "build/*",
-    "dist/*",
-    "*.egg-info/*",
-    "*.bak",
-    "*.backup",
-    "*.backup_*",
-    "*.phase*",
-    "*.pre-*",
-    "test_*.py",
-    "*_test.py",
-    "run_gui.sh",
-    "bridge/README.md",
-    "bridge/pdf_download_example.html",
-    "bridge/test_*",
-    "bridge/*windows*",
-    "bridge/*wsl*",
-    "bridge/*.bat",
-    "bridge/hey_mycroft.tflite",
-    ".env",
-    "*.log",
-)
-
-def excluded(path):
-    return any(fnmatch.fnmatch(path, pattern) for pattern in exclude_patterns)
+artifact_base = sys.argv[2]
 
 with zipfile.ZipFile(artifact_path, "w", zipfile.ZIP_DEFLATED) as zf:
-    for root, dirs, files in os.walk("."):
-        dirs[:] = [
-            d for d in dirs
-            if not excluded(os.path.relpath(os.path.join(root, d), ".") + "/")
-        ]
+    for root, _, files in os.walk(artifact_base):
         for name in files:
-            relpath = os.path.relpath(os.path.join(root, name), ".")
-            if excluded(relpath):
-                continue
-            zf.write(relpath)
+            path = os.path.join(root, name)
+            zf.write(path)
 PY
 )
 
@@ -93,42 +128,44 @@ fi
   echo
   echo "## Artifact Contents"
   echo
-  echo "The ZIP contains the OVOS skill package, REST bridge code, release license,"
-  echo "and safe configuration templates. It intentionally excludes tests, helper"
-  echo "scripts, internal docs, GGUF model weights, local environments, caches, logs,"
-  echo "and build outputs."
+  echo "The ZIP contains a headless OVOS Docker runtime, Docker Compose file,"
+  echo "setup helper, REST bridge, HumanEnerDIA OVOS skill source, release license,"
+  echo "and end-user install documentation. It intentionally excludes tests,"
+  echo "internal development docs, helper/dev scripts, GGUF model weights, local"
+  echo "environments, caches, logs, and build outputs."
   echo
   echo "## Runtime Requirements"
   echo
-  echo "This artifact is the standalone skill package. It requires an OVOS runtime,"
-  echo "an OVOS messagebus/REST bridge, and a reachable HumanEnerDIA/EnMS analytics"
-  echo "API endpoint. For a clean-machine OVOS runtime experiment, use the companion"
-  echo "\`ovos-llm\` Docker repository and set \`ENMS_API_URL\` to the backend URL."
+  echo "This artifact runs only the OVOS assistant layer. It requires a reachable"
+  echo "HumanEnerDIA analytics API, for example \`http://<host>:8001/api/v1\`."
+  echo "Users who need the backend too should install the full-stack product."
   echo
-  echo "## Optional Local LLM Model"
+  echo "## Guided Install"
   echo
-  if [[ -f "$MODEL_SHA_PATH" ]]; then
-    echo "- Validated filename: \`Qwen3.5-2B-Q4_K_M.gguf\`"
-    echo "- SHA256: \`$(cut -d ' ' -f1 "$MODEL_SHA_PATH")\`"
-    echo "- Install path after extraction: \`models/Qwen3.5-2B-Q4_K_M.gguf\`"
-  else
-    echo "- Model file was not present when this package was built."
-    echo "- Provide \`Qwen3.5-2B-Q4_K_M.gguf\` separately if Tier-3 fallback is required."
-  fi
+  echo "\`\`\`bash"
+  echo "unzip $ARTIFACT_NAME"
+  echo "cd $ARTIFACT_BASE"
+  echo "./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1"
+  echo "\`\`\`"
   echo
   echo "## Smoke Test"
   echo
   echo "\`\`\`bash"
+  echo "curl -fsS http://localhost:5000/health"
   echo "curl -sS -X POST http://localhost:5000/query \\"
   echo "  -H 'Content-Type: application/json' \\"
   echo "  -d '{\"text\":\"what is the power of compressor one\",\"session_id\":\"release-smoke\"}'"
   echo "\`\`\`"
   echo
-  echo "## Known Limitations"
-  echo
-  echo "- Standard fast-path operational queries are release-ready."
-  echo "- Tier-3 local LLM fallback remains slower than heuristic and Adapt routing."
-  echo "- Loosely phrased fallback queries should be presented as improving, not solved."
+  echo "## Optional Local LLM Model"
+  if [[ -f "$MODEL_SHA_PATH" ]]; then
+    echo "- Validated filename: \`Qwen3.5-2B-Q4_K_M.gguf\`"
+    echo "- SHA256: \`$(cut -d ' ' -f1 "$MODEL_SHA_PATH")\`"
+    echo "- Install path after extraction: \`enms-ovos-skill/models/Qwen3.5-2B-Q4_K_M.gguf\`"
+  else
+    echo "- Model file was not present when this package was built."
+    echo "- Provide \`Qwen3.5-2B-Q4_K_M.gguf\` separately if Tier-3 fallback is required."
+  fi
 } > "$NOTES_PATH"
 
 echo "Created $ARTIFACT_PATH"
