@@ -50,7 +50,7 @@ Supervisor configuration lives in `supervisord.conf`.
 | `enms-ovos-skill/enms_ovos_skill/lib/intent_parser.py` | Heuristic, Adapt, and optional LLM routing |
 | `enms-ovos-skill/enms_ovos_skill/lib/adapt_parser.py` | Adapt vocabulary parser |
 | `enms-ovos-skill/enms_ovos_skill/lib/validator.py` | Validation and fuzzy matching |
-| `enms-ovos-skill/enms_ovos_skill/lib/api_client.py` | HumanEnerDIA API client |
+| `enms-ovos-skill/enms_ovos_skill/lib/api_client.py` | HumanEnerDIA-compatible API client |
 | `enms-ovos-skill/enms_ovos_skill/lib/response_formatter.py` | User-facing response formatting |
 | `enms-ovos-skill/enms_ovos_skill/lib/machine_registry.py` | Machine and SEU discovery cache |
 | `enms-ovos-skill/enms_ovos_skill/adapters/` | Backend adapter layer |
@@ -66,7 +66,7 @@ Supervisor configuration lives in `supervisord.conf`.
    - Adapt vocabulary matching
    - optional local LLM fallback
 5. The validator checks intent, machine names, and supported parameters.
-6. The skill calls the HumanEnerDIA analytics API.
+6. The skill calls the configured HumanEnerDIA-compatible analytics API.
 7. The skill emits a spoken response and structured response event.
 8. The REST bridge returns a structured JSON response to the client.
 
@@ -98,15 +98,17 @@ See [Query Capabilities](./QUERY_CAPABILITIES.md) for user-facing examples.
 
 ## Backend Dependency
 
-The live backend dependency is the HumanEnerDIA analytics API. The default path
-is:
+The live backend dependency is a HumanEnerDIA-compatible analytics API. The
+default path inside the HumanEnerDIA Docker network is:
 
 ```text
 http://enms-analytics:8001/api/v1
 ```
 
 When running outside the HumanEnerDIA Docker network, set `ENMS_API_URL` to the
-reachable backend URL.
+reachable compatible backend URL. For a third-party EnMS, this should be an
+adapter/proxy that exposes the compatibility contract documented in
+[EnMS API Compatibility](./ENMS_API_COMPATIBILITY.md).
 
 ## Model Fallback
 

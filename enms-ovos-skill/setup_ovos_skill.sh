@@ -2,15 +2,15 @@
 # ============================================================================
 # OVOS EnMS Skill Setup Script
 # ============================================================================
-# Interactive configuration for YOUR EnMS installation
-# WASABI Portability: Works with any EnMS, not just Humanergy
+# Interactive configuration for a HumanEnerDIA-compatible EnMS API.
+# Third-party EnMS installations need an adapter/proxy exposing that API.
 # ============================================================================
 
 set -e  # Exit on error
 
 echo "╔════════════════════════════════════════════════════════════╗"
 echo "║  🔧 OVOS EnMS Skill Setup - WASABI Compatible             ║"
-echo "║  Configure voice assistant for YOUR energy system         ║"
+echo "║  Configure voice assistant for your compatible EnMS API   ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -37,17 +37,13 @@ fi
 echo "Step 1/6: Select EnMS Adapter"
 echo "─────────────────────────────────────"
 echo "Available adapters:"
-echo "  1) humanergy  - Humanergy's EnMS (default)"
-echo "  2) generic    - Generic REST API EnMS"
-echo "  3) custom     - Your own adapter"
+echo "  1) humanergy  - HumanEnerDIA-compatible API (default)"
 echo ""
 read -p "Select adapter type [1]: " ADAPTER_CHOICE
 ADAPTER_CHOICE=${ADAPTER_CHOICE:-1}
 
 case $ADAPTER_CHOICE in
     1) ADAPTER_TYPE="humanergy" ;;
-    2) ADAPTER_TYPE="generic" ;;
-    3) ADAPTER_TYPE="custom" ;;
     *) ADAPTER_TYPE="humanergy" ;;
 esac
 
@@ -57,7 +53,7 @@ echo ""
 # Step 2: API Connection
 echo "Step 2/6: API Connection"
 echo "─────────────────────────────────────"
-read -p "Enter your EnMS API URL [http://localhost:8001/api/v1]: " API_URL
+read -p "Enter your HumanEnerDIA-compatible API URL [http://localhost:8001/api/v1]: " API_URL
 API_URL=${API_URL:-http://localhost:8001/api/v1}
 
 read -p "API timeout in seconds [90]: " API_TIMEOUT
@@ -234,7 +230,7 @@ echo "  3. Test: 'Hey Jarvis, what's the energy consumption?'"
 echo ""
 echo "Documentation:"
 echo "  - Installation Guide: docs/INSTALLATION_GUIDE.md"
-echo "  - API Requirements:   docs/API_REQUIREMENTS.md"
+echo "  - API Compatibility:  docs/ENMS_API_COMPATIBILITY.md"
 echo "  - Troubleshooting:    TROUBLESHOOTING.md"
 echo ""
 echo "For support, visit: https://github.com/humanergy/ovos-llm"

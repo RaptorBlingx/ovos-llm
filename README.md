@@ -5,7 +5,7 @@ natural-language questions such as machine status, power, energy, anomalies,
 forecasts, KPIs, and ISO 50001 context.
 
 It is not the HumanEnerDIA backend. The assistant must connect to a reachable
-HumanEnerDIA analytics API.
+HumanEnerDIA-compatible analytics API.
 
 ## Which Product Do I Need?
 
@@ -13,6 +13,8 @@ HumanEnerDIA analytics API.
   portal, database, analytics, Grafana, simulator, and embedded OVOS runtime.
 - Use `HumanEnerDIA-OVOS-skill-v1.0.0` when HumanEnerDIA is already running
   somewhere and you want to run only the OVOS assistant layer.
+- Use it with another EnMS only when that EnMS exposes the same API contract,
+  or when you provide a small compatibility proxy in front of that EnMS.
 - Use the skill-only install path only if you already operate your own OVOS
   runtime and messagebus.
 
@@ -40,6 +42,13 @@ Run OVOS against a HumanEnerDIA backend:
 
 ```bash
 ./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1
+```
+
+For a third-party EnMS, point `--enms-api-url` at a HumanEnerDIA-compatible
+adapter/proxy URL, not directly at an arbitrary vendor API:
+
+```bash
+./setup.sh --enms-api-url http://<your-adapter-host>:8001/api/v1
 ```
 
 Common backend URL choices:
@@ -90,12 +99,35 @@ OVOS messagebus (:8181)
 HumanEnerDIA OVOS skill
         |
         v
-HumanEnerDIA analytics API (:8001/api/v1)
+HumanEnerDIA-compatible analytics API (:8001/api/v1)
 ```
 
 The REST bridge does not answer energy questions by itself. It forwards the
 query into OVOS, the skill parses and validates it, and the skill calls the
-HumanEnerDIA analytics API.
+configured HumanEnerDIA-compatible analytics API.
+
+## Using A Different EnMS
+
+The release is portable at the deployment boundary, not vendor-universal out of
+the box. A customer who does not run HumanEnerDIA can use this OVOS skill if
+their EnMS, middleware, or adapter service provides the HumanEnerDIA-compatible
+REST endpoints and response fields used by the skill.
+
+Recommended integration path:
+
+1. Keep the OVOS ZIP unchanged.
+2. Build a small adapter/proxy that translates the customer's EnMS API to the
+   HumanEnerDIA-compatible API contract.
+3. Run `./setup.sh --enms-api-url http://<adapter-host>:8001/api/v1`.
+4. Verify `/health`, `/machines`, `/machines/status/<machine>`, and the smoke
+   `/query` request.
+
+The codebase contains an adapter abstraction for future native adapters, but
+the production OVOS runtime still uses the HumanEnerDIA-compatible API client
+for most query types. Treat direct arbitrary-vendor support as extension work,
+not as a zero-config feature of this v1.0.0 release.
+
+See `docs/ENMS_API_COMPATIBILITY.md` for the integration contract.
 
 ## Existing OVOS Runtime
 
@@ -113,7 +145,7 @@ Configure your OVOS skill settings with:
 
 ```json
 {
-  "enms_api_base_url": "http://<humanerdia-host>:8001/api/v1",
+  "enms_api_base_url": "http://<humanerdia-compatible-host>:8001/api/v1",
   "api_timeout_seconds": 30,
   "confidence_threshold": 0.85
 }

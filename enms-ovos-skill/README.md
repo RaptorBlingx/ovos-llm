@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 HumanEnerDIA is an OVOS skill for industrial energy management and ISO 50001
-workflows. It connects an OVOS runtime to a reachable HumanEnerDIA/EnMS
+workflows. It connects an OVOS runtime to a reachable HumanEnerDIA-compatible
 analytics API so operators can ask about machine status, power, energy,
 anomalies, forecasts, KPIs, reports, and action-plan context.
 
@@ -23,7 +23,7 @@ volumes, local credentials, logs, caches, or optional GGUF model files.
 
 - Python 3.10+
 - Open Voice OS compatible runtime and messagebus
-- HumanEnerDIA/EnMS analytics API endpoint
+- HumanEnerDIA-compatible analytics API endpoint
 - Optional `Qwen3.5-2B-Q4_K_M.gguf` for Tier-3 local LLM fallback
 
 For a clean-machine OVOS runtime experiment, use the companion repository:
@@ -53,7 +53,7 @@ Create or edit the OVOS skill settings used by your runtime:
 
 ```json
 {
-  "enms_api_base_url": "http://your-enms-server:8001/api/v1",
+  "enms_api_base_url": "http://your-humanerdia-compatible-api:8001/api/v1",
   "api_timeout_seconds": 30,
   "confidence_threshold": 0.85
 }
@@ -69,6 +69,17 @@ curl -X POST http://localhost:5000/query \
 
 Expected result: the bridge returns `success: true` and a response about
 `Compressor-1` or a matching machine-status result.
+
+## Using Another EnMS
+
+This skill does not directly understand every EnMS vendor API. For v1.0.0,
+third-party EnMS deployments should expose a HumanEnerDIA-compatible REST API,
+usually through a small adapter/proxy service. Point `enms_api_base_url` at
+that adapter.
+
+The repository contains an adapter abstraction for future native adapters, but
+the production skill still depends on the HumanEnerDIA-compatible API contract
+for most query types.
 
 ## Voice Commands
 

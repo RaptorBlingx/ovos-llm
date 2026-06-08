@@ -1,17 +1,18 @@
 # ============================================================================
 # OVOS EnMS Skill Configuration
 # ============================================================================
-# This file enables the skill to work with ANY EnMS installation.
-# Customize these settings for your specific energy management system.
+# This file configures the skill for a HumanEnerDIA-compatible API.
+# For another EnMS, expose this API contract through an adapter/proxy.
 #
-# WASABI Portability: This configuration makes the skill portable across
-# different EnMS installations without code changes.
+# v1.0.0 portability is at the API boundary. It is not a zero-code direct
+# connector for arbitrary vendor EnMS APIs.
 # ============================================================================
 
 # ==================== EnMS Adapter Configuration ====================
 
-# Adapter type - specifies which EnMS implementation to use
-# Options: 'humanergy' (default), 'generic', or custom adapter name
+# Adapter type. v1.0.0 production runtime supports the HumanEnerDIA-compatible
+# adapter path. The adapter abstraction exists for future extension work.
+# Options: 'humanergy'
 adapter_type: humanergy
 
 # API connection settings
@@ -159,9 +160,10 @@ advanced:
   # How far back can users query? (in days)
   max_historical_days: 365
 
-# ==================== Custom Adapter Settings ====================
-# Add your own settings here if using a custom adapter
+# ==================== Third-Party EnMS Integration ====================
+# Point api_base_url at an adapter/proxy that exposes the HumanEnerDIA-compatible
+# REST API. See docs/ENMS_API_COMPATIBILITY.md in the release bundle.
 
-# custom_adapter:
-#   api_key: your-api-key-here
-#   vendor_specific_setting: value
+# customer_adapter_notes:
+#   upstream_enms: your-vendor-or-platform
+#   adapter_owner: your-team

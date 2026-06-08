@@ -6,8 +6,9 @@ This guide covers deployment of the HumanEnerDIA OVOS runtime and skill.
 
 - Docker Engine 20.10+
 - Docker Compose v2
-- HumanEnerDIA analytics API reachable from the OVOS container
-- Docker network access to the HumanEnerDIA stack, usually `enms-network`
+- HumanEnerDIA-compatible analytics API reachable from the OVOS container
+- Docker network access to the HumanEnerDIA stack, usually `enms-network`, or
+  network access to a third-party EnMS adapter/proxy
 - Linux server recommended for deployment
 
 ## Docker Deployment
@@ -25,7 +26,7 @@ This guide covers deployment of the HumanEnerDIA OVOS runtime and skill.
    cp .env.example .env
    ```
 
-3. Set the backend API URL in `.env`.
+3. Set the compatible backend API URL in `.env`.
 
    For the same Docker network as HumanEnerDIA:
 
@@ -37,6 +38,12 @@ This guide covers deployment of the HumanEnerDIA OVOS runtime and skill.
 
    ```env
    ENMS_API_URL=http://host.docker.internal:8001/api/v1
+   ```
+
+   For a third-party EnMS adapter/proxy:
+
+   ```env
+   ENMS_API_URL=http://adapter-host:8001/api/v1
    ```
 
 4. Ensure the network exists:
@@ -78,7 +85,7 @@ Default exposed ports:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ENMS_API_URL` | `http://host.docker.internal:8001/api/v1` | Backend analytics API |
+| `ENMS_API_URL` | `http://host.docker.internal:8001/api/v1` | HumanEnerDIA-compatible analytics API |
 | `LLM_MODEL_DIR` | `./enms-ovos-skill/models` | Local model directory |
 | `OVOS_TTS_ENABLED` | `true` | Enable spoken responses |
 | `OVOS_TTS_ENGINE` | `edge-tts` | TTS engine hint |
@@ -111,7 +118,8 @@ Main settings:
 }
 ```
 
-In Docker, prefer `ENMS_API_URL` for the backend URL.
+In Docker, prefer `ENMS_API_URL` for the compatible backend URL. For a
+third-party EnMS, see [EnMS API Compatibility](./ENMS_API_COMPATIBILITY.md).
 
 ## Optional LLM Fallback
 

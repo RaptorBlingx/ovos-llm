@@ -12,6 +12,7 @@ integration.
 | Understand the system architecture | [Technical Architecture Guide](./TECHNICAL_ARCHITECTURE_GUIDE.md) |
 | Operate and troubleshoot the runtime | [Operations Runbook](./OPERATIONS_RUNBOOK.md) |
 | Integrate through HTTP | [REST Bridge API Reference](./REST_BRIDGE_API_REFERENCE.md) |
+| Use another EnMS through an adapter/proxy | [EnMS API Compatibility](./ENMS_API_COMPATIBILITY.md) |
 | Understand supported query types | [Query Capabilities](./QUERY_CAPABILITIES.md) |
 | Configure the optional local model fallback | [LLM Fallback Model Guide](./LLM_FALLBACK_MODEL_GUIDE.md) |
 
@@ -26,10 +27,12 @@ integration.
 
 ## Important Notes
 
-- The HumanEnerDIA backend is required for live energy answers.
+- A HumanEnerDIA-compatible backend API is required for live energy answers.
+  This can be HumanEnerDIA itself or a customer adapter/proxy in front of
+  another EnMS.
 - The local LLM fallback is optional and is not bundled with this repository.
-- The Docker deployment expects access to the HumanEnerDIA network named
-  `enms-network` by default.
+- The Docker deployment expects access to a compatible API; the default
+  HumanEnerDIA network name is `enms-network`.
 - The REST bridge is a proxy into OVOS; it does not implement energy logic by
   itself.
 

@@ -137,15 +137,17 @@ fi
   echo "## Runtime Requirements"
   echo
   echo "This artifact runs only the OVOS assistant layer. It requires a reachable"
-  echo "HumanEnerDIA analytics API, for example \`http://<host>:8001/api/v1\`."
+  echo "HumanEnerDIA-compatible analytics API, for example \`http://<host>:8001/api/v1\`."
   echo "Users who need the backend too should install the full-stack product."
+  echo "Users with another EnMS should expose the documented compatibility API"
+  echo "through an adapter/proxy and point \`--enms-api-url\` at that adapter."
   echo
   echo "## Guided Install"
   echo
   echo "\`\`\`bash"
   echo "unzip $ARTIFACT_NAME"
   echo "cd $ARTIFACT_BASE"
-  echo "./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1"
+  echo "./setup.sh --enms-api-url http://<humanerdia-compatible-host>:8001/api/v1"
   echo "\`\`\`"
   echo
   echo "## Smoke Test"

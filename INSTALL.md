@@ -3,21 +3,22 @@
 This product runs only the OVOS assistant layer. It does not include the
 HumanEnerDIA portal, database, analytics service, simulator, or Grafana.
 
-Use it when you already have a HumanEnerDIA backend running somewhere and you
-want a separate OVOS runtime to answer natural-language questions against that
-backend.
+Use it when you already have a HumanEnerDIA backend, or a
+HumanEnerDIA-compatible adapter/proxy for another EnMS, and you want a separate
+OVOS runtime to answer natural-language questions against that API.
 
 ## What You Need
 
 - Docker Engine 20.10+ and Docker Compose v2
-- Network access to a HumanEnerDIA analytics API
+- Network access to a HumanEnerDIA-compatible analytics API
 - The analytics API URL, usually one of:
   - `http://<humanerdia-host>:8001/api/v1`
   - `http://host.docker.internal:8001/api/v1`
   - `http://enms-analytics:8001/api/v1` when sharing the HumanEnerDIA Docker network
 
-If you do not already have a HumanEnerDIA backend, install the full-stack
-product instead.
+If you do not already have a HumanEnerDIA backend, you can either install the
+full-stack product or provide a compatibility adapter in front of your own EnMS.
+See `docs/ENMS_API_COMPATIBILITY.md`.
 
 ## Clean OVOS-Only Run
 
@@ -28,10 +29,16 @@ unzip HumanEnerDIA-OVOS-skill-v1.0.0.zip
 cd HumanEnerDIA-OVOS-skill-v1.0.0
 ```
 
-Start OVOS and point it at your HumanEnerDIA backend:
+Start OVOS and point it at your HumanEnerDIA-compatible backend:
 
 ```bash
 ./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1
+```
+
+For a third-party EnMS, use the URL of your adapter/proxy:
+
+```bash
+./setup.sh --enms-api-url http://<adapter-host>:8001/api/v1
 ```
 
 For a HumanEnerDIA stack running on the same laptop but outside this Compose
@@ -67,7 +74,7 @@ Expected result:
 
 - `/health` returns JSON with `"status":"healthy"` and `"messagebus_connected":true`
 - `/query` returns `"success":true`
-- the response mentions `Compressor-1` or a matching HumanEnerDIA machine
+- the response mentions `Compressor-1` or a matching backend machine
 
 ## Install Into An Existing OVOS Runtime
 
@@ -86,7 +93,7 @@ Configure the skill in your OVOS runtime settings:
 
 ```json
 {
-  "enms_api_base_url": "http://<humanerdia-host>:8001/api/v1",
+  "enms_api_base_url": "http://<humanerdia-compatible-host>:8001/api/v1",
   "api_timeout_seconds": 30,
   "confidence_threshold": 0.85
 }
