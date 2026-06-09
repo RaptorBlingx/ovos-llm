@@ -12,13 +12,14 @@ OVOS runtime to answer natural-language questions against that API.
 - Docker Engine 20.10+ and Docker Compose v2
 - Network access to a HumanEnerDIA-compatible analytics API
 - The analytics API URL, usually one of:
-  - `http://<humanerdia-host>:8001/api/v1`
+  - `http://<enms-host>:8001/api/v1`
   - `http://host.docker.internal:8001/api/v1`
   - `http://enms-analytics:8001/api/v1` when sharing the HumanEnerDIA Docker network
 
-If you do not already have a HumanEnerDIA backend, you can either install the
-full-stack product or provide a compatibility adapter in front of your own EnMS.
-See `docs/ENMS_API_COMPATIBILITY.md`.
+If you do not already have a HumanEnerDIA backend, install
+`HumanEnerDIA-EnMS-v1.0.0` for the backend-only product, install the full-stack
+product for EnMS plus embedded OVOS, or provide a compatibility adapter in
+front of your own EnMS. See `docs/ENMS_API_COMPATIBILITY.md`.
 
 ## Clean OVOS-Only Run
 
@@ -33,6 +34,12 @@ Start OVOS and point it at your HumanEnerDIA-compatible backend:
 
 ```bash
 ./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1
+```
+
+For the standalone EnMS product running on another machine:
+
+```bash
+./setup.sh --enms-api-url http://<enms-host>:8001/api/v1
 ```
 
 For a third-party EnMS, use the URL of your adapter/proxy:
@@ -58,6 +65,14 @@ If port `5000` is already used:
 
 ```bash
 ./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1 --bridge-port 5500
+```
+
+On the EnMS side, configure the optional portal voice proxy to call this OVOS
+bridge:
+
+```bash
+cd HumanEnerDIA-EnMS-v1.0.0
+./setup.sh --ovos-bridge-host <ovos-host> --ovos-bridge-port 5000
 ```
 
 ## Verify

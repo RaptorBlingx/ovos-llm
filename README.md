@@ -11,6 +11,8 @@ HumanEnerDIA-compatible analytics API.
 
 - Use `HumanEnerDIA-full-stack-v1.0.0` when you want the whole system:
   portal, database, analytics, Grafana, simulator, and embedded OVOS runtime.
+- Use `HumanEnerDIA-EnMS-v1.0.0` when you want the HumanEnerDIA backend
+  platform without the OVOS runtime.
 - Use `HumanEnerDIA-OVOS-skill-v1.0.0` when HumanEnerDIA is already running
   somewhere and you want to run only the OVOS assistant layer.
 - Use it with another EnMS only when that EnMS exposes the same API contract,
@@ -38,10 +40,10 @@ unzip HumanEnerDIA-OVOS-skill-v1.0.0.zip
 cd HumanEnerDIA-OVOS-skill-v1.0.0
 ```
 
-Run OVOS against a HumanEnerDIA backend:
+Run OVOS against a HumanEnerDIA EnMS backend:
 
 ```bash
-./setup.sh --enms-api-url http://<humanerdia-host>:8001/api/v1
+./setup.sh --enms-api-url http://<enms-host>:8001/api/v1
 ```
 
 For a third-party EnMS, point `--enms-api-url` at a HumanEnerDIA-compatible
@@ -54,17 +56,25 @@ adapter/proxy URL, not directly at an arbitrary vendor API:
 Common backend URL choices:
 
 ```bash
-# HumanEnerDIA on another machine
+# HumanEnerDIA-EnMS on another machine
 ./setup.sh --enms-api-url http://192.168.1.50:8001/api/v1
 
-# HumanEnerDIA on this same laptop
+# HumanEnerDIA-EnMS on this same laptop
 ./setup.sh --enms-api-url http://host.docker.internal:8001/api/v1
 
-# HumanEnerDIA on the same Docker network
+# HumanEnerDIA-EnMS on the same Docker network
 ./setup.sh --enms-api-url http://enms-analytics:8001/api/v1 --network enms-network
 
 # If port 5000 is already used
 ./setup.sh --enms-api-url http://192.168.1.50:8001/api/v1 --bridge-port 5500
+```
+
+On the EnMS side, configure the optional portal voice proxy to call this OVOS
+bridge:
+
+```bash
+cd HumanEnerDIA-EnMS-v1.0.0
+./setup.sh --ovos-bridge-host <ovos-host> --ovos-bridge-port 5000
 ```
 
 ## Verify
