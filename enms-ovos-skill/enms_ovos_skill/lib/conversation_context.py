@@ -53,6 +53,7 @@ class ConversationSession:
     last_machine: Optional[str] = None
     last_machines: Optional[List[str]] = None  # For comparisons
     last_metric: Optional[str] = None
+    last_energy_source: Optional[str] = None
     last_intent: Optional[IntentType] = None
     last_time_range: Optional[str] = None
     pending_clarification: Optional[Dict[str, Any]] = None  # Awaiting user response
@@ -94,6 +95,9 @@ class ConversationSession:
         
         if intent.metric:
             self.last_metric = intent.metric
+
+        if intent.energy_source:
+            self.last_energy_source = intent.energy_source
         
         if intent.time_range:
             self.last_time_range = str(intent.time_range)
@@ -133,6 +137,7 @@ class ConversationSession:
             'last_machine': self.last_machine,
             'last_machines': self.last_machines,
             'last_metric': self.last_metric,
+            'last_energy_source': self.last_energy_source,
             'last_intent': self.last_intent.value if self.last_intent else None,
             'last_time_range': self.last_time_range,
             'session_age_minutes': (datetime.utcnow() - self.started_at).total_seconds() / 60,
@@ -275,6 +280,21 @@ class ConversationContextManager:
                            query=query,
                            resolved_metric=session.last_metric)
                 intent = intent.model_copy(update={'metric': session.last_metric})
+
+        # If no energy source but we have context from a previous SEU-specific turn
+        if not intent.energy_source and session.last_energy_source:
+            if intent.intent in [
+                IntentType.BASELINE,
+                IntentType.BASELINE_MODELS,
+                IntentType.BASELINE_EXPLANATION,
+                IntentType.SEUS,
+            ]:
+                logger.info(
+                    "resolving_energy_source_context",
+                    query=query,
+                    resolved_energy_source=session.last_energy_source
+                )
+                intent = intent.model_copy(update={'energy_source': session.last_energy_source})
         
         return intent
     
@@ -698,6 +718,7 @@ class ConversationContextManager:
             logger.info("sessions_cleanup_complete", 
                        expired_count=len(expired),
                        active_count=len(self.sessions))
+        return len(expired)
     
     def get_session_stats(self) -> Dict[str, Any]:
         """Get statistics about active sessions"""

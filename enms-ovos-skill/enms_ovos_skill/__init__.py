@@ -21,9 +21,11 @@ Target Performance:
 """
 from typing import Optional, Dict, Any, List
 import asyncio
+import os
 import time
 import re
 import threading
+import concurrent.futures
 import concurrent.futures
 from datetime import datetime, timezone, timedelta
 import structlog
@@ -97,6 +99,7 @@ class EnmsSkill(FallbackSkill):
         
         # Persistent event loop for async API calls (prevents 'Event loop is closed' errors)
         self._async_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._async_loop_lock = threading.RLock()
         
         # Performance tracking
         self.query_count = 0
@@ -299,6 +302,13 @@ class EnmsSkill(FallbackSkill):
         """
         try:
             time.sleep(5)  # Let critical services start first
+            if not os.path.isfile(self.llm_model_path):
+                self.logger.warning(
+                    "llm_preload_skipped",
+                    reason="optional model file not installed",
+                    model_path=self.llm_model_path
+                )
+                return
             self.logger.info("llm_preload_starting")
             start = time.time()
             
@@ -376,21 +386,31 @@ class EnmsSkill(FallbackSkill):
         Raises:
             asyncio.TimeoutError: If operation exceeds timeout
         """
-        if self._async_loop is None or self._async_loop.is_closed():
-            self._async_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._async_loop)
-        
-        # Wrap coroutine with timeout protection
         async def _with_timeout():
             return await asyncio.wait_for(coro, timeout=timeout_seconds)
-        
+
         try:
-            return self._async_loop.run_until_complete(_with_timeout())
-        except asyncio.TimeoutError:
-            self.logger.error("async_operation_timeout",
-                            timeout_seconds=timeout_seconds,
-                            operation=str(coro))
-            raise
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop and running_loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(lambda: asyncio.run(_with_timeout()))
+                return future.result(timeout=timeout_seconds + 1)
+
+        with self._async_loop_lock:
+            if self._async_loop is None or self._async_loop.is_closed():
+                self._async_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._async_loop)
+
+            try:
+                return self._async_loop.run_until_complete(_with_timeout())
+            except asyncio.TimeoutError:
+                self.logger.error("async_operation_timeout",
+                                timeout_seconds=timeout_seconds,
+                                operation=str(coro))
+                raise
     
     def _get_factory_wide_drivers(self) -> Dict[str, Any]:
         """Get aggregated key energy drivers across ALL machines with baseline models.
@@ -564,6 +584,352 @@ class EnmsSkill(FallbackSkill):
             return f"{delta.seconds // 3600}hour"
         else:
             return "custom"
+
+    def _normalize_partner_speech_text(self, utterance: str) -> str:
+        """Correct common STT mistakes for ASSA ABLOY press-shop names."""
+        normalized = f" {utterance or ''} "
+        replacements = [
+            (r"\bthe breakfast club\b", "the Bret press group"),
+            (r"\bbreakfast club\b", "Bret press group"),
+            (r"\bbreakfast group\b", "Bret press group"),
+            (r"\bbread press(?:es)?\b", "Bret presses"),
+            (r"\bbrett press(?:es)?\b", "Bret presses"),
+            (r"\bbrett\b", "Bret"),
+            (r"\bbrent\b", "Bret"),
+            (r"\bbrat\b", "Bret"),
+            (r"\bbreath press(?:es)?\b", "Bret presses"),
+            (r"\bdime echo\b", "Dimeco"),
+            (r"\bdim echo\b", "Dimeco"),
+            (r"\bdynamo\b", "Dimeco"),
+            (r"\bdy meco\b", "Dimeco"),
+            (r"\bdie meco\b", "Dimeco"),
+            (r"\brasta\b", "Raster"),
+            (r"\brastor\b", "Raster"),
+            (r"\bflexy\b", "Flexi"),
+            (r"\bshoe eighty\b", "Schu80"),
+            (r"\bshoe 80\b", "Schu80"),
+            (r"\bschu eighty\b", "Schu80"),
+            (r"\braster one sixty\b", "Rast160"),
+            (r"\brast one sixty\b", "Rast160"),
+            (r"\bbret one twenty five\b", "Bret125"),
+            (r"\bbret one sixty\b", "Bret160"),
+            (r"\bbret two fifty\b", "Bret250"),
+        ]
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+        return " ".join(normalized.split())
+
+    def _is_partner_press_query(self, utterance: str) -> bool:
+        """Detect ASSA ABLOY / partner press-shop pilot questions."""
+        normalized = self._normalize_partner_speech_text(utterance).lower()
+        partner_terms = [
+            "assa abloy",
+            "partner",
+            "partner press",
+            "press shop",
+            "press-shop",
+            "bret",
+            "raster",
+            "rast",
+            "dimeco",
+            "dime echo",
+            "dim echo",
+            "dynamo",
+            "flexi",
+            "schu",
+            "breakfast club",
+            "breakfast group",
+            "brett",
+            "brent",
+            "rasta",
+            "rastor",
+            "flexy",
+            "sqdc",
+        ]
+        if any(term in normalized for term in partner_terms):
+            return True
+        if os.getenv("PARTNER_PRESS_PILOT_DEFAULT", "false").lower() == "true":
+            if (
+                "energy system" in normalized
+                or "system health" in normalized
+                or "system online" in normalized
+            ):
+                return False
+            demo_terms = [
+                "compressor", "boiler", "hvac", "conveyor", "injection",
+                "molding", "hydraulic", "pump", "forecast",
+                "report", "enpi", "opportunity", "save energy",
+            ]
+            if any(term in normalized for term in demo_terms):
+                return False
+            partner_default_terms = [
+                "energy", "consumption", "kwh", "electricity", "power",
+                "production", "quantity", "produced", "produce", "parts",
+                "unit", "units", "kpi", "sec", "summary", "overview",
+                "anomaly", "anomalies", "alert", "alerts",
+                "machine", "machines", "meter", "meters", "seu", "seus",
+                "significant energy", "baseline", "baselines", "data period",
+                "period", "available data", "today", "current", "latest",
+                "reading", "readings", "row", "rows", "import", "imported",
+                "transformer", "trafo", "reference meter",
+            ]
+            if any(term in normalized for term in partner_default_terms):
+                return True
+        return bool(
+            re.search(r"\bpress(?:es)?\b", normalized)
+            and any(term in normalized for term in [
+                "energy", "consumption", "kwh", "use", "used",
+                "production", "quantity", "produced", "produce", "parts",
+                "unit", "units", "kpi", "sec", "compare", "meter", "meters",
+            ])
+        )
+
+    def _is_partner_pilot_default(self) -> bool:
+        return os.getenv("PARTNER_PRESS_PILOT_DEFAULT", "false").lower() == "true"
+
+    def _is_demo_asset_query(self, utterance: str) -> bool:
+        """Detect legacy simulator/demo equipment names in partner-pilot mode."""
+        normalized = re.sub(r"[^a-z0-9]+", " ", (utterance or "").lower())
+        compact = normalized.replace(" ", "")
+        demo_terms = [
+            "boiler", "compressor", "conveyor", "hvac", "hydraulic",
+            "pump", "injection", "molding", "turbine",
+        ]
+        demo_compact_terms = [
+            "boiler1", "compressor1", "compressor2", "compressoreu1",
+            "conveyora", "hvacmain", "hvaceunorth", "hvacnorth1",
+            "hydraulicpump1", "injectionmolding1",
+        ]
+        return any(term in normalized.split() for term in demo_terms) or any(
+            term in compact for term in demo_compact_terms
+        )
+
+    def _partner_dataset_mismatch_response(self, utterance: str, start_time: float) -> Dict[str, Any]:
+        response_text = (
+            "That asset is not part of the ASSA ABLOY Partner Press Shop dataset. "
+            "This dev pilot currently contains Bret, Raster, and Dimeco press-shop meter groups "
+            "plus their SQDC press production records. I will not substitute simulator/demo data "
+            "for partner answers."
+        )
+        return {
+            "success": True,
+            "response": response_text,
+            "latency_ms": round((time.time() - start_time) * 1000, 2),
+            "tier": "partner_press_profile",
+            "intent": "partner_press_out_of_scope_asset",
+            "confidence": 1.0,
+            "machine": None,
+            "data": {
+                "out_of_scope": True,
+                "utterance": utterance,
+                "available_energy_assets": [
+                    "Bret Presses Meter Group",
+                    "Raster Presses Meter Group",
+                    "Dimeco Presses Meter Group",
+                ],
+            },
+        }
+
+    def _partner_press_group(self, utterance: str) -> Optional[str]:
+        normalized = self._normalize_partner_speech_text(utterance).lower()
+        for group in ("bret", "raster", "dimeco"):
+            if group in normalized:
+                return group
+        if "rast" in normalized:
+            return "raster"
+        if "flexi" in normalized or "schu" in normalized:
+            return "dimeco"
+        return None
+
+    def _partner_press_press(self, utterance: str) -> Optional[str]:
+        normalized = re.sub(r"[^a-z0-9]+", " ", self._normalize_partner_speech_text(utterance).lower())
+        compact = normalized.replace(" ", "")
+        aliases = {
+            "bret1251": "Bret125-1",
+            "bret1601": "Bret160-1",
+            "bret2501": "Bret250-1",
+            "bret2502": "Bret250-2",
+            "dimeco801": "Dimeco80-1",
+            "dimeco802": "Dimeco80-2",
+            "flexi": "Flexi-1",
+            "flexi1": "Flexi-1",
+            "flexione": "Flexi-1",
+            "rast1251": "Rast125-1",
+            "raster1251": "Rast125-1",
+            "rast1252": "Rast125-2",
+            "raster1252": "Rast125-2",
+            "rast1601": "Rast160-1",
+            "raster160": "Rast160-1",
+            "raster1601": "Rast160-1",
+            "rast2501": "Rast250-1",
+            "raster2501": "Rast250-1",
+            "rast2502": "Rast250-2",
+            "raster2502": "Rast250-2",
+            "schu80": "Schu80-1",
+            "schu801": "Schu80-1",
+            "shoe80": "Schu80-1",
+            "shoe801": "Schu80-1",
+        }
+        for alias, press in aliases.items():
+            if alias in compact:
+                return press
+        return None
+
+    def _partner_press_period(self, utterance: str) -> tuple[Optional[str], Optional[str]]:
+        normalized = (utterance or "").lower()
+        months = {
+            "january": 1, "jan": 1,
+            "february": 2, "feb": 2,
+            "march": 3, "mar": 3,
+            "april": 4, "apr": 4,
+            "may": 5,
+            "june": 6, "jun": 6,
+            "july": 7, "jul": 7,
+            "august": 8, "aug": 8,
+            "september": 9, "sep": 9, "sept": 9,
+            "october": 10, "oct": 10,
+            "november": 11, "nov": 11,
+            "december": 12, "dec": 12,
+        }
+        match = re.search(
+            r"\b("
+            + "|".join(sorted(months.keys(), key=len, reverse=True))
+            + r")\s+(20\d{2})\b",
+            normalized,
+        )
+        if not match:
+            return None, None
+
+        month = months[match.group(1)]
+        year = int(match.group(2))
+        start = datetime(year, month, 1)
+        if month == 12:
+            end = datetime(year + 1, 1, 1)
+        else:
+            end = datetime(year, month + 1, 1)
+        return start.isoformat(), end.isoformat()
+
+    def _partner_press_question_type(self, utterance: str) -> str:
+        normalized = self._normalize_partner_speech_text(utterance).lower()
+        press = self._partner_press_press(utterance)
+        group = self._partner_press_group(utterance)
+        if "unknown press" in normalized:
+            return "unknown_press"
+        if any(term in normalized for term in ["transformer", "trafo", "reference meter"]):
+            return "reference_meter"
+        if any(term in normalized for term in [
+            "data inventory", "how many readings", "how many rows",
+            "row count", "reading count", "all the data", "all data",
+            "imported data", "data imported",
+        ]):
+            return "data_inventory"
+        if any(term in normalized for term in ["anomaly", "anomalies", "alert", "alerts"]):
+            return "anomalies"
+        if any(term in normalized for term in ["data period", "period", "available data"]):
+            return "period"
+        if "baseline" in normalized:
+            return "baseline_status"
+        if any(term in normalized for term in ["seu", "seus", "significant energy use", "significant energy uses"]):
+            return "seus"
+        if any(term in normalized for term in ["machine", "machines", "asset", "assets"]):
+            return "machines"
+        if any(term in normalized for term in ["today", "current", "right now", "live", "latest"]):
+            return "current_data"
+        if any(term in normalized for term in ["compare", "versus", " vs "]):
+            return "compare_groups"
+        if "sec" in normalized and any(term in normalized for term in ["explain", "mean", "means", "simple"]):
+            return "sec_explanation"
+        if any(term in normalized for term in ["kpi", "sec", "performance indicator", "energy per", "per produced", "per unit"]):
+            return "group_kpis" if group else "kpis"
+        if any(term in normalized for term in ["production", "quantity", "produced", "produce", "output", "units", "parts"]):
+            if press:
+                return "press_production"
+            return "group_production" if group else "kpis"
+        if press and any(term in normalized for term in ["energy", "consumption", "kwh", "use", "used"]):
+            return "press_energy"
+        if group and any(term in normalized for term in ["energy", "consumption", "kwh", "use", "used", "electricity", "meter"]):
+            return "group_energy"
+        if not group and not press and any(term in normalized for term in [
+            "how much energy", "energy use", "energy consumption",
+            "electricity use", "electricity consumption",
+        ]):
+            return "total_energy"
+        if "total energy" in normalized or "overall energy" in normalized:
+            return "total_energy"
+        if any(term in normalized for term in ["top", "consumer", "consumers", "most energy"]):
+            return "top_energy"
+        return "summary"
+
+    def _handle_partner_press_query(self, utterance: str, session_id: str, start_time: float) -> Dict[str, Any]:
+        """Answer partner press-shop pilot questions from the imported dataset."""
+        question_type = self._partner_press_question_type(utterance)
+        group = self._partner_press_group(utterance)
+        press = self._partner_press_press(utterance)
+        start_time_iso, end_time_iso = self._partner_press_period(utterance)
+
+        data = self._run_async(
+            self.api_client.get_partner_press_summary(
+                question_type=question_type,
+                group=group,
+                press=press,
+                start_time=start_time_iso,
+                end_time=end_time_iso,
+            )
+        )
+
+        response_text = data.get("response")
+        if not response_text:
+            response_text = (
+                "The ASSA ABLOY partner press-shop dataset is available, but I could not build "
+                "a concise answer for that question."
+            )
+
+        total_latency_ms = (time.time() - start_time) * 1000
+        return {
+            "success": True,
+            "response": response_text,
+            "latency_ms": round(total_latency_ms, 2),
+            "tier": "partner_press_profile",
+            "intent": "partner_press_pilot",
+            "confidence": 1.0,
+            "machine": None,
+            "data": data,
+        }
+
+    def _try_handle_partner_press_message(self, message: Message) -> bool:
+        """Route partner press-shop utterances before generic Adapt handlers."""
+        utterance = message.data.get("utterances", [""])[0]
+        if not self._is_partner_press_query(utterance):
+            if self._is_partner_pilot_default() and self._is_demo_asset_query(utterance):
+                result = self._partner_dataset_mismatch_response(utterance, time.time())
+                self._emit_structured_response(
+                    self._get_session_id(message),
+                    result.get("intent"),
+                    result.get("data"),
+                    confidence=result.get("confidence"),
+                    utterance=utterance,
+                    machine=result.get("machine")
+                )
+                self.speak(result["response"])
+                return True
+            return False
+
+        session_id = self._get_session_id(message)
+        result = self._handle_partner_press_query(utterance, session_id, time.time())
+        if result.get("success"):
+            self._emit_structured_response(
+                session_id,
+                result.get("intent"),
+                result.get("data"),
+                confidence=result.get("confidence"),
+                utterance=utterance,
+                machine=result.get("machine")
+            )
+            self.speak(result["response"])
+            return True
+
+        self.speak(result.get("response") or "I could not retrieve the partner press-shop data.")
+        return True
     
     def _normalize_machine_name(self, raw_machine: Optional[str]) -> Optional[str]:
         """
@@ -600,6 +966,220 @@ class EnmsSkill(FallbackSkill):
                            normalized=normalized)
         
         return normalized
+
+    def _normalize_energy_source(self, raw_energy_source: Optional[str]) -> Optional[str]:
+        """Normalize energy source names to the backend's canonical values."""
+        if not raw_energy_source:
+            return None
+
+        if self.validator:
+            normalized = self.validator.normalize_energy_source(raw_energy_source)
+            if normalized:
+                return normalized
+
+        normalized = raw_energy_source.strip().lower().replace('-', ' ').replace('_', ' ')
+        mapping = {
+            'electricity': 'electricity',
+            'electric': 'electricity',
+            'electrical': 'electricity',
+            'natural gas': 'natural_gas',
+            'gas': 'natural_gas',
+            'steam': 'steam',
+            'compressed air': 'compressed_air',
+            'air': 'compressed_air',
+        }
+        return mapping.get(normalized)
+
+    def _extract_energy_source(self, utterance: str = "", raw_energy_source: Optional[str] = None) -> Optional[str]:
+        """Resolve an energy source from explicit entities first, then fallback text matching."""
+        normalized = self._normalize_energy_source(raw_energy_source)
+        if normalized:
+            return normalized
+
+        utterance_lower = utterance.lower()
+        if 'compressed air' in utterance_lower or 'compressed_air' in utterance_lower:
+            return 'compressed_air'
+        if 'natural gas' in utterance_lower or 'natural_gas' in utterance_lower:
+            return 'natural_gas'
+        if 'electricity' in utterance_lower or re.search(r'\belectric\b', utterance_lower):
+            return 'electricity'
+        if 'steam' in utterance_lower:
+            return 'steam'
+        if re.search(r'\bgas\b', utterance_lower):
+            return 'natural_gas'
+
+        return None
+
+    def _extract_driver_direction(self, utterance: str) -> Optional[str]:
+        """Detect whether a driver query is about increases or decreases."""
+        utterance_lower = utterance.lower()
+
+        if any(phrase in utterance_lower for phrase in [
+            'what increases',
+            'which increases',
+            'increase energy',
+            'increases energy',
+            'raise energy',
+            'raises energy',
+            'higher energy',
+        ]):
+            return 'increases'
+
+        if any(phrase in utterance_lower for phrase in [
+            'what decreases',
+            'which decreases',
+            'decrease energy',
+            'decreases energy',
+            'reduce energy',
+            'reduces energy',
+            'lower energy',
+        ]):
+            return 'decreases'
+
+        return None
+
+    def _humanize_energy_source(self, energy_source: Optional[str]) -> Optional[str]:
+        """Convert canonical energy source names to user-facing labels."""
+        if not energy_source:
+            return None
+
+        return energy_source.replace('_', ' ')
+
+    def _join_human_list(self, values: List[str]) -> str:
+        """Format a short list for speech output."""
+        unique_values = [value for value in dict.fromkeys(values) if value]
+        if not unique_values:
+            return ""
+        if len(unique_values) == 1:
+            return unique_values[0]
+        if len(unique_values) == 2:
+            return f"{unique_values[0]} or {unique_values[1]}"
+        return f"{', '.join(unique_values[:-1])}, or {unique_values[-1]}"
+
+    def _format_baseline_target_label(self, seu_name: Optional[str], energy_source: Optional[str]) -> str:
+        """Build a user-facing label for a resolved SEU target."""
+        if seu_name and energy_source:
+            return f"{seu_name} {self._humanize_energy_source(energy_source)}"
+        return seu_name or "this machine"
+
+    def _available_baseline_sources(self, matching_seus: List[Dict[str, Any]], exclude_energy_source: Optional[str] = None) -> List[str]:
+        """Return human-friendly energy sources that have trained baselines."""
+        sources = []
+        for seu in matching_seus:
+            energy_source = seu.get('energy_source')
+            if not energy_source or energy_source == exclude_energy_source:
+                continue
+            if seu.get('has_baseline'):
+                sources.append(self._humanize_energy_source(energy_source))
+        return [source for source in dict.fromkeys(sources)]
+
+    def _build_baseline_message_response(
+        self,
+        message: str,
+        seu_name: Optional[str] = None,
+        energy_source: Optional[str] = None,
+        machine_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return a template-friendly baseline message response."""
+        data = {'message': message}
+        if seu_name:
+            data['seu_name'] = seu_name
+        if machine_name:
+            data['machine_name'] = machine_name
+        if energy_source:
+            data['energy_source'] = energy_source
+        return {'success': True, 'data': data}
+
+    def _resolve_baseline_target(
+        self,
+        seu_name: Optional[str],
+        utterance: str = "",
+        energy_source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Resolve a machine name plus optional energy source to a specific SEU."""
+        normalized_machine = self._normalize_machine_name(seu_name) if seu_name else None
+        if not normalized_machine:
+            return {'success': False, 'message': 'Which machine do you mean? Please specify a machine name.'}
+
+        requested_energy_source = self._extract_energy_source(utterance, energy_source)
+        seu_response = self._run_async(self.api_client.list_seus())
+        seus = seu_response.get('seus', [])
+        matching_seus = [
+            seu for seu in seus
+            if seu.get('name', '').lower() == normalized_machine.lower()
+        ]
+
+        if not matching_seus:
+            return {
+                'success': False,
+                'message': f"I couldn't find a significant energy use named {normalized_machine}.",
+                'seu_name': normalized_machine,
+            }
+
+        available_sources = self._join_human_list([
+            self._humanize_energy_source(seu.get('energy_source'))
+            for seu in matching_seus
+            if seu.get('energy_source')
+        ])
+
+        if requested_energy_source:
+            selected_seu = next(
+                (seu for seu in matching_seus if seu.get('energy_source') == requested_energy_source),
+                None,
+            )
+            if not selected_seu:
+                return {
+                    'success': False,
+                    'message': (
+                        f"{normalized_machine} does not have a {self._humanize_energy_source(requested_energy_source)} "
+                        f"significant energy use. Available energy sources are {available_sources}."
+                    ),
+                    'seu_name': normalized_machine,
+                    'energy_source': requested_energy_source,
+                }
+
+            return {
+                'success': True,
+                'seu': selected_seu,
+                'seu_name': normalized_machine,
+                'energy_source': requested_energy_source,
+                'matching_seus': matching_seus,
+                'defaulted_energy_source': False,
+            }
+
+        if len(matching_seus) == 1:
+            resolved_energy_source = matching_seus[0].get('energy_source')
+            return {
+                'success': True,
+                'seu': matching_seus[0],
+                'seu_name': normalized_machine,
+                'energy_source': resolved_energy_source,
+                'matching_seus': matching_seus,
+                'defaulted_energy_source': False,
+            }
+
+        electricity_seu = next(
+            (seu for seu in matching_seus if seu.get('energy_source') == 'electricity'),
+            None,
+        )
+        if electricity_seu:
+            return {
+                'success': True,
+                'seu': electricity_seu,
+                'seu_name': normalized_machine,
+                'energy_source': 'electricity',
+                'matching_seus': matching_seus,
+                'defaulted_energy_source': True,
+            }
+
+        return {
+            'success': False,
+            'message': (
+                f"{normalized_machine} has multiple significant energy uses. "
+                f"Please specify {available_sources}."
+            ),
+            'seu_name': normalized_machine,
+        }
 
     def _is_generic_machine_reference(self, raw_machine: Optional[str]) -> bool:
         """Return True when Adapt matched a generic placeholder instead of a real machine."""
@@ -652,19 +1232,64 @@ class EnmsSkill(FallbackSkill):
 
     def _extract_ranking_limit(self, utterance: str) -> int:
         """Extract an explicit top-N limit, falling back to a short ranked list."""
+        number_word = r'(one|two|three|four|five|six|seven|eight|nine|ten)'
+        number_words = {
+            'one': 1,
+            'two': 2,
+            'three': 3,
+            'four': 4,
+            'five': 5,
+            'six': 6,
+            'seven': 7,
+            'eight': 8,
+            'nine': 9,
+            'ten': 10,
+        }
         patterns = [
-            r'\btop\s+(\d+)\b',
-            r'\b(\d+)\s+top\b',
-            r'\bhighest\s+(\d+)\b',
-            r'\blowest\s+(\d+)\b',
+            rf'\btop\s+(\d+|{number_word})\b',
+            rf'\b(\d+|{number_word})\s+top\b',
+            rf'\bhighest\s+(\d+|{number_word})\b',
+            rf'\blowest\s+(\d+|{number_word})\b',
         ]
 
         for pattern in patterns:
             match = re.search(pattern, utterance, re.IGNORECASE)
             if match:
-                return max(int(match.group(1)), 1)
+                raw_limit = match.group(1).lower()
+                limit = number_words.get(raw_limit, int(raw_limit) if raw_limit.isdigit() else 5)
+                return max(limit, 1)
 
         return 5
+
+    def _is_machine_list_query(self, utterance: str) -> bool:
+        """Return True for inventory/listing questions, not energy rankings."""
+        normalized = (utterance or "").lower()
+        listing_patterns = [
+            r"\bwhat\s+(?:are\s+)?(?:the\s+)?machines\b",
+            r"\bwhat\s+machines\s+(?:do\s+we\s+have|are\s+there)\b",
+            r"\bwhich\s+machines\s+(?:do\s+we\s+have|are\s+there)\b",
+            r"\b(?:list|show)\s+(?:all\s+)?machines\b",
+            r"\ball\s+machines\b",
+            r"\bavailable\s+machines\b",
+            r"\bmachine\s+list\b",
+            r"\bhow\s+many\s+machines\b",
+        ]
+        if not any(re.search(pattern, normalized) for pattern in listing_patterns):
+            return False
+        ranking_terms = ["top", "consumer", "consumers", "most energy", "highest", "lowest", "rank"]
+        return not any(term in normalized for term in ranking_terms)
+
+    def _format_machine_list_payload(self, machines: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Build template-compatible machine-list data from API machine records."""
+        machine_names = [
+            machine.get("name") or machine.get("machine_name") or "Unknown"
+            for machine in machines
+        ]
+        return {
+            "machines": machine_names,
+            "machine_records": machines,
+            "count": len(machine_names),
+        }
 
     def _infer_ranking_metric_from_utterance(self, utterance: str) -> str:
         """Map ranking phrasing to the metric used by the top-consumers endpoint."""
@@ -750,6 +1375,13 @@ class EnmsSkill(FallbackSkill):
                 'intent': None,
                 'error': 'probe_utterance_ignored'
             }
+
+        if self._is_partner_press_query(utterance):
+            self.logger.info("partner_press_query_detected", utterance=utterance[:120])
+            return self._handle_partner_press_query(utterance, session_id, start_time)
+        if self._is_partner_pilot_default() and self._is_demo_asset_query(utterance):
+            self.logger.info("partner_press_demo_asset_blocked", utterance=utterance[:120])
+            return self._partner_dataset_mismatch_response(utterance, start_time)
 
         self.logger.info("⚙️ PROCESS_QUERY_START", utterance=utterance[:50])
         
@@ -942,7 +1574,7 @@ class EnmsSkill(FallbackSkill):
             
             # Step 9: Format response with templates
             format_start = time.time()
-            custom_template = api_data.get('custom_template')
+            custom_template = api_data.get('custom_template') or api_data.get('template')
             response_text = self._format_response(intent, api_data['data'], custom_template=custom_template)
             format_latency_ms = (time.time() - format_start) * 1000
             
@@ -1649,10 +2281,10 @@ class EnmsSkill(FallbackSkill):
                     # Health check query - use /health endpoint
                     data = self._run_async(self.api_client.health_check())
                     return {'success': True, 'data': data}
-                elif 'summary' in utterance:
+                elif 'summary' in utterance or 'overview' in utterance:
                     # Factory summary - comprehensive overview
                     data = self._run_async(self.api_client.factory_summary())
-                    return {'success': True, 'data': data, 'template': 'factory_summary'}
+                    return {'success': True, 'data': data, 'custom_template': 'factory_summary'}
                 elif 'significant energy' in utterance or 'list seus' in utterance or 'energy uses' in utterance:
                     # List SEUs (significant energy uses)
                     # Check if filtering by energy source
@@ -1748,17 +2380,26 @@ class EnmsSkill(FallbackSkill):
                     # Use aggregated_stats template instead of factory_overview
                     return {'success': True, 'data': data, 'template': 'aggregated_stats'}
                 else:
-                    # General stats query - use /stats/system endpoint
-                    data = self._run_async(self.api_client.system_stats())
+                    # General factory overview - use the same today/current summary as the dashboards.
+                    data = self._run_async(self.api_client.factory_summary())
+                    return {'success': True, 'data': data, 'custom_template': 'factory_summary'}
                 
                 return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.RANKING:
                 # Check if this is a machine list request vs top consumers ranking
+                utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
+                if self._is_machine_list_query(utterance):
+                    machines = self._run_async(self.api_client.list_machines())
+                    return {
+                        'success': True,
+                        'data': self._format_machine_list_payload(machines),
+                        'template': 'machine_list'
+                    }
+
                 if not intent.limit and not intent.metric:
                     # This is "list all machines" or "what machines do we have"
                     # Check if utterance contains a search term (e.g., "which HVAC units")
-                    utterance = getattr(intent, 'utterance', '').lower() if hasattr(intent, 'utterance') else ''
                     search_term = None
                     
                     # Extract search term from common patterns
@@ -1781,12 +2422,17 @@ class EnmsSkill(FallbackSkill):
                     else:
                         machines = self._run_async(self.api_client.list_machines())
                     
-                    return {'success': True, 'data': {'machines': machines, 'count': len(machines)}}
+                    return {
+                        'success': True,
+                        'data': self._format_machine_list_payload(machines),
+                        'template': 'machine_list'
+                    }
                 else:
                     # This is top N ranking by metric
                     limit = intent.limit or 5
                     metric = getattr(intent, 'ranking_metric', 'energy') or getattr(intent, 'metric', 'energy') or 'energy'
                     data = self._run_async(self.api_client.get_top_consumers(limit=limit, metric=metric))
+                    data['limit'] = limit
                     return {'success': True, 'data': data}
             
             elif intent.intent == IntentType.COMPARISON and intent.machines:
@@ -1974,24 +2620,77 @@ class EnmsSkill(FallbackSkill):
             elif intent.intent == IntentType.BASELINE_MODELS:
                 # List baseline models for a machine
                 if not intent.machine:
-                    return {'success': False, 'error': 'Machine name required for baseline models'}
+                    return self._build_baseline_message_response(
+                        'Which machine do you mean? Please specify a machine name.',
+                    )
                 
-                self.logger.info("baseline_models_query", machine=intent.machine)
+                requested_energy_source = self._extract_energy_source(
+                    getattr(intent, 'utterance', ''),
+                    intent.energy_source,
+                )
+                resolution = self._resolve_baseline_target(
+                    intent.machine,
+                    utterance=getattr(intent, 'utterance', ''),
+                    energy_source=requested_energy_source,
+                )
+                if not resolution['success']:
+                    return self._build_baseline_message_response(
+                        resolution['message'],
+                        seu_name=resolution.get('seu_name', intent.machine),
+                        energy_source=resolution.get('energy_source'),
+                    )
+
+                resolved_energy_source = resolution['energy_source']
+                target_label = self._format_baseline_target_label(intent.machine, resolved_energy_source)
+                if not resolution['seu'].get('has_baseline'):
+                    available_sources = self._available_baseline_sources(
+                        resolution['matching_seus'],
+                        exclude_energy_source=resolved_energy_source,
+                    )
+                    if available_sources:
+                        message = (
+                            f"No baseline model is trained for {target_label}. "
+                            f"Available trained baselines exist for {self._join_human_list(available_sources)}."
+                        )
+                    else:
+                        message = f"No baseline model is trained for {target_label}."
+                    return self._build_baseline_message_response(
+                        message,
+                        seu_name=intent.machine,
+                        energy_source=resolved_energy_source,
+                        machine_name=intent.machine,
+                    )
+
+                self.logger.info(
+                    "baseline_models_query",
+                    machine=intent.machine,
+                    energy_source=resolved_energy_source,
+                )
                 
                 # Call list_baseline_models API
                 response = self._run_async(
                     self.api_client.list_baseline_models(
                         seu_name=intent.machine,
-                        energy_source="electricity"
+                        energy_source=resolved_energy_source
                     )
                 )
                 
                 # Process response to extract active model and summary
                 models = response.get('models', [])
                 active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
+
+                if not models:
+                    return self._build_baseline_message_response(
+                        f"No baseline models found for {target_label}.",
+                        seu_name=intent.machine,
+                        energy_source=resolved_energy_source,
+                        machine_name=intent.machine,
+                    )
                 
                 data = {
                     'seu_name': response.get('seu_name', intent.machine),
+                    'machine_name': intent.machine,
+                    'energy_source': resolved_energy_source,
                     'models': models,
                     'active_version': active_model.get('model_version') if active_model else None,
                     'active_r_squared': active_model.get('r_squared') if active_model else None,
@@ -2007,13 +2706,54 @@ class EnmsSkill(FallbackSkill):
                     self.logger.info("baseline_explanation_factory_wide")
                     return self._get_factory_wide_drivers()
                 
-                self.logger.info("baseline_explanation_query", machine=intent.machine)
+                requested_energy_source = self._extract_energy_source(
+                    getattr(intent, 'utterance', ''),
+                    intent.energy_source,
+                )
+                resolution = self._resolve_baseline_target(
+                    intent.machine,
+                    utterance=getattr(intent, 'utterance', ''),
+                    energy_source=requested_energy_source,
+                )
+                if not resolution['success']:
+                    return self._build_baseline_message_response(
+                        resolution['message'],
+                        seu_name=resolution.get('seu_name', intent.machine),
+                        energy_source=resolution.get('energy_source'),
+                    )
+
+                resolved_energy_source = resolution['energy_source']
+                target_label = self._format_baseline_target_label(intent.machine, resolved_energy_source)
+                if not resolution['seu'].get('has_baseline'):
+                    available_sources = self._available_baseline_sources(
+                        resolution['matching_seus'],
+                        exclude_energy_source=resolved_energy_source,
+                    )
+                    if available_sources:
+                        message = (
+                            f"No baseline model is trained for {target_label}. "
+                            f"Available trained baselines exist for {self._join_human_list(available_sources)}."
+                        )
+                    else:
+                        message = f"No baseline model is trained for {target_label}."
+                    return self._build_baseline_message_response(
+                        message,
+                        seu_name=intent.machine,
+                        energy_source=resolved_energy_source,
+                        machine_name=intent.machine,
+                    )
+
+                self.logger.info(
+                    "baseline_explanation_query",
+                    machine=intent.machine,
+                    energy_source=resolved_energy_source,
+                )
                 
                 # First get the list of models to find the active model ID
                 models_response = self._run_async(
                     self.api_client.list_baseline_models(
                         seu_name=intent.machine,
-                        energy_source="electricity"
+                        energy_source=resolved_energy_source
                     )
                 )
                 
@@ -2021,7 +2761,12 @@ class EnmsSkill(FallbackSkill):
                 active_model = next((m for m in models if m.get('is_active')), models[0] if models else None)
                 
                 if not active_model:
-                    return {'success': False, 'error': f'No baseline model found for {intent.machine}'}
+                    return self._build_baseline_message_response(
+                        f"No baseline model found for {target_label}.",
+                        seu_name=intent.machine,
+                        energy_source=resolved_energy_source,
+                        machine_name=intent.machine,
+                    )
                 
                 # Get detailed explanation for the active model
                 model_id = active_model.get('id')
@@ -2034,13 +2779,22 @@ class EnmsSkill(FallbackSkill):
                 
                 # Extract explanation data for template
                 explanation = explanation_response.get('explanation', {})
+                driver_direction = intent.params.get('driver_direction') if intent.params else None
+                key_drivers = explanation.get('key_drivers', [])
+                if driver_direction:
+                    key_drivers = [
+                        driver for driver in key_drivers
+                        if driver.get('direction') == driver_direction
+                    ]
                 data = {
                     'machine_name': explanation_response.get('machine_name', intent.machine),
                     'seu_name': intent.machine,
+                    'energy_source': resolved_energy_source,
                     'r_squared': explanation_response.get('r_squared'),
                     'model_version': explanation_response.get('model_version'),
                     'explanation': explanation,
-                    'key_drivers': explanation.get('key_drivers', []),
+                    'key_drivers': key_drivers,
+                    'driver_direction': driver_direction,
                     'accuracy_explanation': explanation.get('accuracy_explanation'),
                     'formula_explanation': explanation.get('formula_explanation')
                 }
@@ -2051,6 +2805,10 @@ class EnmsSkill(FallbackSkill):
                 # Baseline prediction - get expected energy for given conditions
                 machine = intent.machine
                 machines = intent.machines if intent.machines else []
+                requested_energy_source = self._extract_energy_source(
+                    getattr(intent, 'utterance', ''),
+                    intent.energy_source,
+                )
                 
                 # If no machine specified, try conversation context
                 if not machine and not machines and self.context_manager:
@@ -2086,7 +2844,7 @@ class EnmsSkill(FallbackSkill):
                             prediction = self._run_async(
                                 self.api_client.predict_baseline(
                                     seu_name=seu_name,
-                                    energy_source="electricity",
+                                    energy_source=requested_energy_source or "electricity",
                                     features=features,
                                     include_message=False
                                 )
@@ -2108,12 +2866,26 @@ class EnmsSkill(FallbackSkill):
                 
                 # Single machine prediction
                 self.logger.info("baseline_prediction", machine=machine)
+
+                resolution = self._resolve_baseline_target(
+                    machine,
+                    utterance=getattr(intent, 'utterance', ''),
+                    energy_source=requested_energy_source,
+                )
+                if not resolution['success']:
+                    return self._build_baseline_message_response(
+                        resolution['message'],
+                        seu_name=resolution.get('seu_name', machine),
+                        energy_source=resolution.get('energy_source'),
+                        machine_name=machine,
+                    )
+                resolved_energy_source = resolution['energy_source']
                 
                 # Call baseline prediction API
                 prediction = self._run_async(
                     self.api_client.predict_baseline(
                         seu_name=machine,
-                        energy_source="electricity",
+                        energy_source=resolved_energy_source,
                         features=features,
                         include_message=False  # Don't use API message, we format with features
                     )
@@ -2121,6 +2893,7 @@ class EnmsSkill(FallbackSkill):
                 
                 # Add SEU name and features to response for template
                 prediction['seu_name'] = machine
+                prediction['energy_source'] = resolved_energy_source
                 prediction['features'] = features
                 
                 # Update conversation context with this machine
@@ -2932,6 +3705,20 @@ class EnmsSkill(FallbackSkill):
         ))
     
     # ========== EXISTING MACHINE-SPECIFIC HANDLERS (UPDATED FOR PRIORITY 3) ==========
+
+    @intent_handler(IntentBuilder('PartnerPress').require('partner_press').build())
+    def handle_partner_press(self, message: Message):
+        """Handle ASSA ABLOY partner press-shop questions through a dedicated Adapt route."""
+        try:
+            if self._try_handle_partner_press_message(message):
+                return
+            self.speak(
+                "Please mention the ASSA ABLOY press shop, a Bret, Raster, or Dimeco "
+                "meter group, or one of the imported press names."
+            )
+        except Exception as e:
+            self.log.error(f"Partner press handler failed: {e}")
+            self.speak("I could not retrieve the ASSA ABLOY partner press-shop data.")
     
     @intent_handler(IntentBuilder('EnergyQuery').require('energy_metric').optionally('machine').build())
     def handle_energy_query(self, message: Message):
@@ -2946,6 +3733,9 @@ class EnmsSkill(FallbackSkill):
         Phase 3.1: Uses session context for follow-up queries
         """
         try:
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -3042,6 +3832,9 @@ class EnmsSkill(FallbackSkill):
         """Handle system health queries - API/database/system status checks"""
         try:
             utterance = message.data.get("utterances", [""])[0]
+            if self._try_handle_partner_press_message(message):
+                return
+
             session_id = self._get_session_id(message)
             
             self.logger.info("health_check_intent_triggered", 
@@ -3136,6 +3929,9 @@ class EnmsSkill(FallbackSkill):
     def handle_factory_overview(self, message: Message):
         """Handle factory-wide queries - OVOS interface layer"""
         try:
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -3151,7 +3947,10 @@ class EnmsSkill(FallbackSkill):
             
             # Speak result
             if result['success']:
-                response = self.response_formatter.format_response('factory_overview', result['data'])
+                response = self.response_formatter.format_response(
+                    result.get('custom_template') or result.get('template') or 'factory_overview',
+                    result['data']
+                )
                 self._emit_structured_response(
                     session_id,
                     intent.intent,
@@ -3171,6 +3970,9 @@ class EnmsSkill(FallbackSkill):
         """Handle anomaly detection queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
             utterance = message.data.get("utterances", [""])[0]
+            if self._try_handle_partner_press_message(message):
+                return
+
             session_id = self._get_session_id(message)
             
             # Get or create session context
@@ -3226,15 +4028,18 @@ class EnmsSkill(FallbackSkill):
     def handle_ranking(self, message: Message):
         """Handle ranking/top consumers queries - OVOS interface layer"""
         try:
-            limit = message.data.get('limit', '5')
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
+            limit = message.data.get('limit')
             session_id = self._get_session_id(message)
             
-            # Convert limit to int if it's a string number
+            # Convert limit to int if Adapt provided one; otherwise parse spoken top-N words.
             try:
-                limit_int = int(limit) if limit else 5
+                limit_int = int(limit) if limit else self._extract_ranking_limit(utterance)
             except:
-                limit_int = 5
+                limit_int = self._extract_ranking_limit(utterance)
             
             intent = Intent(
                 intent=IntentType.RANKING,
@@ -3246,7 +4051,10 @@ class EnmsSkill(FallbackSkill):
             result = self._call_enms_api(intent)
             
             if result['success']:
-                response = self.response_formatter.format_response('ranking', result['data'])
+                response = self.response_formatter.format_response(
+                    result.get('template') or 'ranking',
+                    result['data']
+                )
                 self._emit_structured_response(
                     session_id,
                     intent.intent,
@@ -3265,6 +4073,9 @@ class EnmsSkill(FallbackSkill):
     def handle_comparison(self, message: Message):
         """Handle machine comparison queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -3398,11 +4209,14 @@ class EnmsSkill(FallbackSkill):
             self.log.error(f"Forecast handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('Baseline').require('baseline').require('machine').build())
+    @intent_handler(IntentBuilder('Baseline').require('baseline').require('machine').optionally('energy_source').build())
     def handle_baseline(self, message: Message):
         """Handle baseline prediction queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
             utterance = message.data.get("utterances", [""])[0]
+            if self._try_handle_partner_press_message(message):
+                return
+
             session_id = self._get_session_id(message)
             
             # Get or create session context
@@ -3411,11 +4225,14 @@ class EnmsSkill(FallbackSkill):
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            energy_source = self._extract_energy_source(utterance, message.data.get('energy_source'))
             
             # Use context if no machine specified and required
             if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            if not energy_source and session and session.last_energy_source:
+                energy_source = session.last_energy_source
             
             # Extract time range from utterance
             time_range = self._extract_time_range(utterance)
@@ -3424,6 +4241,7 @@ class EnmsSkill(FallbackSkill):
                 intent=IntentType.BASELINE,
                 time_range=time_range,
                 machine=machine,
+                energy_source=energy_source,
                 confidence=0.95,
                 utterance=utterance
             )
@@ -3443,7 +4261,7 @@ class EnmsSkill(FallbackSkill):
             self.log.error(f"Baseline handler failed: {e}")
             self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('BaselineModels').require('baseline').require('machine').require('model_query').build())
+    @intent_handler(IntentBuilder('BaselineModels').require('baseline').require('machine').optionally('energy_source').require('model_query').build())
     def handle_baseline_models(self, message: Message):
         """Handle baseline models listing - OVOS interface layer (Phase 3.1: with context)"""
         try:
@@ -3456,15 +4274,19 @@ class EnmsSkill(FallbackSkill):
             # Extract machine (or use context)
             machine_raw = message.data.get('machine')
             machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+            energy_source = self._extract_energy_source(utterance, message.data.get('energy_source'))
             
             # Use context if no machine specified
             if not machine and session and session.last_machine:
                 machine = session.last_machine
                 self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+            if not energy_source and session and session.last_energy_source:
+                energy_source = session.last_energy_source
             
             intent = Intent(
                 intent=IntentType.BASELINE_MODELS,
                 machine=machine,
+                energy_source=energy_source,
                 confidence=0.95,
                 utterance=utterance
             )
@@ -3483,52 +4305,69 @@ class EnmsSkill(FallbackSkill):
         except Exception as e:
             self.log.error(f"Baseline models handler failed: {e}")
             self.speak_dialog("error.general")
+
+    def _handle_baseline_explanation_message(self, message: Message):
+        """Shared baseline explanation flow for both baseline and driver-specific Adapt intents."""
+        utterance = message.data.get("utterances", [""])[0]
+        session_id = self._get_session_id(message)
+
+        session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
+
+        machine_raw = message.data.get('machine')
+        machine = self._normalize_machine_name(machine_raw) if machine_raw else None
+        energy_source = self._extract_energy_source(utterance, message.data.get('energy_source'))
+        driver_direction = self._extract_driver_direction(utterance)
+
+        if not machine and session and session.last_machine:
+            machine = session.last_machine
+            self.logger.info("using_context_machine", machine=machine, session_id=session_id)
+        if not energy_source and session and session.last_energy_source:
+            energy_source = session.last_energy_source
+
+        intent = Intent(
+            intent=IntentType.BASELINE_EXPLANATION,
+            machine=machine,
+            energy_source=energy_source,
+            params={'driver_direction': driver_direction} if driver_direction else None,
+            confidence=0.95,
+            utterance=utterance
+        )
+
+        result = self._call_enms_api(intent)
+
+        if result['success']:
+            response = self.response_formatter.format_response('baseline_explanation', result['data'])
+            self.speak(response)
+            session.add_turn(utterance, intent, response, result['data'])
+            self.logger.info("context_updated", session_id=session_id, machine=machine)
+        else:
+            self.speak_dialog("error.general")
     
-    @intent_handler(IntentBuilder('BaselineExplanation').require('kpi_metric').require('machine').require('explain_query').build())
+    @intent_handler(IntentBuilder('BaselineExplanation').require('kpi_metric').require('machine').optionally('energy_source').require('explain_query').build())
     def handle_baseline_explanation(self, message: Message):
         """Handle baseline explanation queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
-            utterance = message.data.get("utterances", [""])[0]
-            session_id = self._get_session_id(message)
-            
-            # Get or create session context
-            session = self.context_manager.get_or_create_session(session_id) if self.context_manager else None
-            
-            # Extract machine (or use context)
-            machine_raw = message.data.get('machine')
-            machine = self._normalize_machine_name(machine_raw) if machine_raw else None
-            
-            # Use context if no machine specified
-            if not machine and session and session.last_machine:
-                machine = session.last_machine
-                self.logger.info("using_context_machine", machine=machine, session_id=session_id)
-            
-            intent = Intent(
-                intent=IntentType.BASELINE_EXPLANATION,
-                machine=machine,
-                confidence=0.95,
-                utterance=utterance
-            )
-            
-            result = self._call_enms_api(intent)
-            
-            if result['success']:
-                response = self.response_formatter.format_response('baseline_explanation', result['data'])
-                self.speak(response)
-                
-                # Update context for next query
-                session.add_turn(utterance, intent, response, result['data'])
-                self.logger.info("context_updated", session_id=session_id, machine=machine)
-            else:
-                self.speak_dialog("error.general")
+            self._handle_baseline_explanation_message(message)
         except Exception as e:
             self.log.error(f"Baseline explanation handler failed: {e}")
+            self.speak_dialog("error.general")
+
+    @intent_handler(IntentBuilder('DriverExplanation').require('driver_query').require('machine').optionally('energy_source').build())
+    def handle_driver_explanation(self, message: Message):
+        """Handle explicit driver questions with high-confidence Adapt matching."""
+        try:
+            self._handle_baseline_explanation_message(message)
+        except Exception as e:
+            self.log.error(f"Driver explanation handler failed: {e}")
             self.speak_dialog("error.general")
     
     @intent_handler(IntentBuilder('SEUs').require('seu_query').build())
     def handle_seus(self, message: Message):
         """Handle SEU (Significant Energy Uses) queries - OVOS interface layer"""
         try:
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
             
             intent = Intent(
@@ -3552,6 +4391,9 @@ class EnmsSkill(FallbackSkill):
     def handle_kpi(self, message: Message):
         """Handle KPI queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -3634,6 +4476,9 @@ class EnmsSkill(FallbackSkill):
     def handle_production(self, message: Message):
         """Handle production data queries - OVOS interface layer (Phase 3.1: with context)"""
         try:
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -3684,6 +4529,9 @@ class EnmsSkill(FallbackSkill):
         Phase 3.1: Uses session context for follow-up queries
         """
         try:
+            if self._try_handle_partner_press_message(message):
+                return
+
             utterance = message.data.get("utterances", [""])[0]
             session_id = self._get_session_id(message)
             
@@ -3803,6 +4651,42 @@ class EnmsSkill(FallbackSkill):
 
             machine = self._normalize_machine_name(machine_raw)
             utterance = message.data.get("utterances", [""])[0]
+            session_id = self._get_session_id(message)
+            utterance_lower = utterance.lower()
+
+            is_enpi_status_query = (
+                any(phrase in utterance_lower for phrase in [
+                    'energy performance indicator',
+                    'energy performance indicators',
+                    'enpi report',
+                    'enpi status',
+                    'iso 50001 report',
+                    'compliance report'
+                ])
+                and not any(action in utterance_lower for action in [
+                    'download',
+                    'generate',
+                    'create',
+                    'export',
+                    'pdf'
+                ])
+            )
+
+            if is_enpi_status_query:
+                result = self._process_query(utterance, session_id)
+                if result.get('success'):
+                    self._emit_structured_response(
+                        session_id,
+                        result.get('intent'),
+                        result.get('data'),
+                        confidence=result.get('confidence'),
+                        utterance=utterance,
+                        machine=result.get('machine')
+                    )
+                    self.speak(result['response'])
+                else:
+                    self.speak(result.get('response') or "Sorry, I couldn't retrieve the EnPI report.")
+                return
             
             intent = Intent(
                 intent=IntentType.REPORT,
