@@ -592,6 +592,10 @@ class EnmsSkill(FallbackSkill):
             (r"\bthe breakfast club\b", "the Bret press group"),
             (r"\bbreakfast club\b", "Bret press group"),
             (r"\bbreakfast group\b", "Bret press group"),
+            (r"\bbreakfast press(?:es)?(?: group)?\b", "Bret press group"),
+            (r"\bfor breakfast\b", "for Bret press group"),
+            (r"\bgreat businesses\b", "Bret presses"),
+            (r"\bfor the purposes\b", "for Bret presses"),
             (r"\bbread press(?:es)?\b", "Bret presses"),
             (r"\bbrett press(?:es)?\b", "Bret presses"),
             (r"\bbrett\b", "Bret"),
@@ -603,6 +607,7 @@ class EnmsSkill(FallbackSkill):
             (r"\bdynamo\b", "Dimeco"),
             (r"\bdy meco\b", "Dimeco"),
             (r"\bdie meco\b", "Dimeco"),
+            (r"\bdinoco\b", "Dimeco"),
             (r"\brasta\b", "Raster"),
             (r"\brastor\b", "Raster"),
             (r"\bflexy\b", "Flexi"),
@@ -614,6 +619,15 @@ class EnmsSkill(FallbackSkill):
             (r"\bbret one twenty five\b", "Bret125"),
             (r"\bbret one sixty\b", "Bret160"),
             (r"\bbret two fifty\b", "Bret250"),
+            (r"\b(?:press\s+)?group (?:one|won|1)\b", "Bret press group"),
+            (r"\b(?:press\s+)?group (?:two|2|to|too)\b", "Raster press group"),
+            (r"\b(?:press\s+)?group (?:three|tree|3)\b", "Dimeco press group"),
+            (r"\b(?:first|left) (?:press\s+)?group\b", "Bret press group"),
+            (r"\b(?:second|middle|center|centre) (?:press\s+)?group\b", "Raster press group"),
+            (r"\b(?:third|right) (?:press\s+)?group\b", "Dimeco press group"),
+            (r"\boption (?:one|1)\b", "Bret press group"),
+            (r"\boption (?:two|2|to|too)\b", "Raster press group"),
+            (r"\boption (?:three|3)\b", "Dimeco press group"),
         ]
         for pattern, replacement in replacements:
             normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
@@ -644,6 +658,15 @@ class EnmsSkill(FallbackSkill):
             "rasta",
             "rastor",
             "flexy",
+            "group one",
+            "group two",
+            "group three",
+            "press group one",
+            "press group two",
+            "press group three",
+            "first group",
+            "second group",
+            "third group",
             "sqdc",
         ]
         if any(term in normalized for term in partner_terms):
@@ -837,6 +860,17 @@ class EnmsSkill(FallbackSkill):
             return "current_data"
         if any(term in normalized for term in ["compare", "versus", " vs "]):
             return "compare_groups"
+        if (
+            not group
+            and any(term in normalized for term in ["group", "presses", "meter"])
+            and any(term in normalized for term in [
+                "energy", "consumption", "production", "produce", "output", "kpi", "sec",
+            ])
+            and not any(term in normalized for term in [
+                "total", "overall", "all groups", "whole shop", "press shop",
+            ])
+        ):
+            return "unknown_group"
         if "sec" in normalized and any(term in normalized for term in ["explain", "mean", "means", "simple"]):
             return "sec_explanation"
         if any(term in normalized for term in ["kpi", "sec", "performance indicator", "energy per", "per produced", "per unit"]):
@@ -4117,6 +4151,8 @@ class EnmsSkill(FallbackSkill):
         print("=" * 80)
         try:
             utterance = message.data.get("utterances", [""])[0]
+            if self._try_handle_partner_press_message(message):
+                return
             session_id = self._get_session_id(message)
             self.logger.info("cost_handler_start", utterance=utterance, session_id=session_id)
             
