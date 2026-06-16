@@ -301,7 +301,8 @@ class ENMSClient:
         metric: str = "energy",
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
-        limit: int = 5
+        limit: int = 5,
+        factory_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Get top energy consumers
@@ -329,7 +330,30 @@ class ENMSClient:
             "end_time": end_time,
             "limit": limit
         }
+        if factory_name:
+            params["factory_name"] = factory_name
+            return await self._request("GET", "/ovos/top-consumers", params=params)
         return await self._request("GET", "/analytics/top-consumers", params=params)
+
+    async def get_partner_press_summary(
+        self,
+        question_type: str = "summary",
+        group: Optional[str] = None,
+        press: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get ASSA ABLOY / partner press-shop pilot summary data."""
+        params = {"question_type": question_type}
+        if group:
+            params["group"] = group
+        if press:
+            params["press"] = press
+        if start_time:
+            params["start_time"] = start_time
+        if end_time:
+            params["end_time"] = end_time
+        return await self._request("GET", "/partner-press/summary", params=params)
     
     # Anomaly Detection Endpoints
     
